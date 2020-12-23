@@ -1,0 +1,23 @@
+language: go
+go:
+- 1.14.x
+services:
+  - mysql
+addons:
+  apt:
+    packages:
+    - debhelper
+    - fakeroot
+    - bash-completion
+env:
+  global:
+  - V=1
+before_script:
+- make bootstrap
+script:
+- TRAVIS=1 make
+after_success:
+- bash <(curl -s https://codecov.io/bash) -t "$CODECOV_TOKEN" || echo "Codecov did
+  not collect coverage reports"
+notifications:
+  email: false
