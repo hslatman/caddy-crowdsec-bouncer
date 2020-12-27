@@ -19,24 +19,77 @@ import (
 	"fmt"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
+	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	iradix "github.com/hashicorp/go-immutable-radix"
 	"go.uber.org/zap"
 )
 
-func New(logger *zap.Logger) (*bouncer, error) {
-	return &bouncer{
+func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+	return &Bouncer{
+		streamingBouncer: &csbouncer.StreamBouncer{
+			APIKey:         apiKey,
+			APIUrl:         apiURL,
+			TickerInterval: tickerInterval,
+			UserAgent:      "caddy-cs-bouncer",
+		},
+		store:  iradix.New(),
 		logger: logger,
 	}, nil
 }
 
-type bouncer struct {
-	logger *zap.Logger
+type Bouncer struct {
+	streamingBouncer *csbouncer.StreamBouncer
+	store            *iradix.Tree
+	logger           *zap.Logger
 }
 
-func (b *bouncer) Init() error {
-	return nil
+func (b *Bouncer) Init() error {
+	return b.streamingBouncer.Init()
 }
 
-func (b *bouncer) Add(decision *models.Decision) error {
+func (b *Bouncer) Run() {
+
+	// TODO: handle the error? Return it to caller?
+
+	go func() error {
+		b.logger.Debug("Processing new and deleted decisions . . .")
+		for {
+			select {
+			// case <-t.Dying():
+			// 	c.logger.Info("terminating bouncer process")
+			// 	return nil
+
+			// TODO: decisions should go into some kind of storage
+			// The storage can then be used by the HTTP handler to allow/deny the request
+
+			case decisions := <-b.streamingBouncer.Stream:
+				b.logger.Debug("got decision ...")
+				fmt.Println(decisions)
+				//c.logger.Info("deleting '%d' decisions", len(decisions.Deleted))
+				for _, decision := range decisions.Deleted {
+					if err := b.Delete(decision); err != nil {
+						//c.logger.Error("unable to delete decision for '%s': %s", *decision.Value, err)
+					} else {
+						//c.logger.Debug("deleted '%s'", *decision.Value)
+					}
+
+				}
+				//c.logger.Info("adding '%d' decisions", len(decisions.New))
+				for _, decision := range decisions.New {
+					if err := b.Add(decision); err != nil {
+						//c.logger.Error("unable to insert decision for '%s': %s", *decision.Value, err)
+					} else {
+						//c.logger.Debug("Adding '%s' for '%s'", *decision.Value, *decision.Duration)
+					}
+				}
+			}
+		}
+	}()
+
+	go b.streamingBouncer.Run()
+}
+
+func (b *Bouncer) Add(decision *models.Decision) error {
 	b.logger.Info("adding ...")
 	// banDuration, err := time.ParseDuration(*decision.Duration)
 	// if err != nil {
@@ -55,7 +108,7 @@ func (b *bouncer) Add(decision *models.Decision) error {
 	return nil
 }
 
-func (b *bouncer) Delete(decision *models.Decision) error {
+func (b *Bouncer) Delete(decision *models.Decision) error {
 	b.logger.Info("deleting ...")
 	// banDuration, err := time.ParseDuration(*decision.Duration)
 	// if err != nil {
@@ -74,7 +127,7 @@ func (b *bouncer) Delete(decision *models.Decision) error {
 	return nil
 }
 
-func (b *bouncer) ShutDown() error {
+func (b *Bouncer) ShutDown() error {
 	return nil
 }
 

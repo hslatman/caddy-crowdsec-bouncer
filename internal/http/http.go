@@ -26,33 +26,33 @@ import (
 )
 
 func init() {
-	caddy.RegisterModule(CrowdsecHandler{})
+	caddy.RegisterModule(CrowdSecHandler{})
 	//httpcaddyfile.RegisterHandlerDirective("crowdsec_handler", parseCaddyfile)
 }
 
-// CrowdsecHandler
-type CrowdsecHandler struct {
+// CrowdSecHandler is a Caddy HTTP handler that integrates with the CrowdSec Caddy app
+type CrowdSecHandler struct {
 	logger   *zap.Logger
-	crowdsec *app.Crowdsec
+	crowdsec *app.CrowdSec
 }
 
 // CaddyModule returns the Caddy module information.
-func (CrowdsecHandler) CaddyModule() caddy.ModuleInfo {
+func (CrowdSecHandler) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.crowdsec",
-		New: func() caddy.Module { return new(CrowdsecHandler) },
+		New: func() caddy.Module { return new(CrowdSecHandler) },
 	}
 }
 
 // Provision sets up the OpenAPI Validator responder.
-func (ch *CrowdsecHandler) Provision(ctx caddy.Context) error {
+func (ch *CrowdSecHandler) Provision(ctx caddy.Context) error {
 
 	// store some references
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
-	ch.crowdsec = crowdsecAppIface.(*app.Crowdsec)
+	ch.crowdsec = crowdsecAppIface.(*app.CrowdSec)
 
 	fmt.Println(ch.crowdsec)
 
@@ -63,12 +63,12 @@ func (ch *CrowdsecHandler) Provision(ctx caddy.Context) error {
 }
 
 // Validate ensures the app's configuration is valid.
-func (ch *CrowdsecHandler) Validate() error {
+func (ch *CrowdSecHandler) Validate() error {
 	return nil
 }
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
-func (ch *CrowdsecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+func (ch *CrowdSecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
 	// TODO: check incoming IP is allowed by making the ch.crowdsec app validate it
 
@@ -83,7 +83,7 @@ func (ch *CrowdsecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 
 // Interface guards
 var (
-	_ caddy.Module      = (*CrowdsecHandler)(nil)
-	_ caddy.Provisioner = (*CrowdsecHandler)(nil)
-	_ caddy.Validator   = (*CrowdsecHandler)(nil)
+	_ caddy.Module      = (*CrowdSecHandler)(nil)
+	_ caddy.Provisioner = (*CrowdSecHandler)(nil)
+	_ caddy.Validator   = (*CrowdSecHandler)(nil)
 )

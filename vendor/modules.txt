@@ -195,6 +195,11 @@ github.com/google/cel-go/parser/gen
 github.com/google/go-querystring/query
 # github.com/google/uuid v1.1.2
 github.com/google/uuid
+# github.com/hashicorp/go-immutable-radix v1.0.0
+## explicit
+github.com/hashicorp/go-immutable-radix
+# github.com/hashicorp/golang-lru v0.5.1
+github.com/hashicorp/golang-lru/simplelru
 # github.com/huandu/xstrings v1.3.1
 github.com/huandu/xstrings
 # github.com/imdario/mergo v0.3.8

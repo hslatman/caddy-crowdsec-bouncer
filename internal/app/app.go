@@ -18,118 +18,86 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
 
-	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
-
-	"github.com/hslatman/caddy-cs-bouncer/internal/bouncer"
+	bnc "github.com/hslatman/caddy-cs-bouncer/internal/bouncer"
 )
 
 func init() {
-	caddy.RegisterModule(Crowdsec{})
+	caddy.RegisterModule(CrowdSec{})
 	//httpcaddyfile.RegisterHandlerDirective("crowdsec_handler", parseCaddyfile)
 }
 
 // CaddyModule returns the Caddy module information.
-func (Crowdsec) CaddyModule() caddy.ModuleInfo {
+func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "crowdsec",
-		New: func() caddy.Module { return new(Crowdsec) },
+		New: func() caddy.Module { return new(CrowdSec) },
 	}
 }
 
-type Crowdsec struct {
-	ctx    caddy.Context
-	logger *zap.Logger
+// CrowdSec is a Caddy App that functions as a CrowdSec bouncer
+type CrowdSec struct {
+	APIKey         string `json:"api_key"`
+	APIUrl         string `json:"api_url,omitempty"`
+	TickerInterval string `json:"ticker_interval,omitempty"`
+
+	ctx     caddy.Context
+	logger  *zap.Logger
+	bouncer *bnc.Bouncer
 }
 
 // Provision sets up the OpenAPI Validator responder.
-func (c *Crowdsec) Provision(ctx caddy.Context) error {
+func (c *CrowdSec) Provision(ctx caddy.Context) error {
+
+	c.processDefaults()
 
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync()
 
-	custom, err := bouncer.New(c.logger)
+	bouncer, err := bnc.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
 	}
 
-	if err := custom.Init(); err != nil {
+	if err := bouncer.Init(); err != nil {
 		return err
 	}
 
-	bnc := &csbouncer.StreamBouncer{
-		APIKey:         "<token>",
-		APIUrl:         "http://127.0.0.1:8080/",
-		TickerInterval: "60s",
-		UserAgent:      "testBouncer",
-	}
-
-	if err := bnc.Init(); err != nil {
-		return err
-	}
-
-	go bnc.Run()
-
-	go func() error {
-		c.logger.Debug("Processing new and deleted decisions . . .")
-		for {
-			select {
-			// case <-t.Dying():
-			// 	c.logger.Info("terminating bouncer process")
-			// 	return nil
-
-			// TODO: decisions should go into some kind of storage
-			// The storage can then be used by the HTTP handler to allow/deny the request
-
-			case decisions := <-bnc.Stream:
-				c.logger.Debug("got decision ...")
-				//c.logger.Info("deleting '%d' decisions", len(decisions.Deleted))
-				for _, decision := range decisions.Deleted {
-					if err := custom.Delete(decision); err != nil {
-						//c.logger.Error("unable to delete decision for '%s': %s", *decision.Value, err)
-					} else {
-						//c.logger.Debug("deleted '%s'", *decision.Value)
-					}
-
-				}
-				//c.logger.Info("adding '%d' decisions", len(decisions.New))
-				for _, decision := range decisions.New {
-					if err := custom.Add(decision); err != nil {
-						//c.logger.Error("unable to insert decision for '%s': %s", *decision.Value, err)
-					} else {
-						//c.logger.Debug("Adding '%s' for '%s'", *decision.Value, *decision.Duration)
-					}
-				}
-			}
-		}
-	}()
+	c.bouncer = bouncer
 
 	return nil
+}
+
+func (c *CrowdSec) processDefaults() {
+	if c.APIUrl == "" {
+		c.APIUrl = "http://127.0.0.1:8080"
+	}
+	if c.TickerInterval == "" {
+		c.TickerInterval = "60s"
+	}
 }
 
 // Validate ensures the app's configuration is valid.
-func (c *Crowdsec) Validate() error {
-	return nil
-}
+func (c *CrowdSec) Validate() error {
 
-func (c *Crowdsec) Start() error {
-
-	// TODO: move the bouncer run part here
+	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
 
 	return nil
 }
 
-func (c *Crowdsec) Stop() error {
-
-	// TODO: move the bouncer stopping part here
-
+func (c *CrowdSec) Start() error {
+	c.bouncer.Run()
 	return nil
+}
+
+func (c *CrowdSec) Stop() error {
+	return c.bouncer.ShutDown()
 }
 
 // Interface guards
 var (
-	_ caddy.Module      = (*Crowdsec)(nil)
-	_ caddy.App         = (*Crowdsec)(nil)
-	_ caddy.Provisioner = (*Crowdsec)(nil)
-	_ caddy.Validator   = (*Crowdsec)(nil)
+	_ caddy.Module      = (*CrowdSec)(nil)
+	_ caddy.App         = (*CrowdSec)(nil)
+	_ caddy.Provisioner = (*CrowdSec)(nil)
+	_ caddy.Validator   = (*CrowdSec)(nil)
 )
