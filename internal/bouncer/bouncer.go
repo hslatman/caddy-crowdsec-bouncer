@@ -16,7 +16,9 @@ package bouncer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -49,7 +51,7 @@ func (b *Bouncer) Init() error {
 
 func (b *Bouncer) Run() {
 
-	// TODO: handle the error? Return it to caller?
+	// TODO: handle errors? Return it to caller?
 
 	go func() error {
 		b.logger.Debug("Processing new and deleted decisions . . .")
@@ -58,10 +60,6 @@ func (b *Bouncer) Run() {
 			// case <-t.Dying():
 			// 	c.logger.Info("terminating bouncer process")
 			// 	return nil
-
-			// TODO: decisions should go into some kind of storage
-			// The storage can then be used by the HTTP handler to allow/deny the request
-
 			case decisions := <-b.streamingBouncer.Stream:
 				b.logger.Debug("got decision ...")
 				fmt.Println(decisions)
@@ -86,44 +84,59 @@ func (b *Bouncer) Run() {
 		}
 	}()
 
+	// TODO: handle connection errors in here? Soft or hard fail? Reconnects?
 	go b.streamingBouncer.Run()
 }
 
 func (b *Bouncer) Add(decision *models.Decision) error {
-	b.logger.Info("adding ...")
-	// banDuration, err := time.ParseDuration(*decision.Duration)
-	// if err != nil {
-	// 	return err
-	// }
-	// b.logger.Info("custom [%s] : add ban on %s for %s sec (%s)", c.path, *decision.Value, strconv.Itoa(int(banDuration.Seconds())), *decision.Scenario)
 
-	// str, err := serializeDecision(decision)
-	// if err != nil {
-	// 	b.logger.Warning("serialize: %s", err)
-	// }
-	// cmd := exec.Command(c.path, "add", *decision.Value, strconv.Itoa(int(banDuration.Seconds())), *decision.Scenario, str)
-	// if out, err := cmd.CombinedOutput(); err != nil {
-	// 	b.logger.Info("Error in 'add' command (%s): %v --> %s", cmd.String(), err, string(out))
-	// }
+	//fmt.Println(decision)
+	//fmt.Println(fmt.Sprintf("%+v", decision))
+	//fmt.Println(database.Int2ip(decision.StartIP))
+	//fmt.Println(decision.StartIP) // first ip in ip range
+	//fmt.Println(fmt.Sprintf("%#+v", *decision.Type)) // ban, captcha, throttle
+	//fmt.Println(fmt.Sprintf("%#+v", *decision.Value)) // the value of decision (i.e. IP, range, username)
+	//fmt.Println(decision.EndIP) // final IP in ip range
+	//fmt.Println(decision.ID) // internal ID
+	//fmt.Println(fmt.Sprintf("%#+v", *decision.Scenario)); what CS scenario this decision is related to?
+	//fmt.Println(fmt.Sprintf("%#+v", *decision.Origin)); cscli, for example; others?
+	//fmt.Println(fmt.Sprintf("%#+v", *decision.Simulated)); whether nor not simulated attack?
+	//fmt.Println(fmt.Sprintf("%#+v", *decision.Scope)); ip, range, username;
+
+	ipOrCIDR, err := findIPOrCIDR(decision)
+	if err != nil {
+		return err
+	}
+
+	b.logger.Info(fmt.Sprintf("adding %s ...", ipOrCIDR))
+
+	//newRoot, oldValue, added := b.store.Insert([]byte(ipOrCIDR), decision)
+	newRoot, _, _ := b.store.Insert([]byte(ipOrCIDR), decision)
+
+	b.store = newRoot
+
+	fmt.Println(b.store.Len())
+
+	// TODO: other cases to handle? The thing added by CS is then not valid, though ...
+
 	return nil
 }
 
 func (b *Bouncer) Delete(decision *models.Decision) error {
-	b.logger.Info("deleting ...")
-	// banDuration, err := time.ParseDuration(*decision.Duration)
-	// if err != nil {
-	// 	return err
-	// }
 
-	// str, err := serializeDecision(decision)
-	// if err != nil {
-	// 	b.logger.Warning("serialize: %s", err)
-	// }
-	// b.logger.Info("custom [%s] : del ban on %s for %s sec (%s)", c.path, *decision.Value, strconv.Itoa(int(banDuration.Seconds())), *decision.Scenario)
-	// cmd := exec.Command(c.path, "del", *decision.Value, strconv.Itoa(int(banDuration.Seconds())), *decision.Scenario, str)
-	// if out, err := cmd.CombinedOutput(); err != nil {
-	// 	b.logger.Info("Error in 'del' command (%s): %v --> %s", cmd.String(), err, string(out))
-	// }
+	ipOrCIDR, err := findIPOrCIDR(decision)
+	if err != nil {
+		return err
+	}
+
+	b.logger.Info(fmt.Sprintf("deleting %s ...", ipOrCIDR))
+
+	newRoot, _, _ := b.store.Delete([]byte(ipOrCIDR))
+
+	b.store = newRoot
+
+	fmt.Println(b.store.Len())
+
 	return nil
 }
 
@@ -137,4 +150,31 @@ func serializeDecision(decision *models.Decision) (string, error) {
 		return "", fmt.Errorf("serialize error : %s", err)
 	}
 	return string(serbyte), nil
+}
+
+func findIPOrCIDR(decision *models.Decision) (string, error) {
+
+	var ipOrCIDR string
+	scope := *decision.Scope
+
+	switch scope {
+	case "Ip":
+		ip := net.ParseIP(*decision.Value)
+		if ip != nil {
+			ipOrCIDR = ip.String()
+		}
+	case "Range":
+		_, ipNet, err := net.ParseCIDR(*decision.Value)
+		if err == nil && ipNet != nil {
+			ipOrCIDR = ipNet.String()
+		}
+	default:
+		fmt.Println(fmt.Sprintf("got unhandled scope: %s", scope))
+	}
+
+	if ipOrCIDR == "" {
+		return "", errors.New("no IP or CIDR found")
+	}
+
+	return ipOrCIDR, nil
 }
