@@ -16,7 +16,9 @@ package http
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/hslatman/caddy-cs-bouncer/internal/app"
 
@@ -72,13 +74,86 @@ func (ch *CrowdSecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 
 	// TODO: check incoming IP is allowed by making the ch.crowdsec app validate it
 
+	ipToCheck, err := findIPFromRequest(r)
+	if err != nil {
+		return err // TODO: return error here? Or just log it and continue serving
+	}
+
+	fmt.Println(ipToCheck)
+
+	isAllowed, decision, err := ch.crowdsec.IsAllowed(ipToCheck)
+	if err != nil {
+		return err // TODO: return error here? Or just log it and continue serving
+	}
+
+	if !isAllowed {
+		// TODO: what shoud we do with non allowed requests?
+		fmt.Println(decision)
+		fmt.Println(*decision.Duration)
+		fmt.Println(*decision.Origin)
+	}
+
+	fmt.Println(isAllowed, decision)
+
+	// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
+	typ := *decision.Type
+	switch typ {
+	case "ban":
+		// TODO: just block the request; stop continuing the chain and serve some HTTP 401 or something
+	case "captcha":
+		// TODO: provide some method for captcha. How? hCaptcha?
+	case "throttle":
+		// TODO: throttle requests. Use an existing plugin?
+	default:
+		fmt.Println(fmt.Sprintf("ignoring type: %s", typ))
+	}
+
 	// Continue down the handler stack, recording the response, so that we can work with it afterwards
-	err := next.ServeHTTP(w, r)
+	err = next.ServeHTTP(w, r)
 	if err != nil {
 		return err
 	}
 
 	return nil
+}
+
+// findIPFromRequest return client's real public IP address from http request headers.
+// Logic taken from https://github.com/tomasen/realip/blob/master/realip.go
+func findIPFromRequest(r *http.Request) (string, error) {
+
+	// TODO: should we also check X-Real-IP? If so, add it again.
+	// TODO: add configuration for custom headers?
+
+	xForwardedFor := r.Header.Get("X-Forwarded-For")
+
+	// If both empty, return IP from remote address
+	if xForwardedFor == "" {
+		var remoteIP string
+		// If there are colon in remote address, remove the port number
+		// otherwise, return remote address as is
+		if strings.ContainsRune(r.RemoteAddr, ':') {
+			remoteIP, _, _ = net.SplitHostPort(r.RemoteAddr)
+		} else {
+			remoteIP = r.RemoteAddr
+		}
+
+		return remoteIP, nil
+	}
+
+	// Check list of IP in X-Forwarded-For and return the first global address
+	for _, address := range strings.Split(xForwardedFor, ",") {
+		address = strings.TrimSpace(address)
+		// isPrivate, err := isPrivateAddress(address)
+		// if !isPrivate && err == nil {
+		// 	return address
+		// }
+		// if err == nil {
+		// 	return address
+		// }
+		return address, nil
+	}
+
+	return "", fmt.Errorf("no ip found")
 }
 
 // Interface guards

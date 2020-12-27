@@ -111,6 +111,8 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 	b.logger.Info(fmt.Sprintf("adding %s ...", ipOrCIDR))
 
 	//newRoot, oldValue, added := b.store.Insert([]byte(ipOrCIDR), decision)
+	// TODO: store lookup as binary / number instead?
+	// TODO: store additional data about the decision (i.e. time added to store, etc)
 	newRoot, _, _ := b.store.Insert([]byte(ipOrCIDR), decision)
 
 	b.store = newRoot
@@ -138,6 +140,23 @@ func (b *Bouncer) Delete(decision *models.Decision) error {
 	fmt.Println(b.store.Len())
 
 	return nil
+}
+
+func (b *Bouncer) IsAllowed(ip string) (bool, *models.Decision, error) {
+
+	// TODO: also support IP range search instead of full match
+	value, found := b.store.Get([]byte(ip))
+
+	if found {
+		v, ok := value.(*models.Decision)
+		if !ok {
+			return false, nil, fmt.Errorf("wrong type in storage: %T", value)
+		}
+
+		return false, v, nil
+	}
+
+	return true, nil, nil
 }
 
 func (b *Bouncer) ShutDown() error {

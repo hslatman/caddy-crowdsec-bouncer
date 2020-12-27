@@ -16,6 +16,7 @@ package app
 
 import (
 	"github.com/caddyserver/caddy/v2"
+	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
 
 	bnc "github.com/hslatman/caddy-cs-bouncer/internal/bouncer"
@@ -92,6 +93,11 @@ func (c *CrowdSec) Start() error {
 
 func (c *CrowdSec) Stop() error {
 	return c.bouncer.ShutDown()
+}
+
+func (c *CrowdSec) IsAllowed(ip string) (bool, *models.Decision, error) {
+	// TODO: check if running? fully loaded, etc?
+	return c.bouncer.IsAllowed(ip)
 }
 
 // Interface guards
