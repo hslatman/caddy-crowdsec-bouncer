@@ -1,4 +1,4 @@
-module github.com/hslatman/poc-caddy-cs-bouncer
+module github.com/hslatman/caddy-cs-bouncer
 
 go 1.14
 

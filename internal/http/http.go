@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/hslatman/poc-caddy-cs-bouncer/internal/app"
+	"github.com/hslatman/caddy-cs-bouncer/internal/app"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"

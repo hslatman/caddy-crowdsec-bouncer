@@ -41,7 +41,7 @@
                     "handler": "headers",
                     "response": {
                       "set": {
-                        "Server": ["poc-caddy-cs-bouncer"]
+                        "Server": ["caddy-cs-bouncer"]
                       }
                     }
                   }

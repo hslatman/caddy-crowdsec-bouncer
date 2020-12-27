@@ -20,7 +20,7 @@ import (
 
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 
-	"github.com/hslatman/poc-caddy-cs-bouncer/internal/bouncer"
+	"github.com/hslatman/caddy-cs-bouncer/internal/bouncer"
 )
 
 func init() {
