@@ -15,10 +15,13 @@
 package bouncer
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
+	"strconv"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -26,6 +29,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// New creates a new (streaming) Bouncer
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
@@ -39,45 +43,46 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 	}, nil
 }
 
+// Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
 	streamingBouncer *csbouncer.StreamBouncer
 	store            *iradix.Tree
 	logger           *zap.Logger
 }
 
+// Init initializes the Bouncer
 func (b *Bouncer) Init() error {
 	return b.streamingBouncer.Init()
 }
 
+// Run starts the Bouncer processes
 func (b *Bouncer) Run() {
 
 	// TODO: handle errors? Return it to caller?
 
 	go func() error {
-		b.logger.Debug("Processing new and deleted decisions . . .")
+		b.logger.Info("start processing new and deleted decisions ...")
 		for {
 			select {
 			// case <-t.Dying():
 			// 	c.logger.Info("terminating bouncer process")
 			// 	return nil
 			case decisions := <-b.streamingBouncer.Stream:
-				b.logger.Debug("got decision ...")
-				fmt.Println(decisions)
-				//c.logger.Info("deleting '%d' decisions", len(decisions.Deleted))
+				b.logger.Debug(fmt.Sprintf("deleting '%d' decisions", len(decisions.Deleted)))
+				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				for _, decision := range decisions.Deleted {
 					if err := b.Delete(decision); err != nil {
-						//c.logger.Error("unable to delete decision for '%s': %s", *decision.Value, err)
+						b.logger.Error(fmt.Sprintf("unable to delete decision for '%s': %s", *decision.Value, err))
 					} else {
-						//c.logger.Debug("deleted '%s'", *decision.Value)
+						b.logger.Debug(fmt.Sprintf("deleted '%s'", *decision.Value))
 					}
-
 				}
-				//c.logger.Info("adding '%d' decisions", len(decisions.New))
+				b.logger.Debug(fmt.Sprintf("adding '%d' decisions", len(decisions.New)))
 				for _, decision := range decisions.New {
 					if err := b.Add(decision); err != nil {
-						//c.logger.Error("unable to insert decision for '%s': %s", *decision.Value, err)
+						b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
 					} else {
-						//c.logger.Debug("Adding '%s' for '%s'", *decision.Value, *decision.Duration)
+						b.logger.Debug(fmt.Sprintf("Adding '%s' for '%s'", *decision.Value, *decision.Duration))
 					}
 				}
 			}
@@ -88,6 +93,14 @@ func (b *Bouncer) Run() {
 	go b.streamingBouncer.Run()
 }
 
+// ShutDown stops the Bouncer
+func (b *Bouncer) ShutDown() error {
+	// TODO: persist the current state of the radix tree in some way, so that it can be used in startup again?
+	b.store = nil
+	return nil
+}
+
+// Add adds a Decision to the storage
 func (b *Bouncer) Add(decision *models.Decision) error {
 
 	//fmt.Println(decision)
@@ -108,22 +121,18 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 		return err
 	}
 
-	b.logger.Info(fmt.Sprintf("adding %s ...", ipOrCIDR))
-
-	//newRoot, oldValue, added := b.store.Insert([]byte(ipOrCIDR), decision)
-	// TODO: store lookup as binary / number instead?
+	// TODO: store lookup as number instead?
 	// TODO: store additional data about the decision (i.e. time added to store, etc)
 	newRoot, _, _ := b.store.Insert([]byte(ipOrCIDR), decision)
 
 	b.store = newRoot
-
-	fmt.Println(b.store.Len())
 
 	// TODO: other cases to handle? The thing added by CS is then not valid, though ...
 
 	return nil
 }
 
+// Delete removes a Decision from the storage
 func (b *Bouncer) Delete(decision *models.Decision) error {
 
 	ipOrCIDR, err := findIPOrCIDR(decision)
@@ -131,21 +140,27 @@ func (b *Bouncer) Delete(decision *models.Decision) error {
 		return err
 	}
 
-	b.logger.Info(fmt.Sprintf("deleting %s ...", ipOrCIDR))
-
 	newRoot, _, _ := b.store.Delete([]byte(ipOrCIDR))
 
 	b.store = newRoot
 
-	fmt.Println(b.store.Len())
-
 	return nil
 }
 
+// IsAllowed checks if an IP is allowed or not
 func (b *Bouncer) IsAllowed(ip string) (bool, *models.Decision, error) {
 
-	// TODO: also support IP range search instead of full match
-	value, found := b.store.Get([]byte(ip))
+	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
+
+	nip := net.ParseIP(ip)
+	if nip == nil {
+		return false, nil, fmt.Errorf("could not parse %s into net.IP", ip)
+	}
+
+	ipOrPrefix := calculateLookupKey(nip, 32)
+	m, value, found := b.store.Root().LongestPrefix([]byte(ipOrPrefix))
+
+	fmt.Println(m, value, found)
 
 	if found {
 		v, ok := value.(*models.Decision)
@@ -159,10 +174,6 @@ func (b *Bouncer) IsAllowed(ip string) (bool, *models.Decision, error) {
 	return true, nil, nil
 }
 
-func (b *Bouncer) ShutDown() error {
-	return nil
-}
-
 func serializeDecision(decision *models.Decision) (string, error) {
 	serbyte, err := json.Marshal(decision)
 	if err != nil {
@@ -173,27 +184,72 @@ func serializeDecision(decision *models.Decision) (string, error) {
 
 func findIPOrCIDR(decision *models.Decision) (string, error) {
 
-	var ipOrCIDR string
+	//var ipOrCIDR string
+	var ipOrPrefix string
 	scope := *decision.Scope
+
+	// TODO: handle IPv6 in addition to IPv4
 
 	switch scope {
 	case "Ip":
 		ip := net.ParseIP(*decision.Value)
 		if ip != nil {
-			ipOrCIDR = ip.String()
+			ipOrPrefix = calculateLookupKey(ip, 32) // TODO: IPv6 support.
 		}
 	case "Range":
-		_, ipNet, err := net.ParseCIDR(*decision.Value)
-		if err == nil && ipNet != nil {
-			ipOrCIDR = ipNet.String()
+		ip, ipNet, err := net.ParseCIDR(*decision.Value)
+		if err == nil && ipNet != nil && ip != nil {
+			ones, bits := ipNet.Mask.Size()
+			fmt.Println(ones, bits) // TODO: bits can be used for IPv6 vs IPv4?
+			ipOrPrefix = calculateLookupKey(ip, ones)
 		}
 	default:
 		fmt.Println(fmt.Sprintf("got unhandled scope: %s", scope))
 	}
 
-	if ipOrCIDR == "" {
-		return "", errors.New("no IP or CIDR found")
+	if ipOrPrefix == "" {
+		return "", errors.New("no IP or CIDR found to determine IP (prefix)")
 	}
 
-	return ipOrCIDR, nil
+	return ipOrPrefix, nil
+}
+
+func calculateLookupKey(ip net.IP, maskSize int) string {
+
+	ia := Inet_Aton(ip) // TODO: IPv6 support.
+
+	ipOrPrefix := fmt.Sprintf("%032s", strconv.FormatInt(ia, 2))
+	ipOrPrefix = ipOrPrefix[0:maskSize]
+
+	fmt.Println(ipOrPrefix)
+
+	return ipOrPrefix
+}
+
+// Inet_Aton converts an IPv4 net.IP object to a 64 bit integer.
+func Inet_Aton(ip net.IP) int64 {
+	ipv4Int := big.NewInt(0)
+	ipv4Int.SetBytes(ip.To4())
+	return ipv4Int.Int64()
+}
+
+// Inet6_Aton converts an IP Address (IPv4 or IPv6) net.IP object to a hexadecimal
+// representaiton. This function is the equivalent of
+// inet6_aton({{ ip address }}) in MySQL.
+func Inet6_Aton(ip net.IP) string {
+	ipv4 := false
+	if ip.To4() != nil {
+		ipv4 = true
+	}
+
+	ipInt := big.NewInt(0)
+	if ipv4 {
+		ipInt.SetBytes(ip.To4())
+		ipHex := hex.EncodeToString(ipInt.Bytes())
+		return ipHex
+	}
+
+	ipInt.SetBytes(ip.To16())
+	ipHex := hex.EncodeToString(ipInt.Bytes())
+	return ipHex
 }

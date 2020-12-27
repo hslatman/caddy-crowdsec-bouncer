@@ -86,15 +86,19 @@ func (c *CrowdSec) Validate() error {
 	return nil
 }
 
+// Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
 	c.bouncer.Run()
 	return nil
 }
 
+// Stop stops the CrowdSec Caddy app
 func (c *CrowdSec) Stop() error {
 	return c.bouncer.ShutDown()
 }
 
+// IsAllowed is used by the CrowdSec HTTP handler to check if
+// an IP is allowed to perform a request
 func (c *CrowdSec) IsAllowed(ip string) (bool, *models.Decision, error) {
 	// TODO: check if running? fully loaded, etc?
 	return c.bouncer.IsAllowed(ip)

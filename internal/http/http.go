@@ -91,24 +91,27 @@ func (ch *CrowdSecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 		fmt.Println(decision)
 		fmt.Println(*decision.Duration)
 		fmt.Println(*decision.Origin)
+		fmt.Println(*decision.Type)
+
+		// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
+		typ := *decision.Type
+		switch typ {
+		case "ban":
+			// TODO: just block the request; stop continuing the chain and serve some HTTP 401 or something
+		case "captcha":
+			// TODO: provide some method for captcha. How? hCaptcha?
+		case "throttle":
+			// TODO: throttle requests. Use an existing plugin?
+		default:
+			fmt.Println(fmt.Sprintf("ignoring type: %s", typ))
+		}
 	}
 
 	fmt.Println(isAllowed, decision)
 
-	// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
-	typ := *decision.Type
-	switch typ {
-	case "ban":
-		// TODO: just block the request; stop continuing the chain and serve some HTTP 401 or something
-	case "captcha":
-		// TODO: provide some method for captcha. How? hCaptcha?
-	case "throttle":
-		// TODO: throttle requests. Use an existing plugin?
-	default:
-		fmt.Println(fmt.Sprintf("ignoring type: %s", typ))
-	}
+	// TODO: if the IP is allowed, should we (temporarily) put it in an explicit allowlist for quicker check?
 
-	// Continue down the handler stack, recording the response, so that we can work with it afterwards
+	// Continue down the handler stack
 	err = next.ServeHTTP(w, r)
 	if err != nil {
 		return err
@@ -118,7 +121,7 @@ func (ch *CrowdSecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, nex
 }
 
 // findIPFromRequest return client's real public IP address from http request headers.
-// Logic taken from https://github.com/tomasen/realip/blob/master/realip.go
+// Logic largely taken from https://github.com/tomasen/realip/blob/master/realip.go
 func findIPFromRequest(r *http.Request) (string, error) {
 
 	// TODO: should we also check X-Real-IP? If so, add it again.
