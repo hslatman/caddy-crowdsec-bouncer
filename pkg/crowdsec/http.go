@@ -120,30 +120,42 @@ func (ch *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 
 // findIPFromRequest return client's real public IP address from http request headers.
 // Logic largely taken from https://github.com/tomasen/realip/blob/master/realip.go
-func findIPFromRequest(r *http.Request) (string, error) {
+func findIPFromRequest(r *http.Request) (net.IP, error) {
 
 	// TODO: should we also check X-Real-IP? If so, add it again.
 	// TODO: add configuration for custom headers?
 
 	xForwardedFor := r.Header.Get("X-Forwarded-For")
 
-	// If both empty, return IP from remote address
+	// If empty, return IP from remote address
 	if xForwardedFor == "" {
 		var remoteIP string
+		var err error
 		// If there are colon in remote address, remove the port number
 		// otherwise, return remote address as is
 		if strings.ContainsRune(r.RemoteAddr, ':') {
-			remoteIP, _, _ = net.SplitHostPort(r.RemoteAddr)
+			remoteIP, _, err = net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				return nil, err
+			}
 		} else {
 			remoteIP = r.RemoteAddr
 		}
 
-		return remoteIP, nil
+		nip := net.ParseIP(remoteIP)
+		if nip == nil {
+			return nil, fmt.Errorf("could not parse %s into ip", remoteIP)
+		}
+
+		return nip, nil
 	}
 
 	// Check list of IP in X-Forwarded-For and return the first global address
 	for _, address := range strings.Split(xForwardedFor, ",") {
 		address = strings.TrimSpace(address)
+
+		// TODO: do additional checks here for right IP to use
+
 		// isPrivate, err := isPrivateAddress(address)
 		// if !isPrivate && err == nil {
 		// 	return address
@@ -151,10 +163,16 @@ func findIPFromRequest(r *http.Request) (string, error) {
 		// if err == nil {
 		// 	return address
 		// }
-		return address, nil
+
+		nip := net.ParseIP(address)
+		if nip == nil {
+			return nil, fmt.Errorf("could not parse %s into ip", address)
+		}
+
+		return nip, nil
 	}
 
-	return "", fmt.Errorf("no ip found")
+	return nil, fmt.Errorf("no ip found")
 }
 
 // Interface guards

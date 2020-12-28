@@ -15,6 +15,8 @@
 package crowdsec
 
 import (
+	"net"
+
 	"github.com/caddyserver/caddy/v2"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
@@ -96,7 +98,7 @@ func (c *CrowdSec) Stop() error {
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request
-func (c *CrowdSec) IsAllowed(ip string) (bool, *models.Decision, error) {
+func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 	// TODO: check if running? fully loaded, etc?
 	return c.bouncer.IsAllowed(ip)
 }

@@ -46,17 +46,6 @@ github.com/alecthomas/chroma/lexers/z
 github.com/alecthomas/chroma/styles
 # github.com/antlr/antlr4 v0.0.0-20200503195918-621b933c7a7f
 github.com/antlr/antlr4/runtime/Go/antlr
-# github.com/antonmedv/expr v1.8.9
-github.com/antonmedv/expr
-github.com/antonmedv/expr/ast
-github.com/antonmedv/expr/checker
-github.com/antonmedv/expr/compiler
-github.com/antonmedv/expr/conf
-github.com/antonmedv/expr/file
-github.com/antonmedv/expr/optimizer
-github.com/antonmedv/expr/parser
-github.com/antonmedv/expr/parser/lexer
-github.com/antonmedv/expr/vm
 # github.com/asaskevich/govalidator v0.0.0-20200907205600-7a23bdc65eef
 github.com/asaskevich/govalidator
 # github.com/beorn7/perks v1.0.1
@@ -112,29 +101,12 @@ github.com/cpuguy83/go-md2man/v2/md2man
 # github.com/crowdsecurity/crowdsec v1.0.2
 ## explicit
 github.com/crowdsecurity/crowdsec/pkg/apiclient
-github.com/crowdsecurity/crowdsec/pkg/csconfig
-github.com/crowdsecurity/crowdsec/pkg/cwversion
-github.com/crowdsecurity/crowdsec/pkg/database
-github.com/crowdsecurity/crowdsec/pkg/database/ent
-github.com/crowdsecurity/crowdsec/pkg/database/ent/alert
-github.com/crowdsecurity/crowdsec/pkg/database/ent/bouncer
-github.com/crowdsecurity/crowdsec/pkg/database/ent/decision
-github.com/crowdsecurity/crowdsec/pkg/database/ent/event
-github.com/crowdsecurity/crowdsec/pkg/database/ent/machine
-github.com/crowdsecurity/crowdsec/pkg/database/ent/meta
-github.com/crowdsecurity/crowdsec/pkg/database/ent/migrate
-github.com/crowdsecurity/crowdsec/pkg/database/ent/predicate
-github.com/crowdsecurity/crowdsec/pkg/database/ent/schema
-github.com/crowdsecurity/crowdsec/pkg/exprhelpers
 github.com/crowdsecurity/crowdsec/pkg/models
-github.com/crowdsecurity/crowdsec/pkg/types
 # github.com/crowdsecurity/go-cs-bouncer v0.0.0-20201130114000-e5b8016e5bf3
 ## explicit
 github.com/crowdsecurity/go-cs-bouncer
 # github.com/danwakefield/fnmatch v0.0.0-20160403171240-cbb64ac3d964
 github.com/danwakefield/fnmatch
-# github.com/davecgh/go-spew v1.1.1
-github.com/davecgh/go-spew/spew
 # github.com/dgraph-io/badger v1.5.3
 github.com/dgraph-io/badger
 github.com/dgraph-io/badger/options
@@ -160,21 +132,8 @@ github.com/dlclark/regexp2
 github.com/dlclark/regexp2/syntax
 # github.com/dustin/go-humanize v1.0.1-0.20200219035652-afde56e7acac
 github.com/dustin/go-humanize
-# github.com/facebook/ent v0.5.0
-github.com/facebook/ent
-github.com/facebook/ent/dialect
-github.com/facebook/ent/dialect/sql
-github.com/facebook/ent/dialect/sql/schema
-github.com/facebook/ent/dialect/sql/sqlgraph
-github.com/facebook/ent/entql
-github.com/facebook/ent/schema
-github.com/facebook/ent/schema/edge
-github.com/facebook/ent/schema/field
-github.com/facebook/ent/schema/index
 # github.com/go-chi/chi v4.1.2+incompatible
 github.com/go-chi/chi
-# github.com/go-co-op/gocron v0.3.3
-github.com/go-co-op/gocron
 # github.com/go-openapi/analysis v0.19.12
 github.com/go-openapi/analysis
 github.com/go-openapi/analysis/internal
@@ -236,11 +195,9 @@ github.com/google/cel-go/parser/gen
 github.com/google/go-querystring/query
 # github.com/google/uuid v1.1.2
 github.com/google/uuid
-# github.com/hashicorp/go-immutable-radix v1.0.0
+# github.com/hashicorp/go-immutable-radix v1.3.0
 ## explicit
 github.com/hashicorp/go-immutable-radix
-# github.com/hashicorp/go-version v1.2.1
-github.com/hashicorp/go-version
 # github.com/hashicorp/golang-lru v0.5.1
 github.com/hashicorp/golang-lru/simplelru
 # github.com/huandu/xstrings v1.3.1
@@ -264,14 +221,8 @@ github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/klauspost/cpuid v1.2.5
 github.com/klauspost/cpuid
-# github.com/lib/pq v1.8.0
-github.com/lib/pq
-github.com/lib/pq/oid
-github.com/lib/pq/scram
 # github.com/libdns/libdns v0.1.0
 github.com/libdns/libdns
-# github.com/logrusorgru/grokky v0.0.0-20180829062225-47edf017d42c
-github.com/logrusorgru/grokky
 # github.com/lucas-clemente/quic-go v0.18.0
 github.com/lucas-clemente/quic-go
 github.com/lucas-clemente/quic-go/http3
@@ -308,8 +259,6 @@ github.com/marten-seemann/qtls-go1-15
 github.com/mattn/go-colorable
 # github.com/mattn/go-isatty v0.0.12
 github.com/mattn/go-isatty
-# github.com/mattn/go-sqlite3 v2.0.3+incompatible
-github.com/mattn/go-sqlite3
 # github.com/matttproud/golang_protobuf_extensions v1.0.1
 github.com/matttproud/golang_protobuf_extensions/pbutil
 # github.com/mholt/acmez v0.1.1

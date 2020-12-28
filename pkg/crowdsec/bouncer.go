@@ -48,7 +48,7 @@ func NewBouncer(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bou
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
 	streamingBouncer *csbouncer.StreamBouncer
-	store            *iradix.Tree
+	store            *iradix.Tree // TODO: I think we need separate stores for IPv4 and IPv6 to work correct
 	logger           *zap.Logger
 }
 
@@ -70,7 +70,7 @@ func (b *Bouncer) Run() {
 			// 	c.logger.Info("terminating bouncer process")
 			// 	return nil
 			case decisions := <-b.streamingBouncer.Stream:
-				b.logger.Debug(fmt.Sprintf("deleting '%d' decisions", len(decisions.Deleted)))
+				b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				for _, decision := range decisions.Deleted {
 					if err := b.Delete(decision); err != nil {
@@ -79,7 +79,7 @@ func (b *Bouncer) Run() {
 						b.logger.Debug(fmt.Sprintf("deleted '%s'", *decision.Value))
 					}
 				}
-				b.logger.Debug(fmt.Sprintf("adding '%d' decisions", len(decisions.New)))
+				b.logger.Debug(fmt.Sprintf("processing %d added decisions", len(decisions.New)))
 				for _, decision := range decisions.New {
 					if err := b.Add(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
@@ -118,7 +118,10 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 	//fmt.Println(fmt.Sprintf("%#+v", *decision.Simulated)); whether nor not simulated attack?
 	//fmt.Println(fmt.Sprintf("%#+v", *decision.Scope)); ip, range, username;
 
-	// TODO: provide additional ways for storing the decisions (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
+	// TODO: provide additional ways for storing the decisions
+	// (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
+	// Knowing that a key is a CIDR does allow to check an IP with the .Contains() function, but still
+	// requires looping through the ranges
 
 	lookupKey, err := calculateLookupKeyFrom(decision)
 	if err != nil {
@@ -153,16 +156,11 @@ func (b *Bouncer) Delete(decision *models.Decision) error {
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Bouncer) IsAllowed(ip string) (bool, *models.Decision, error) {
+func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 
-	nip := net.ParseIP(ip)
-	if nip == nil {
-		return false, nil, fmt.Errorf("could not parse %s into net.IP", ip)
-	}
-
-	lookupKey := calculateLookupKey(nip, 32)
+	lookupKey := calculateLookupKey(ip, 32)
 	m, value, found := b.store.Root().LongestPrefix(lookupKey)
 
 	fmt.Println(m, value, found)
@@ -203,6 +201,7 @@ func calculateLookupKeyFrom(decision *models.Decision) (lookupKey, error) {
 	case "Range":
 		ip, ipNet, err := net.ParseCIDR(*decision.Value)
 		if err == nil && ipNet != nil && ip != nil {
+			ipNet.Contains(ip)
 			ones, bits := ipNet.Mask.Size()
 			fmt.Println(ones, bits) // TODO: bits can be used for IPv6 vs IPv4?
 			ipOrPrefix = calculateLookupKey(ip, ones)
