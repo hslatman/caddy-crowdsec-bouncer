@@ -22,7 +22,6 @@ import (
 
 func init() {
 	caddy.RegisterModule(CrowdSec{})
-	//httpcaddyfile.RegisterHandlerDirective("crowdsec_handler", parseCaddyfile)
 }
 
 // CaddyModule returns the Caddy module information.

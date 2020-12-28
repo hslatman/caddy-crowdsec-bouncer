@@ -26,26 +26,26 @@ import (
 )
 
 func init() {
-	caddy.RegisterModule(CrowdSecHandler{})
-	//httpcaddyfile.RegisterHandlerDirective("crowdsec_handler", parseCaddyfile)
+	caddy.RegisterModule(Handler{})
+	//httpcaddyfile.RegisterHandlerDirective("crowdsec", parseCaddyfile)
 }
 
-// CrowdSecHandler is a Caddy HTTP handler that integrates with the CrowdSec Caddy app
-type CrowdSecHandler struct {
+// Handler is a Caddy HTTP handler that integrates with the CrowdSec Caddy app
+type Handler struct {
 	logger   *zap.Logger
 	crowdsec *CrowdSec
 }
 
 // CaddyModule returns the Caddy module information.
-func (CrowdSecHandler) CaddyModule() caddy.ModuleInfo {
+func (Handler) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.crowdsec",
-		New: func() caddy.Module { return new(CrowdSecHandler) },
+		New: func() caddy.Module { return new(Handler) },
 	}
 }
 
 // Provision sets up the OpenAPI Validator responder.
-func (ch *CrowdSecHandler) Provision(ctx caddy.Context) error {
+func (ch *Handler) Provision(ctx caddy.Context) error {
 
 	// store some references
 	crowdsecAppIface, err := ctx.App("crowdsec")
@@ -63,12 +63,12 @@ func (ch *CrowdSecHandler) Provision(ctx caddy.Context) error {
 }
 
 // Validate ensures the app's configuration is valid.
-func (ch *CrowdSecHandler) Validate() error {
+func (ch *Handler) Validate() error {
 	return nil
 }
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
-func (ch *CrowdSecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+func (ch *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
 	// TODO: check incoming IP is allowed by making the ch.crowdsec app validate it
 
@@ -159,7 +159,7 @@ func findIPFromRequest(r *http.Request) (string, error) {
 
 // Interface guards
 var (
-	_ caddy.Module      = (*CrowdSecHandler)(nil)
-	_ caddy.Provisioner = (*CrowdSecHandler)(nil)
-	_ caddy.Validator   = (*CrowdSecHandler)(nil)
+	_ caddy.Module      = (*Handler)(nil)
+	_ caddy.Provisioner = (*Handler)(nil)
+	_ caddy.Validator   = (*Handler)(nil)
 )

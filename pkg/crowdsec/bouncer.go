@@ -31,7 +31,7 @@ import (
 
 type lookupKey []byte
 
-// New creates a new (streaming) Bouncer
+// NewBouncer creates a new (streaming) Bouncer with a storage based on immutable radix tree
 func NewBouncer(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
