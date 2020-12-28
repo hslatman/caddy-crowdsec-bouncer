@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package bouncer
+package crowdsec
 
 import (
 	"encoding/hex"
@@ -29,8 +29,10 @@ import (
 	"go.uber.org/zap"
 )
 
+type lookupKey []byte
+
 // New creates a new (streaming) Bouncer
-func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+func NewBouncer(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
 			APIKey:         apiKey,
@@ -116,14 +118,16 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 	//fmt.Println(fmt.Sprintf("%#+v", *decision.Simulated)); whether nor not simulated attack?
 	//fmt.Println(fmt.Sprintf("%#+v", *decision.Scope)); ip, range, username;
 
-	ipOrCIDR, err := findIPOrCIDR(decision)
+	// TODO: provide additional ways for storing the decisions (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
+
+	lookupKey, err := calculateLookupKeyFrom(decision)
 	if err != nil {
 		return err
 	}
 
-	// TODO: store lookup as number instead?
+	// TODO: store lookup as number instead? Will that work with longest prefix lookup?
 	// TODO: store additional data about the decision (i.e. time added to store, etc)
-	newRoot, _, _ := b.store.Insert([]byte(ipOrCIDR), decision)
+	newRoot, _, _ := b.store.Insert(lookupKey, decision)
 
 	b.store = newRoot
 
@@ -135,12 +139,13 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 // Delete removes a Decision from the storage
 func (b *Bouncer) Delete(decision *models.Decision) error {
 
-	ipOrCIDR, err := findIPOrCIDR(decision)
+	lookupKey, err := calculateLookupKeyFrom(decision)
 	if err != nil {
 		return err
 	}
 
-	newRoot, _, _ := b.store.Delete([]byte(ipOrCIDR))
+	// TODO: delete prefix instead for safety?
+	newRoot, _, _ := b.store.Delete(lookupKey)
 
 	b.store = newRoot
 
@@ -157,8 +162,8 @@ func (b *Bouncer) IsAllowed(ip string) (bool, *models.Decision, error) {
 		return false, nil, fmt.Errorf("could not parse %s into net.IP", ip)
 	}
 
-	ipOrPrefix := calculateLookupKey(nip, 32)
-	m, value, found := b.store.Root().LongestPrefix([]byte(ipOrPrefix))
+	lookupKey := calculateLookupKey(nip, 32)
+	m, value, found := b.store.Root().LongestPrefix(lookupKey)
 
 	fmt.Println(m, value, found)
 
@@ -182,10 +187,9 @@ func serializeDecision(decision *models.Decision) (string, error) {
 	return string(serbyte), nil
 }
 
-func findIPOrCIDR(decision *models.Decision) (string, error) {
+func calculateLookupKeyFrom(decision *models.Decision) (lookupKey, error) {
 
-	//var ipOrCIDR string
-	var ipOrPrefix string
+	var ipOrPrefix lookupKey
 	scope := *decision.Scope
 
 	// TODO: handle IPv6 in addition to IPv4
@@ -207,14 +211,14 @@ func findIPOrCIDR(decision *models.Decision) (string, error) {
 		fmt.Println(fmt.Sprintf("got unhandled scope: %s", scope))
 	}
 
-	if ipOrPrefix == "" {
-		return "", errors.New("no IP or CIDR found to determine IP (prefix)")
+	if ipOrPrefix == nil {
+		return nil, errors.New("no IP or CIDR found to determine IP (prefix)")
 	}
 
-	return ipOrPrefix, nil
+	return []byte(ipOrPrefix), nil
 }
 
-func calculateLookupKey(ip net.IP, maskSize int) string {
+func calculateLookupKey(ip net.IP, maskSize int) lookupKey {
 
 	ia := Inet_Aton(ip) // TODO: IPv6 support.
 
@@ -223,7 +227,7 @@ func calculateLookupKey(ip net.IP, maskSize int) string {
 
 	fmt.Println(ipOrPrefix)
 
-	return ipOrPrefix
+	return []byte(ipOrPrefix)
 }
 
 // Inet_Aton converts an IPv4 net.IP object to a 64 bit integer.

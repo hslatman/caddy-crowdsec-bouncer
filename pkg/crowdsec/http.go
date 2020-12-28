@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package http
+package crowdsec
 
 import (
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
-
-	"github.com/hslatman/caddy-cs-bouncer/internal/app"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -35,7 +33,7 @@ func init() {
 // CrowdSecHandler is a Caddy HTTP handler that integrates with the CrowdSec Caddy app
 type CrowdSecHandler struct {
 	logger   *zap.Logger
-	crowdsec *app.CrowdSec
+	crowdsec *CrowdSec
 }
 
 // CaddyModule returns the Caddy module information.
@@ -54,7 +52,7 @@ func (ch *CrowdSecHandler) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
-	ch.crowdsec = crowdsecAppIface.(*app.CrowdSec)
+	ch.crowdsec = crowdsecAppIface.(*CrowdSec)
 
 	fmt.Println(ch.crowdsec)
 

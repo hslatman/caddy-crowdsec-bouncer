@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package app
+package crowdsec
 
 import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
-
-	bnc "github.com/hslatman/caddy-cs-bouncer/internal/bouncer"
 )
 
 func init() {
@@ -43,7 +41,7 @@ type CrowdSec struct {
 
 	ctx     caddy.Context
 	logger  *zap.Logger
-	bouncer *bnc.Bouncer
+	bouncer *Bouncer
 }
 
 // Provision sets up the OpenAPI Validator responder.
@@ -55,7 +53,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync()
 
-	bouncer, err := bnc.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
+	bouncer, err := NewBouncer(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
 	}

@@ -20,8 +20,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 	_ "github.com/caddyserver/format-encoder"
 
-	_ "github.com/hslatman/caddy-cs-bouncer/internal/app"
-	_ "github.com/hslatman/caddy-cs-bouncer/internal/http"
+	_ "github.com/hslatman/caddy-cs-bouncer/pkg/crowdsec"
 )
 
 func main() {
