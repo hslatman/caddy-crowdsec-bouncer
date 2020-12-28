@@ -15,7 +15,6 @@
 package crowdsec
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +25,9 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 	iradix "github.com/hashicorp/go-immutable-radix"
+
+	"modernc.org/mathutil"
+
 	"go.uber.org/zap"
 )
 
@@ -111,7 +113,7 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 	// Knowing that a key is a CIDR does allow to check an IP with the .Contains() function, but still
 	// requires looping through the ranges
 
-	lookupKey, err := calculateLookupKeyFromDecision(decision)
+	lookupKey, _, err := calculateLookupKeyForDecision(decision)
 	if err != nil {
 		return err
 	}
@@ -128,7 +130,7 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 // Delete removes a Decision from the storage
 func (b *Bouncer) Delete(decision *models.Decision) error {
 
-	lookupKey, err := calculateLookupKeyFromDecision(decision)
+	lookupKey, _, err := calculateLookupKeyForDecision(decision)
 	if err != nil {
 		return err
 	}
@@ -146,8 +148,7 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 
-	maskSize := 32
-	lookupKey := calculateLookupKeyFromIP(ip, maskSize)
+	lookupKey, _ := calculateLookupKeyForIP(ip)
 	_, value, found := b.store.Root().LongestPrefix(lookupKey)
 
 	if found {
@@ -170,72 +171,91 @@ func serializeDecision(decision *models.Decision) (string, error) {
 	return string(serbyte), nil
 }
 
-func calculateLookupKeyFromDecision(decision *models.Decision) (lookupKey, error) {
+func calculateLookupKeyForDecision(decision *models.Decision) (lookupKey, bool, error) {
 
 	var ipOrPrefix lookupKey
+	var returnIsIPv4 bool
 	scope := *decision.Scope
-
-	// TODO: handle IPv6 in addition to IPv4
 
 	switch scope {
 	case "Ip":
 		ip := net.ParseIP(*decision.Value)
 		if ip != nil {
-			ipOrPrefix = calculateLookupKeyFromIP(ip, 32) // TODO: IPv6 support.
+			ipOrPrefix, returnIsIPv4 = calculateLookupKeyForIP(ip)
 		}
 	case "Range":
 		ip, ipNet, err := net.ParseCIDR(*decision.Value)
 		if err == nil && ipNet != nil && ip != nil {
-			ipNet.Contains(ip)
-			ones, bits := ipNet.Mask.Size()
-			fmt.Println(ones, bits) // TODO: bits can be used for IPv6 vs IPv4?
-			ipOrPrefix = calculateLookupKeyFromIP(ip, ones)
+			ones, _ := ipNet.Mask.Size() // Also returns the number of bits (i.e. 32 vs. 128)
+			ipOrPrefix, returnIsIPv4 = calculateLookupKeyForIPWithMask(ip, ones)
 		}
 	default:
-		return nil, fmt.Errorf("got unhandled scope: %s", scope)
+		return nil, false, fmt.Errorf("got unhandled scope: %s", scope)
 	}
 
 	if ipOrPrefix == nil {
-		return nil, errors.New("no IP or CIDR found to determine IP (prefix)")
+		return nil, false, errors.New("no IP or CIDR found to determine IP (prefix)")
 	}
 
-	return lookupKey(ipOrPrefix), nil
+	return lookupKey(ipOrPrefix), returnIsIPv4, nil
 }
 
-func calculateLookupKeyFromIP(ip net.IP, maskSize int) lookupKey {
+func calculateLookupKeyForIP(ip net.IP) (lookupKey, bool) {
 
-	ia := Inet_Aton(ip) // TODO: IPv6 support.
-
-	ipOrPrefix := fmt.Sprintf("%032s", strconv.FormatInt(ia, 2))
-	ipOrPrefix = ipOrPrefix[0:maskSize]
-
-	return lookupKey(ipOrPrefix)
-}
-
-// Inet_Aton converts an IPv4 net.IP object to a 64 bit integer.
-func Inet_Aton(ip net.IP) int64 {
-	ipv4Int := big.NewInt(0)
-	ipv4Int.SetBytes(ip.To4())
-	return ipv4Int.Int64()
-}
-
-// Inet6_Aton converts an IP Address (IPv4 or IPv6) net.IP object to a hexadecimal
-// representaiton. This function is the equivalent of
-// inet6_aton({{ ip address }}) in MySQL.
-func Inet6_Aton(ip net.IP) string {
-	ipv4 := false
-	if ip.To4() != nil {
-		ipv4 = true
+	isIPv4 := isAnIPv4(ip)
+	maskSize := 128
+	if isIPv4 {
+		maskSize = 32
 	}
 
-	ipInt := big.NewInt(0)
-	if ipv4 {
+	return calculateLookupKeyForIPWithMask(ip, maskSize)
+}
+
+func calculateLookupKeyForIPWithMask(ip net.IP, maskSize int) (lookupKey, bool) {
+
+	var ipOrPrefix string
+
+	ipInt, isIPv4 := inetAton(ip)
+	if isIPv4 {
+		ipOrPrefix = fmt.Sprintf("%032s", strconv.FormatInt(ipInt.Lo, 2))
+		ipOrPrefix = ipOrPrefix[0:maskSize]
+	} else {
+		ipOrPrefix = fmt.Sprintf("%064s%064s", strconv.FormatInt(ipInt.Hi, 2), strconv.FormatInt(ipInt.Lo, 2))
+		ipOrPrefix = ipOrPrefix[0:maskSize]
+	}
+
+	return lookupKey(ipOrPrefix), isIPv4
+}
+
+func parseIP(ipString string) (ip net.IP, isIPv4 bool) {
+	ip = net.ParseIP(ipString)
+	isIPv4 = isAnIPv4(ip)
+	return
+}
+
+func isAnIPv4(ip net.IP) bool {
+	return ip.To4() != nil
+}
+
+func inetAton(ip net.IP) (mathutil.Int128, bool) {
+
+	int128 := mathutil.Int128{}
+	isIPv4 := isAnIPv4(ip)
+
+	if isIPv4 {
+		ipInt := big.NewInt(0)
 		ipInt.SetBytes(ip.To4())
-		ipHex := hex.EncodeToString(ipInt.Bytes())
-		return ipHex
+		int128.SetInt64(ipInt.Int64())
+		return int128, isIPv4
 	}
 
-	ipInt.SetBytes(ip.To16())
-	ipHex := hex.EncodeToString(ipInt.Bytes())
-	return ipHex
+	bytes := ip.To16()
+	low := big.NewInt(0)
+	low.SetBytes(bytes[8:])
+	int128.Lo = low.Int64()
+	high := big.NewInt(0)
+	high.SetBytes(bytes[:8])
+	int128.Hi = high.Int64()
+
+	return int128, isIPv4
 }
