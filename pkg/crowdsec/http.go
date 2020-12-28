@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -45,67 +46,60 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 }
 
 // Provision sets up the OpenAPI Validator responder.
-func (ch *Handler) Provision(ctx caddy.Context) error {
+func (h *Handler) Provision(ctx caddy.Context) error {
 
-	// store some references
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
-	ch.crowdsec = crowdsecAppIface.(*CrowdSec)
+	h.crowdsec = crowdsecAppIface.(*CrowdSec)
 
-	fmt.Println(ch.crowdsec)
+	fmt.Println(h.crowdsec)
 
-	ch.logger = ctx.Logger(ch)
-	defer ch.logger.Sync()
+	h.logger = ctx.Logger(h)
+	defer h.logger.Sync()
 
 	return nil
 }
 
 // Validate ensures the app's configuration is valid.
-func (ch *Handler) Validate() error {
+func (h *Handler) Validate() error {
 	return nil
 }
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
-func (ch *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-
-	// TODO: check incoming IP is allowed by making the ch.crowdsec app validate it
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
 	ipToCheck, err := findIPFromRequest(r)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
 	}
 
-	fmt.Println(ipToCheck)
-
-	isAllowed, decision, err := ch.crowdsec.IsAllowed(ipToCheck)
+	isAllowed, decision, err := h.crowdsec.IsAllowed(ipToCheck)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
 	}
 
 	if !isAllowed {
-		// TODO: what shoud we do with non allowed requests?
-		fmt.Println(decision)
-		fmt.Println(*decision.Duration)
-		fmt.Println(*decision.Origin)
-		fmt.Println(*decision.Type)
-
 		// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
+		// TODO: can we provide the reason for the response to the Caddy logger, like the CrowdSec type, duration, etc.
 		typ := *decision.Type
 		switch typ {
 		case "ban":
-			// TODO: just block the request; stop continuing the chain and serve some HTTP 401 or something
+			h.logger.Debug("serving ban response")
+			return writeBanResponse(w)
 		case "captcha":
-			// TODO: provide some method for captcha. How? hCaptcha?
+			h.logger.Debug("serving captcha (ban) response")
+			return writeCaptchaResponse(w)
 		case "throttle":
-			// TODO: throttle requests. Use an existing plugin?
+			h.logger.Debug("serving throttle response")
+			return writeThrottleResponse(w, *decision.Duration)
 		default:
-			fmt.Println(fmt.Sprintf("ignoring type: %s", typ))
+			h.logger.Warn(fmt.Sprintf("got crowdsec decision type: %s", typ))
+			h.logger.Debug("serving ban response")
+			return writeBanResponse(w)
 		}
 	}
-
-	fmt.Println(isAllowed, decision)
 
 	// TODO: if the IP is allowed, should we (temporarily) put it in an explicit allowlist for quicker check?
 
@@ -114,6 +108,31 @@ func (ch *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func writeBanResponse(w http.ResponseWriter) error {
+	w.WriteHeader(http.StatusForbidden)
+	return nil
+}
+
+func writeCaptchaResponse(w http.ResponseWriter) error {
+	// TODO: implement showing a captcha in some way. How? hCaptcha? And how to handle afterwards?
+	return writeBanResponse(w)
+}
+
+func writeThrottleResponse(w http.ResponseWriter, duration string) error {
+
+	d, err := time.ParseDuration(duration)
+	if err != nil {
+		return err
+	}
+
+	// TODO: round this to the nearest multiple of the ticker interval? and/or include the time the decision was processed from stream vs. request time?
+	retryAfter := fmt.Sprintf("%.0f", d.Seconds())
+	w.Header().Add("Retry-After", retryAfter)
+	w.WriteHeader(http.StatusTooManyRequests)
 
 	return nil
 }
@@ -131,8 +150,6 @@ func findIPFromRequest(r *http.Request) (net.IP, error) {
 	if xForwardedFor == "" {
 		var remoteIP string
 		var err error
-		// If there are colon in remote address, remove the port number
-		// otherwise, return remote address as is
 		if strings.ContainsRune(r.RemoteAddr, ':') {
 			remoteIP, _, err = net.SplitHostPort(r.RemoteAddr)
 			if err != nil {

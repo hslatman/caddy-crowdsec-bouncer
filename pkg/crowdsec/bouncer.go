@@ -66,6 +66,7 @@ func (b *Bouncer) Run() {
 		b.logger.Info("start processing new and deleted decisions ...")
 		for {
 			select {
+			// TODO: handle the process quitting
 			// case <-t.Dying():
 			// 	c.logger.Info("terminating bouncer process")
 			// 	return nil
@@ -105,25 +106,12 @@ func (b *Bouncer) ShutDown() error {
 // Add adds a Decision to the storage
 func (b *Bouncer) Add(decision *models.Decision) error {
 
-	//fmt.Println(decision)
-	//fmt.Println(fmt.Sprintf("%+v", decision))
-	//fmt.Println(database.Int2ip(decision.StartIP))
-	//fmt.Println(decision.StartIP) // first ip in ip range
-	//fmt.Println(fmt.Sprintf("%#+v", *decision.Type)) // ban, captcha, throttle
-	//fmt.Println(fmt.Sprintf("%#+v", *decision.Value)) // the value of decision (i.e. IP, range, username)
-	//fmt.Println(decision.EndIP) // final IP in ip range
-	//fmt.Println(decision.ID) // internal ID
-	//fmt.Println(fmt.Sprintf("%#+v", *decision.Scenario)); what CS scenario this decision is related to?
-	//fmt.Println(fmt.Sprintf("%#+v", *decision.Origin)); cscli, for example; others?
-	//fmt.Println(fmt.Sprintf("%#+v", *decision.Simulated)); whether nor not simulated attack?
-	//fmt.Println(fmt.Sprintf("%#+v", *decision.Scope)); ip, range, username;
-
 	// TODO: provide additional ways for storing the decisions
 	// (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
 	// Knowing that a key is a CIDR does allow to check an IP with the .Contains() function, but still
 	// requires looping through the ranges
 
-	lookupKey, err := calculateLookupKeyFrom(decision)
+	lookupKey, err := calculateLookupKeyFromDecision(decision)
 	if err != nil {
 		return err
 	}
@@ -134,15 +122,13 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 
 	b.store = newRoot
 
-	// TODO: other cases to handle? The thing added by CS is then not valid, though ...
-
 	return nil
 }
 
 // Delete removes a Decision from the storage
 func (b *Bouncer) Delete(decision *models.Decision) error {
 
-	lookupKey, err := calculateLookupKeyFrom(decision)
+	lookupKey, err := calculateLookupKeyFromDecision(decision)
 	if err != nil {
 		return err
 	}
@@ -160,10 +146,9 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 
-	lookupKey := calculateLookupKey(ip, 32)
-	m, value, found := b.store.Root().LongestPrefix(lookupKey)
-
-	fmt.Println(m, value, found)
+	maskSize := 32
+	lookupKey := calculateLookupKeyFromIP(ip, maskSize)
+	_, value, found := b.store.Root().LongestPrefix(lookupKey)
 
 	if found {
 		v, ok := value.(*models.Decision)
@@ -185,7 +170,7 @@ func serializeDecision(decision *models.Decision) (string, error) {
 	return string(serbyte), nil
 }
 
-func calculateLookupKeyFrom(decision *models.Decision) (lookupKey, error) {
+func calculateLookupKeyFromDecision(decision *models.Decision) (lookupKey, error) {
 
 	var ipOrPrefix lookupKey
 	scope := *decision.Scope
@@ -196,7 +181,7 @@ func calculateLookupKeyFrom(decision *models.Decision) (lookupKey, error) {
 	case "Ip":
 		ip := net.ParseIP(*decision.Value)
 		if ip != nil {
-			ipOrPrefix = calculateLookupKey(ip, 32) // TODO: IPv6 support.
+			ipOrPrefix = calculateLookupKeyFromIP(ip, 32) // TODO: IPv6 support.
 		}
 	case "Range":
 		ip, ipNet, err := net.ParseCIDR(*decision.Value)
@@ -204,29 +189,27 @@ func calculateLookupKeyFrom(decision *models.Decision) (lookupKey, error) {
 			ipNet.Contains(ip)
 			ones, bits := ipNet.Mask.Size()
 			fmt.Println(ones, bits) // TODO: bits can be used for IPv6 vs IPv4?
-			ipOrPrefix = calculateLookupKey(ip, ones)
+			ipOrPrefix = calculateLookupKeyFromIP(ip, ones)
 		}
 	default:
-		fmt.Println(fmt.Sprintf("got unhandled scope: %s", scope))
+		return nil, fmt.Errorf("got unhandled scope: %s", scope)
 	}
 
 	if ipOrPrefix == nil {
 		return nil, errors.New("no IP or CIDR found to determine IP (prefix)")
 	}
 
-	return []byte(ipOrPrefix), nil
+	return lookupKey(ipOrPrefix), nil
 }
 
-func calculateLookupKey(ip net.IP, maskSize int) lookupKey {
+func calculateLookupKeyFromIP(ip net.IP, maskSize int) lookupKey {
 
 	ia := Inet_Aton(ip) // TODO: IPv6 support.
 
 	ipOrPrefix := fmt.Sprintf("%032s", strconv.FormatInt(ia, 2))
 	ipOrPrefix = ipOrPrefix[0:maskSize]
 
-	fmt.Println(ipOrPrefix)
-
-	return []byte(ipOrPrefix)
+	return lookupKey(ipOrPrefix)
 }
 
 // Inet_Aton converts an IPv4 net.IP object to a 64 bit integer.
