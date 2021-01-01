@@ -70,7 +70,7 @@ func (h *Handler) Validate() error {
 // ServeHTTP is the Caddy handler for serving HTTP requests
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
-	ipToCheck, err := findIPFromRequest(r)
+	ipToCheck, err := determineIPFromRequest(r)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
 	}
@@ -112,16 +112,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	return nil
 }
 
+// writeBanResponse writes a 403 status as response
 func writeBanResponse(w http.ResponseWriter) error {
 	w.WriteHeader(http.StatusForbidden)
 	return nil
 }
 
+// writeCaptchaResponse (currently) writes a 403 status as response
 func writeCaptchaResponse(w http.ResponseWriter) error {
 	// TODO: implement showing a captcha in some way. How? hCaptcha? And how to handle afterwards?
 	return writeBanResponse(w)
 }
 
+// writeThrottleResponse writes 429 status as response
 func writeThrottleResponse(w http.ResponseWriter, duration string) error {
 
 	d, err := time.ParseDuration(duration)
@@ -137,59 +140,34 @@ func writeThrottleResponse(w http.ResponseWriter, duration string) error {
 	return nil
 }
 
-// findIPFromRequest return client's real public IP address from http request headers.
-// Logic largely taken from https://github.com/tomasen/realip/blob/master/realip.go
-func findIPFromRequest(r *http.Request) (net.IP, error) {
+// determineIPFromRequest returns the IP of the client based on its RemoteAddr
+// property. In case a proxy, a CDN or some other (usually trusted) server sits
+// between the client and Caddy, the real IP of the client is different from
+// the one recorded here. To get the actual IP of the client, we propose to
+// use the https://github.com/kirsch33/realip Caddy module, which can be
+// configured to replace the RemoteAddr of the incoming request with a value
+// from a header (i.e. the X-Forwarded-For header), resulting in the actual
+// client IP being set in the RemoteAddr property. The `realip` handler should
+// be configured before this `crowdsec` handler to work as expected.
+func determineIPFromRequest(r *http.Request) (net.IP, error) {
 
-	// TODO: should we also check X-Real-IP? If so, add it again.
-	// TODO: add configuration for custom headers?
-
-	xForwardedFor := r.Header.Get("X-Forwarded-For")
-
-	// If empty, return IP from remote address
-	if xForwardedFor == "" {
-		var remoteIP string
-		var err error
-		if strings.ContainsRune(r.RemoteAddr, ':') {
-			remoteIP, _, err = net.SplitHostPort(r.RemoteAddr)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			remoteIP = r.RemoteAddr
+	var remoteIP string
+	var err error
+	if strings.ContainsRune(r.RemoteAddr, ':') {
+		remoteIP, _, err = net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			return nil, err
 		}
-
-		nip := net.ParseIP(remoteIP)
-		if nip == nil {
-			return nil, fmt.Errorf("could not parse %s into ip", remoteIP)
-		}
-
-		return nip, nil
+	} else {
+		remoteIP = r.RemoteAddr
 	}
 
-	// Check list of IP in X-Forwarded-For and return the first global address
-	for _, address := range strings.Split(xForwardedFor, ",") {
-		address = strings.TrimSpace(address)
-
-		// TODO: do additional checks here for right IP to use
-
-		// isPrivate, err := isPrivateAddress(address)
-		// if !isPrivate && err == nil {
-		// 	return address
-		// }
-		// if err == nil {
-		// 	return address
-		// }
-
-		nip := net.ParseIP(address)
-		if nip == nil {
-			return nil, fmt.Errorf("could not parse %s into ip", address)
-		}
-
-		return nip, nil
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return nil, fmt.Errorf("could not parse %s into net.IP", remoteIP)
 	}
 
-	return nil, fmt.Errorf("no ip found")
+	return ip, nil
 }
 
 // Interface guards
