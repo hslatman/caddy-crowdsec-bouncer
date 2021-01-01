@@ -123,7 +123,11 @@ func loadConfig(configFile, adapterName string) ([]byte, string, error) {
 	var cfgAdapter caddyconfig.Adapter
 	var err error
 	if configFile != "" {
-		config, err = ioutil.ReadFile(configFile)
+		if configFile == "-" {
+			config, err = ioutil.ReadAll(os.Stdin)
+		} else {
+			config, err = ioutil.ReadFile(configFile)
+		}
 		if err != nil {
 			return nil, "", fmt.Errorf("reading config file: %v", err)
 		}
@@ -236,6 +240,7 @@ func watchConfigFile(filename, adapterName string) {
 	}
 
 	// begin poller
+	//nolint:staticcheck
 	for range time.Tick(1 * time.Second) {
 		// get the file info
 		info, err := os.Stat(filename)

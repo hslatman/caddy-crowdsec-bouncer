@@ -12,7 +12,7 @@ github.com/Masterminds/sprig/v3
 github.com/PuerkitoBio/purell
 # github.com/PuerkitoBio/urlesc v0.0.0-20170810143723-de5bf2ad4578
 github.com/PuerkitoBio/urlesc
-# github.com/alecthomas/chroma v0.8.0
+# github.com/alecthomas/chroma v0.8.2
 github.com/alecthomas/chroma
 github.com/alecthomas/chroma/formatters/html
 github.com/alecthomas/chroma/lexers
@@ -52,7 +52,7 @@ github.com/asaskevich/govalidator
 github.com/beorn7/perks/quantile
 # github.com/buger/jsonparser v1.0.0
 github.com/buger/jsonparser
-# github.com/caddyserver/caddy/v2 v2.2.3
+# github.com/caddyserver/caddy/v2 v2.3.0-rc.1
 ## explicit
 github.com/caddyserver/caddy/v2
 github.com/caddyserver/caddy/v2/caddyconfig
@@ -83,7 +83,7 @@ github.com/caddyserver/caddy/v2/modules/filestorage
 github.com/caddyserver/caddy/v2/modules/logging
 github.com/caddyserver/caddy/v2/modules/metrics
 github.com/caddyserver/caddy/v2/modules/standard
-# github.com/caddyserver/certmagic v0.12.0
+# github.com/caddyserver/certmagic v0.12.1-0.20201209195841-b726d1ed13c3
 github.com/caddyserver/certmagic
 # github.com/caddyserver/format-encoder v0.0.0-20201124212233-c10acf81b981
 ## explicit
@@ -173,15 +173,15 @@ github.com/golang/protobuf/ptypes/timestamp
 github.com/golang/protobuf/ptypes/wrappers
 # github.com/golang/snappy v0.0.1
 github.com/golang/snappy
-# github.com/google/cel-go v0.5.1
+# github.com/google/cel-go v0.6.0
 github.com/google/cel-go/cel
 github.com/google/cel-go/checker
 github.com/google/cel-go/checker/decls
 github.com/google/cel-go/common
+github.com/google/cel-go/common/containers
 github.com/google/cel-go/common/debug
 github.com/google/cel-go/common/operators
 github.com/google/cel-go/common/overloads
-github.com/google/cel-go/common/packages
 github.com/google/cel-go/common/types
 github.com/google/cel-go/common/types/pb
 github.com/google/cel-go/common/types/ref
@@ -211,7 +211,7 @@ github.com/jsternberg/zap-logfmt
 # github.com/juju/ansiterm v0.0.0-20180109212912-720a0952cc2a
 github.com/juju/ansiterm
 github.com/juju/ansiterm/tabwriter
-# github.com/klauspost/compress v1.11.0
+# github.com/klauspost/compress v1.11.3
 github.com/klauspost/compress/flate
 github.com/klauspost/compress/fse
 github.com/klauspost/compress/gzip
@@ -221,9 +221,11 @@ github.com/klauspost/compress/zstd
 github.com/klauspost/compress/zstd/internal/xxhash
 # github.com/klauspost/cpuid v1.2.5
 github.com/klauspost/cpuid
+# github.com/klauspost/cpuid/v2 v2.0.1
+github.com/klauspost/cpuid/v2
 # github.com/libdns/libdns v0.1.0
 github.com/libdns/libdns
-# github.com/lucas-clemente/quic-go v0.18.0
+# github.com/lucas-clemente/quic-go v0.19.3
 github.com/lucas-clemente/quic-go
 github.com/lucas-clemente/quic-go/http3
 github.com/lucas-clemente/quic-go/internal/ackhandler
@@ -249,11 +251,11 @@ github.com/mailru/easyjson/jwriter
 github.com/manifoldco/promptui
 github.com/manifoldco/promptui/list
 github.com/manifoldco/promptui/screenbuf
-# github.com/marten-seemann/qpack v0.2.0
+# github.com/marten-seemann/qpack v0.2.1
 github.com/marten-seemann/qpack
 # github.com/marten-seemann/qtls v0.10.0
 github.com/marten-seemann/qtls
-# github.com/marten-seemann/qtls-go1-15 v0.1.0
+# github.com/marten-seemann/qtls-go1-15 v0.1.1
 github.com/marten-seemann/qtls-go1-15
 # github.com/mattn/go-colorable v0.1.6
 github.com/mattn/go-colorable
@@ -264,6 +266,17 @@ github.com/matttproud/golang_protobuf_extensions/pbutil
 # github.com/mholt/acmez v0.1.1
 github.com/mholt/acmez
 github.com/mholt/acmez/acme
+# github.com/mholt/caddy-l4 v0.0.0-20201230212151-6587f40d4eb6
+## explicit
+github.com/mholt/caddy-l4
+github.com/mholt/caddy-l4/layer4
+github.com/mholt/caddy-l4/modules/l4echo
+github.com/mholt/caddy-l4/modules/l4http
+github.com/mholt/caddy-l4/modules/l4proxy
+github.com/mholt/caddy-l4/modules/l4ssh
+github.com/mholt/caddy-l4/modules/l4tee
+github.com/mholt/caddy-l4/modules/l4throttle
+github.com/mholt/caddy-l4/modules/l4tls
 # github.com/miekg/dns v1.1.30
 github.com/miekg/dns
 # github.com/mitchellh/copystructure v1.0.0
@@ -437,6 +450,8 @@ golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
+# golang.org/x/time v0.0.0-20201208040808-7e3f01d25324
+golang.org/x/time/rate
 # google.golang.org/genproto v0.0.0-20200806141610-86f49bd18e98
 google.golang.org/genproto/googleapis/api/annotations
 google.golang.org/genproto/googleapis/api/expr/v1alpha1
@@ -524,7 +539,7 @@ gopkg.in/square/go-jose.v2/json
 gopkg.in/square/go-jose.v2/jwt
 # gopkg.in/yaml.v2 v2.3.0
 gopkg.in/yaml.v2
-# howett.net/plist v0.0.0-20181124034731-591f970eefbb
+# howett.net/plist v0.0.0-20200419221736-3b63eb3a43b5
 howett.net/plist
 # modernc.org/mathutil v1.2.1
 ## explicit

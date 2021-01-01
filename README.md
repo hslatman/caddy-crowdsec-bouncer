@@ -122,5 +122,5 @@ go run main.go run -config config.json
 * Add support for custom actions (defaults to blocking access now)
 * Improve logic for IPv4 vs. IPv6 handling (some custom wrapper, perhaps?)
 * Test (and improve?) handling of IPv6 parsing/masking logic
-* Test/integrate with *project conncept* (Caddy layer 4 app)
+* Test with *project conncept* (Caddy layer 4 app)
 * ...

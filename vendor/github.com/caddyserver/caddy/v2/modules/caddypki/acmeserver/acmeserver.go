@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ import (
 	"github.com/smallstep/certificates/authority/provisioner"
 	"github.com/smallstep/certificates/db"
 	"github.com/smallstep/nosql"
+	"go.uber.org/zap"
 )
 
 func init() {
@@ -65,6 +67,7 @@ type Handler struct {
 	PathPrefix string `json:"path_prefix,omitempty"`
 
 	acmeEndpoints http.Handler
+	logger        *zap.Logger
 }
 
 // CaddyModule returns the Caddy module information.
@@ -77,6 +80,7 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 
 // Provision sets up the ACME server handler.
 func (ash *Handler) Provision(ctx caddy.Context) error {
+	ash.logger = ctx.Logger(ash)
 	// set some defaults
 	if ash.CA == "" {
 		ash.CA = caddypki.DefaultCAID
@@ -99,12 +103,9 @@ func (ash *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("no certificate authority configured with id: %s", ash.CA)
 	}
 
-	dbFolder := filepath.Join(caddy.AppDataDir(), "acme_server", "db")
-
-	// TODO: See https://github.com/smallstep/nosql/issues/7
-	err = os.MkdirAll(dbFolder, 0755)
+	database, err := ash.openDatabase()
 	if err != nil {
-		return fmt.Errorf("making folder for ACME server database: %v", err)
+		return err
 	}
 
 	authorityConfig := caddypki.AuthorityConfig{
@@ -121,10 +122,7 @@ func (ash *Handler) Provision(ctx caddy.Context) error {
 				},
 			},
 		},
-		DB: &db.Config{
-			Type:       "badger",
-			DataSource: dbFolder,
-		},
+		DB: database,
 	}
 
 	auth, err := ca.NewAuthority(authorityConfig)
@@ -132,11 +130,11 @@ func (ash *Handler) Provision(ctx caddy.Context) error {
 		return err
 	}
 
-	acmeAuth, err := acme.NewAuthority(
-		auth.GetDatabase().(nosql.DB),     // stores all the server state
-		ash.Host,                          // used for directory links; TODO: not needed
-		strings.Trim(ash.PathPrefix, "/"), // used for directory links
-		auth)                              // configures the signing authority
+	acmeAuth, err := acme.New(auth, acme.AuthorityOptions{
+		DB:     auth.GetDatabase().(nosql.DB),     // stores all the server state
+		DNS:    ash.Host,                          // used for directory links; TODO: not needed
+		Prefix: strings.Trim(ash.PathPrefix, "/"), // used for directory links
+	})
 	if err != nil {
 		return err
 	}
@@ -160,10 +158,67 @@ func (ash Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 	return next.ServeHTTP(w, r)
 }
 
+func (ash Handler) getDatabaseKey() string {
+	key := ash.CA
+	key = strings.ToLower(key)
+	key = strings.TrimSpace(key)
+	return keyCleaner.ReplaceAllLiteralString(key, "")
+}
+
+// Cleanup implements caddy.CleanerUpper and closes any idle databases.
+func (ash Handler) Cleanup() error {
+	key := ash.getDatabaseKey()
+	deleted, err := databasePool.Delete(key)
+	if deleted {
+		ash.logger.Debug("unloading unused CA database", zap.String("db_key", key))
+	}
+	if err != nil {
+		ash.logger.Error("closing CA database", zap.String("db_key", key), zap.Error(err))
+	}
+	return err
+}
+
+func (ash Handler) openDatabase() (*db.AuthDB, error) {
+	key := ash.getDatabaseKey()
+	database, loaded, err := databasePool.LoadOrNew(key, func() (caddy.Destructor, error) {
+		dbFolder := filepath.Join(caddy.AppDataDir(), "acme_server", key)
+		dbPath := filepath.Join(dbFolder, "db")
+
+		err := os.MkdirAll(dbFolder, 0755)
+		if err != nil {
+			return nil, fmt.Errorf("making folder for CA database: %v", err)
+		}
+
+		dbConfig := &db.Config{
+			Type:       "bbolt",
+			DataSource: dbPath,
+		}
+		database, err := db.New(dbConfig)
+		return databaseCloser{&database}, err
+	})
+
+	if loaded {
+		ash.logger.Debug("loaded preexisting CA database", zap.String("db_key", key))
+	}
+
+	return database.(databaseCloser).DB, err
+}
+
 const (
 	defaultHost       = "localhost"
 	defaultPathPrefix = "/acme/"
 )
+
+var keyCleaner = regexp.MustCompile(`[^\w.-_]`)
+var databasePool = caddy.NewUsagePool()
+
+type databaseCloser struct {
+	DB *db.AuthDB
+}
+
+func (closer databaseCloser) Destruct() error {
+	return (*closer.DB).Shutdown()
+}
 
 // Interface guards
 var (

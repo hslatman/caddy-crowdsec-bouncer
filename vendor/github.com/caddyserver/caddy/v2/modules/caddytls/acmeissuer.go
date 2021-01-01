@@ -74,6 +74,11 @@ type ACMEIssuer struct {
 	// is internal or for development/testing purposes.
 	TrustedRootsPEMFiles []string `json:"trusted_roots_pem_files,omitempty"`
 
+	// List of preferred certificate chains, by issuer's CommonName. If empty,
+	// or if no matching chain is found, the first chain offered by the server
+	// will be used.
+	PreferredChains []string `json:"preferred_chains,omitempty"`
+
 	rootPool *x509.CertPool
 	template certmagic.ACMEManager
 	magic    *certmagic.Config
@@ -91,6 +96,15 @@ func (ACMEIssuer) CaddyModule() caddy.ModuleInfo {
 // Provision sets up iss.
 func (iss *ACMEIssuer) Provision(ctx caddy.Context) error {
 	iss.logger = ctx.Logger(iss)
+
+	// expand email address, if non-empty
+	if iss.Email != "" {
+		email, err := caddy.NewReplacer().ReplaceOrErr(iss.Email, true, true)
+		if err != nil {
+			return fmt.Errorf("expanding email address '%s': %v", iss.Email, err)
+		}
+		iss.Email = email
+	}
 
 	// DNS providers
 	if iss.Challenges != nil && iss.Challenges.DNS != nil && iss.Challenges.DNS.ProviderRaw != nil {
@@ -149,6 +163,7 @@ func (iss *ACMEIssuer) makeIssuerTemplate() (certmagic.ACMEManager, error) {
 		CertObtainTimeout: time.Duration(iss.ACMETimeout),
 		TrustedRoots:      iss.rootPool,
 		ExternalAccount:   iss.ExternalAccount,
+		PreferredChains:   iss.PreferredChains,
 		Logger:            iss.logger,
 	}
 

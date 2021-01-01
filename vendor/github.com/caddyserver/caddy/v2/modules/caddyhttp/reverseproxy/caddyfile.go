@@ -72,6 +72,7 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 //
 //         # streaming
 //         flush_interval <duration>
+//         buffer_requests
 //
 //         # header manipulation
 //         header_up   [+|-]<field> [<value|regexp> [<replacement>]]
@@ -130,12 +131,15 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if toURL.Scheme == "https" && urlPort == "80" {
 				return "", d.Err("upstream address has conflicting scheme (https://) and port (:80, the HTTP port)")
 			}
+			if toURL.Scheme == "h2c" && urlPort == "443" {
+				return "", d.Err("upstream address has conflicting scheme (h2c://) and port (:443, the HTTPS port)")
+			}
 
 			// if port is missing, attempt to infer from scheme
 			if toURL.Port() == "" {
 				var toPort string
 				switch toURL.Scheme {
-				case "", "http":
+				case "", "http", "h2c":
 					toPort = "80"
 				case "https":
 					toPort = "443"
@@ -155,7 +159,9 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			if err != nil {
 				host = upstreamAddr
 			}
-			if port == "" {
+			// we can assume a port if only a hostname is specified, but use of a
+			// placeholder without a port likely means a port will be filled in
+			if port == "" && !strings.Contains(host, "{") {
 				port = "80"
 			}
 		}
@@ -477,6 +483,8 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				h.BufferRequests = true
 
 			case "header_up":
+				var err error
+
 				if h.Headers == nil {
 					h.Headers = new(headers.Handler)
 				}
@@ -484,18 +492,25 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					h.Headers.Request = new(headers.HeaderOps)
 				}
 				args := d.RemainingArgs()
+
 				switch len(args) {
 				case 1:
-					headers.CaddyfileHeaderOp(h.Headers.Request, args[0], "", "")
+					err = headers.CaddyfileHeaderOp(h.Headers.Request, args[0], "", "")
 				case 2:
-					headers.CaddyfileHeaderOp(h.Headers.Request, args[0], args[1], "")
+					err = headers.CaddyfileHeaderOp(h.Headers.Request, args[0], args[1], "")
 				case 3:
-					headers.CaddyfileHeaderOp(h.Headers.Request, args[0], args[1], args[2])
+					err = headers.CaddyfileHeaderOp(h.Headers.Request, args[0], args[1], args[2])
 				default:
 					return d.ArgErr()
 				}
 
+				if err != nil {
+					return d.Err(err.Error())
+				}
+
 			case "header_down":
+				var err error
+
 				if h.Headers == nil {
 					h.Headers = new(headers.Handler)
 				}
@@ -507,13 +522,17 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				args := d.RemainingArgs()
 				switch len(args) {
 				case 1:
-					headers.CaddyfileHeaderOp(h.Headers.Response.HeaderOps, args[0], "", "")
+					err = headers.CaddyfileHeaderOp(h.Headers.Response.HeaderOps, args[0], "", "")
 				case 2:
-					headers.CaddyfileHeaderOp(h.Headers.Response.HeaderOps, args[0], args[1], "")
+					err = headers.CaddyfileHeaderOp(h.Headers.Response.HeaderOps, args[0], args[1], "")
 				case 3:
-					headers.CaddyfileHeaderOp(h.Headers.Response.HeaderOps, args[0], args[1], args[2])
+					err = headers.CaddyfileHeaderOp(h.Headers.Response.HeaderOps, args[0], args[1], args[2])
 				default:
 					return d.ArgErr()
+				}
+
+				if err != nil {
+					return d.Err(err.Error())
 				}
 
 			case "transport":
@@ -549,8 +568,9 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	}
 
 	// if the scheme inferred from the backends' addresses is
-	// HTTPS, we will need a non-nil transport to enable TLS
-	if commonScheme == "https" && transport == nil {
+	// HTTPS, we will need a non-nil transport to enable TLS,
+	// or if H2C, to set the transport versions.
+	if (commonScheme == "https" || commonScheme == "h2c") && transport == nil {
 		transport = new(HTTPTransport)
 		transportModuleName = "http"
 	}
@@ -566,6 +586,9 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			}
 			if commonScheme == "http" && te.TLSEnabled() {
 				return d.Errf("upstream address scheme is HTTP but transport is configured for HTTP+TLS (HTTPS)")
+			}
+			if te, ok := transport.(*HTTPTransport); ok && commonScheme == "h2c" {
+				te.Versions = []string{"h2c", "2"}
 			}
 		} else if commonScheme == "https" {
 			return d.Errf("upstreams are configured for HTTPS but transport module does not support TLS: %T", transport)
@@ -583,16 +606,25 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 // UnmarshalCaddyfile deserializes Caddyfile tokens into h.
 //
 //     transport http {
-//         read_buffer  <size>
-//         write_buffer <size>
-//         dial_timeout <duration>
-//         tls_client_auth <cert_file> <key_file>
+//         read_buffer             <size>
+//         write_buffer            <size>
+//         max_response_header     <size>
+//         dial_timeout            <duration>
+//         dial_fallback_delay     <duration>
+//         response_header_timeout <duration>
+//         expect_continue_timeout <duration>
+//         tls
+//         tls_client_auth <automate_name> | <cert_file> <key_file>
 //         tls_insecure_skip_verify
 //         tls_timeout <duration>
 //         tls_trusted_ca_certs <cert_files...>
+//         tls_server_name <sni>
 //         keepalive [off|<duration>]
 //         keepalive_idle_conns <max_count>
 //         versions <versions...>
+//         compression off
+//         max_conns_per_host <count>
+//         max_idle_conns_per_host <count>
 //     }
 //
 func (h *HTTPTransport) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
@@ -619,6 +651,16 @@ func (h *HTTPTransport) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				}
 				h.WriteBufferSize = int(size)
 
+			case "max_response_header":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				size, err := humanize.ParseBytes(d.Val())
+				if err != nil {
+					return d.Errf("invalid max response header size '%s': %v", d.Val(), err)
+				}
+				h.MaxResponseHeaderSize = int64(size)
+
 			case "dial_timeout":
 				if !d.NextArg() {
 					return d.ArgErr()
@@ -628,6 +670,36 @@ func (h *HTTPTransport) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("bad timeout value '%s': %v", d.Val(), err)
 				}
 				h.DialTimeout = caddy.Duration(dur)
+
+			case "dial_fallback_delay":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := caddy.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("bad fallback delay value '%s': %v", d.Val(), err)
+				}
+				h.FallbackDelay = caddy.Duration(dur)
+
+			case "response_header_timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := caddy.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("bad timeout value '%s': %v", d.Val(), err)
+				}
+				h.ResponseHeaderTimeout = caddy.Duration(dur)
+
+			case "expect_continue_timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				dur, err := caddy.ParseDuration(d.Val())
+				if err != nil {
+					return d.Errf("bad timeout value '%s': %v", d.Val(), err)
+				}
+				h.ExpectContinueTimeout = caddy.Duration(dur)
 
 			case "tls_client_auth":
 				if h.TLS == nil {
@@ -735,6 +807,26 @@ func (h *HTTPTransport) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 						h.Compression = &disable
 					}
 				}
+
+			case "max_conns_per_host":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				num, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("bad integer value '%s': %v", d.Val(), err)
+				}
+				h.MaxConnsPerHost = num
+
+			case "max_idle_conns_per_host":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				num, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return d.Errf("bad integer value '%s': %v", d.Val(), err)
+				}
+				h.MaxIdleConnsPerHost = num
 
 			default:
 				return d.Errf("unrecognized subdirective %s", d.Val())
