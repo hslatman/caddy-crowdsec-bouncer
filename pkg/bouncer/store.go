@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package crowdsec
+package bouncer
 
 import (
 	"fmt"
@@ -32,7 +32,7 @@ func newStore() *crowdSecStore {
 	}
 }
 
-func (s *crowdSecStore) Add(decision *models.Decision) error {
+func (s *crowdSecStore) add(decision *models.Decision) error {
 
 	scope := *decision.Scope
 	value := *decision.Value
@@ -55,7 +55,7 @@ func (s *crowdSecStore) Add(decision *models.Decision) error {
 	}
 }
 
-func (s *crowdSecStore) Delete(decision *models.Decision) error {
+func (s *crowdSecStore) delete(decision *models.Decision) error {
 	scope := *decision.Scope
 	value := *decision.Value
 
@@ -79,7 +79,7 @@ func (s *crowdSecStore) Delete(decision *models.Decision) error {
 	}
 }
 
-func (s *crowdSecStore) Get(key net.IP) (*models.Decision, error) {
+func (s *crowdSecStore) get(key net.IP) (*models.Decision, error) {
 
 	r, err := s.store.Get(key)
 	if err != nil {
@@ -92,7 +92,7 @@ func (s *crowdSecStore) Get(key net.IP) (*models.Decision, error) {
 
 	// currently we return the first match, but the IP can exist in multiple
 	// networks (CIDR ranges) and there may thus be multiple Decisions to act
-	// upon. In general, though, the existince of at least a single Decision
+	// upon. In general, though, the existence of at least a single Decision
 	// means that the IP should not be allowed, so it's relatively safe to use
 	// the first, but there may be 'softer' Decisions that should actually take
 	// precedence.

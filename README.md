@@ -18,17 +18,22 @@ It consists of the follwing two main pieces:
 
 * A Caddy App
 * A Caddy HTTP Handler
+* A Caddy [Layer 4](https://github.com/mholt/caddy-l4) Connection Matcher
 
 The App is responsible for communicating with a CrowdSec Agent via the CrowdSec *Local API* and keeping track of the decisions of the Agent.
 The HTTP Handler checks client IPs of incoming requests against the decisions stored by the App.
-This way, multiple independent HTTP Handlers can use the storage exposed by the App.
+This way, multiple independent HTTP Handlers or TCP Connection Matchers can use the storage exposed by the App.
 
 ## Usage
 
 Get the module
 
 ```bash
-go get github.com/hslatman/caddy-crowdsec-bouncer/pkg/crowdsec
+# get the http handler
+go get github.com/hslatman/caddy-crowdsec-bouncer/pkg/http
+
+# get the layer4 connection matcher
+go get github.com/hslatman/caddy-crowdsec-bouncer/pkg/layer4
 ```
 
 Create a (custom) Caddy server (or use *xcaddy*)
@@ -42,7 +47,10 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 	_ "github.com/caddyserver/format-encoder"
 
-	_ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/crowdsec"
+  // import the http handler
+  _ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/http"
+  // import the layer4 matcher
+  _ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/layer4"
 )
 
 func main() {
@@ -101,7 +109,34 @@ Example config.json:
             "logs": {}
           }
         }
-      }
+      },
+      "layer4": {
+        "servers": {
+          "https_proxy": {
+            "listen": ["localhost:8443"],
+            "routes": [
+              {
+                "match": [
+                  {
+                    "crowdsec": {},
+                    "tls": {}
+                  }
+                ],
+                "handle": [
+                  {
+                    "handler": "proxy",
+                    "upstreams": [
+                      {
+                        "dial": ["localhost:9443"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
     }
   }
 ```
@@ -114,13 +149,16 @@ go run main.go run -config config.json
 
 ## TODO
 
+* Soft fail on connection error to CrowdSec
+* Fix UserAgent (CrowdSec writes: "bad user agent 'caddy-cs-bouncer' from ...)
 * Add log integration from Caddy to CrowdSec (i.e. using Nginx log format)
 * Add tests
 * Do testing with IPv6
 * Extend the Docker example with a more complete setup
 * Add captcha action (currently works the same as a ban)
 * Add support for custom actions (defaults to blocking access now)
-* Restructure package layout (now requires many Caddy and L4 modules)
-* Test with *project conncept* (Caddy layer 4 app)
-* Fix UserAgent (CrowdSec writes: "bad user agent 'caddy-cs-bouncer' from ...)
+* Test with *project conncept* (Caddy layer 4 app; TCP seems to work; UDP to be tested)
+* Add metrics integration?
+* Add profiling integration?
+* Caddyfile configuration support?
 * ...

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package crowdsec
+package bouncer
 
 import (
 	"fmt"
@@ -24,10 +24,8 @@ import (
 	"go.uber.org/zap"
 )
 
-type lookupKey []byte
-
-// NewBouncer creates a new (streaming) Bouncer with a storage based on immutable radix tree
-func NewBouncer(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+// New creates a new (streaming) Bouncer with a storage based on immutable radix tree
+func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
 			APIKey:         apiKey,
@@ -108,12 +106,12 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 
 	// TODO: store additional data about the decision (i.e. time added to store, etc)
 
-	return b.store.Add(decision)
+	return b.store.add(decision)
 }
 
 // Delete removes a Decision from the storage
 func (b *Bouncer) Delete(decision *models.Decision) error {
-	return b.store.Delete(decision)
+	return b.store.delete(decision)
 }
 
 // IsAllowed checks if an IP is allowed or not
@@ -122,9 +120,9 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 
 	isAllowed := false
-	decision, err := b.store.Get(ip)
+	decision, err := b.store.get(ip)
 	if err != nil {
-		return isAllowed, nil, err //
+		return isAllowed, nil, err // fail closed
 	}
 
 	if decision != nil {

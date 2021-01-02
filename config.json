@@ -46,7 +46,7 @@
         "http_port": 9080,
         "https_port": 9443,
         "servers": {
-          "temp-example": {
+          "server1": {
             "listen": [
               "127.0.0.1:9443"
             ],
