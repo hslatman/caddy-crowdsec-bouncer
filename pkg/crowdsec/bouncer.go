@@ -15,18 +15,11 @@
 package crowdsec
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"math/big"
 	"net"
-	"strconv"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
-	iradix "github.com/hashicorp/go-immutable-radix"
-
-	"modernc.org/mathutil"
 
 	"go.uber.org/zap"
 )
@@ -42,7 +35,7 @@ func NewBouncer(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bou
 			TickerInterval: tickerInterval,
 			UserAgent:      "caddy-cs-bouncer",
 		},
-		store:  iradix.New(),
+		store:  newStore(),
 		logger: logger,
 	}, nil
 }
@@ -50,7 +43,7 @@ func NewBouncer(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bou
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
 	streamingBouncer *csbouncer.StreamBouncer
-	store            *iradix.Tree // TODO: I think we need separate stores for IPv4 and IPv6 to work correct
+	store            *crowdSecStore
 	logger           *zap.Logger
 }
 
@@ -113,34 +106,14 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 	// Knowing that a key is a CIDR does allow to check an IP with the .Contains() function, but still
 	// requires looping through the ranges
 
-	lookupKey, _, err := calculateLookupKeyForDecision(decision)
-	if err != nil {
-		return err
-	}
-
-	// TODO: store lookup as number instead? Will that work with longest prefix lookup?
 	// TODO: store additional data about the decision (i.e. time added to store, etc)
-	newRoot, _, _ := b.store.Insert(lookupKey, decision)
 
-	b.store = newRoot
-
-	return nil
+	return b.store.Add(decision)
 }
 
 // Delete removes a Decision from the storage
 func (b *Bouncer) Delete(decision *models.Decision) error {
-
-	lookupKey, _, err := calculateLookupKeyForDecision(decision)
-	if err != nil {
-		return err
-	}
-
-	// TODO: delete prefix instead for safety?
-	newRoot, _, _ := b.store.Delete(lookupKey)
-
-	b.store = newRoot
-
-	return nil
+	return b.store.Delete(decision)
 }
 
 // IsAllowed checks if an IP is allowed or not
@@ -148,114 +121,18 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 
-	lookupKey, _ := calculateLookupKeyForIP(ip)
-	_, value, found := b.store.Root().LongestPrefix(lookupKey)
-
-	if found {
-		v, ok := value.(*models.Decision)
-		if !ok {
-			return false, nil, fmt.Errorf("wrong type in storage: %T", value)
-		}
-
-		return false, v, nil
-	}
-
-	return true, nil, nil
-}
-
-func serializeDecision(decision *models.Decision) (string, error) {
-	serbyte, err := json.Marshal(decision)
+	isAllowed := false
+	decision, err := b.store.Get(ip)
 	if err != nil {
-		return "", fmt.Errorf("serialize error : %s", err)
-	}
-	return string(serbyte), nil
-}
-
-func calculateLookupKeyForDecision(decision *models.Decision) (lookupKey, bool, error) {
-
-	var ipOrPrefix lookupKey
-	var returnIsIPv4 bool
-	scope := *decision.Scope
-
-	switch scope {
-	case "Ip":
-		ip := net.ParseIP(*decision.Value)
-		if ip != nil {
-			ipOrPrefix, returnIsIPv4 = calculateLookupKeyForIP(ip)
-		}
-	case "Range":
-		ip, ipNet, err := net.ParseCIDR(*decision.Value)
-		if err == nil && ipNet != nil && ip != nil {
-			ones, _ := ipNet.Mask.Size() // Also returns the number of bits (i.e. 32 vs. 128)
-			ipOrPrefix, returnIsIPv4 = calculateLookupKeyForIPWithMask(ip, ones)
-		}
-	default:
-		return nil, false, fmt.Errorf("got unhandled scope: %s", scope)
+		return isAllowed, nil, err //
 	}
 
-	if ipOrPrefix == nil {
-		return nil, false, errors.New("no IP or CIDR found to determine IP (prefix)")
+	if decision != nil {
+		return isAllowed, decision, nil
 	}
 
-	return lookupKey(ipOrPrefix), returnIsIPv4, nil
-}
+	// At this point we've determined the IP is allowed
+	isAllowed = true
 
-func calculateLookupKeyForIP(ip net.IP) (lookupKey, bool) {
-
-	isIPv4 := isAnIPv4(ip)
-	maskSize := 128
-	if isIPv4 {
-		maskSize = 32
-	}
-
-	return calculateLookupKeyForIPWithMask(ip, maskSize)
-}
-
-func calculateLookupKeyForIPWithMask(ip net.IP, maskSize int) (lookupKey, bool) {
-
-	var ipOrPrefix string
-
-	ipInt, isIPv4 := inetAton(ip)
-	if isIPv4 {
-		ipOrPrefix = fmt.Sprintf("%032s", strconv.FormatInt(ipInt.Lo, 2))
-		ipOrPrefix = ipOrPrefix[0:maskSize]
-	} else {
-		ipOrPrefix = fmt.Sprintf("%064s%064s", strconv.FormatInt(ipInt.Hi, 2), strconv.FormatInt(ipInt.Lo, 2))
-		ipOrPrefix = ipOrPrefix[0:maskSize]
-	}
-
-	return lookupKey(ipOrPrefix), isIPv4
-}
-
-func parseIP(ipString string) (ip net.IP, isIPv4 bool) {
-	ip = net.ParseIP(ipString)
-	isIPv4 = isAnIPv4(ip)
-	return
-}
-
-func isAnIPv4(ip net.IP) bool {
-	return ip.To4() != nil
-}
-
-func inetAton(ip net.IP) (mathutil.Int128, bool) {
-
-	int128 := mathutil.Int128{}
-	isIPv4 := isAnIPv4(ip)
-
-	if isIPv4 {
-		ipInt := big.NewInt(0)
-		ipInt.SetBytes(ip.To4())
-		int128.SetInt64(ipInt.Int64())
-		return int128, isIPv4
-	}
-
-	bytes := ip.To16()
-	low := big.NewInt(0)
-	low.SetBytes(bytes[8:])
-	int128.Lo = low.Int64()
-	high := big.NewInt(0)
-	high.SetBytes(bytes[:8])
-	int128.Hi = high.Int64()
-
-	return int128, isIPv4
+	return isAllowed, decision, nil
 }
