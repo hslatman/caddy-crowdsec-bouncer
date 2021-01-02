@@ -120,7 +120,6 @@ go run main.go run -config config.json
 * Extend the Docker example with a more complete setup
 * Add captcha action (currently works the same as a ban)
 * Add support for custom actions (defaults to blocking access now)
-* Test (and improve?) handling of IPv6 parsing/masking logic
 * Restructure package layout (now requires many Caddy and L4 modules)
 * Test with *project conncept* (Caddy layer 4 app)
 * Fix UserAgent (CrowdSec writes: "bad user agent 'caddy-cs-bouncer' from ...)

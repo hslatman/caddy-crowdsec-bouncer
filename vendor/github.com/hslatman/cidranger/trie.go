@@ -1,11 +1,12 @@
 package cidranger
 
 import (
+	"container/list"
 	"fmt"
 	"net"
 	"strings"
 
-	rnet "github.com/yl2chen/cidranger/net"
+	rnet "github.com/hslatman/cidranger/net"
 )
 
 // prefixTrie is a path-compressed (PC) trie implementation of the
@@ -107,6 +108,16 @@ func (p *prefixTrie) Contains(ip net.IP) (bool, error) {
 	return p.contains(nn)
 }
 
+// ContainsNetwork returns boolean indicating whether given network is any
+// of the inserted networks.
+func (p *prefixTrie) ContainsNetwork(network net.IPNet) (bool, error) {
+	n := rnet.NewNetwork(network)
+	if n.Number == nil {
+		return false, ErrInvalidNetworkInput
+	}
+	return p.containsNetwork(n)
+}
+
 // ContainingNetworks returns the list of RangerEntry(s) the given ip is
 // contained in in ascending prefix order.
 func (p *prefixTrie) ContainingNetworks(ip net.IP) ([]RangerEntry, error) {
@@ -123,6 +134,63 @@ func (p *prefixTrie) ContainingNetworks(ip net.IP) ([]RangerEntry, error) {
 func (p *prefixTrie) CoveredNetworks(network net.IPNet) ([]RangerEntry, error) {
 	net := rnet.NewNetwork(network)
 	return p.coveredNetworks(net)
+}
+
+// MissingNetworks returns the list of networks that have no RangerEntry
+// within the entire tree. Will return the smallets possible subnets.
+func (p *prefixTrie) MissingNetworks() ([]net.IPNet, error) {
+	missing := []net.IPNet{}
+	// use list as a queue of *prefixTrie for bredth-first traversal
+	todo := list.New()
+	todo.PushBack(p)
+	for todo.Len() > 0 {
+		element := todo.Front()
+		todo.Remove(element)
+		node := element.Value.(*prefixTrie)
+		if node.hasEntry() {
+			continue
+		}
+		// Given that this node and all its parents are empty, if any of the children
+		// are nil, that's a known missing net, but if both are missing, this node is
+		// the superset of those missing networks. This would only happen at the root.
+		if node.children[0] == nil && node.children[1] == nil {
+			missing = append(missing, node.network.IPNet)
+			continue
+		}
+		// Since there is a child for this node, there MUST be a non-empty entry
+		child_nets, err := node.network.Subnet(0)
+		if err != nil {
+			return nil, fmt.Errorf("programing error: should always have valid subnets: %s", err)
+		}
+		for bit, child := range node.children {
+			if child == nil {
+				missing = append(missing, child_nets[bit].IPNet)
+			} else {
+				// Need to add the child to be checked, but first account for all the
+				// subnets off the sides of a compressed path.
+				intermediate_subnet := child_nets[bit]
+				// numBitsSkipped is actually equal to the prefixlength
+				for i := 1; i < int(child.numBitsSkipped-node.numBitsSkipped); i++ {
+					intermediate_subnets, err := intermediate_subnet.Subnet(0)
+					if err != nil {
+						return nil, fmt.Errorf("programing error: should always have valid subnets: %s", err)
+					}
+					// the destination child is contained in the 0 side of the
+					// intermediate, set up for the next iteration "into" that subnet
+					// and the 1 side is a missing block
+					if intermediate_subnets[0].Contains(child.network.Number) {
+						intermediate_subnet = intermediate_subnets[0]
+						missing = append(missing, intermediate_subnets[1].IPNet)
+					} else {
+						intermediate_subnet = intermediate_subnets[1]
+						missing = append(missing, intermediate_subnets[0].IPNet)
+					}
+				}
+				todo.PushBack(child)
+			}
+		}
+	}
+	return missing, nil
 }
 
 // Len returns number of networks in ranger.
@@ -163,6 +231,27 @@ func (p *prefixTrie) contains(number rnet.NetworkNumber) (bool, error) {
 	child := p.children[bit]
 	if child != nil {
 		return child.contains(number)
+	}
+	return false, nil
+}
+
+func (p *prefixTrie) containsNetwork(network rnet.Network) (bool, error) {
+	if p.network.Equal(network) {
+		return p.hasEntry(), nil
+	}
+	if !p.network.Contains(network.Number) {
+		return false, nil
+	}
+	if p.targetBitPosition() < 0 {
+		return false, nil
+	}
+	bit, err := p.targetBitFromIP(network.Number)
+	if err != nil {
+		return false, err
+	}
+	child := p.children[bit]
+	if child != nil {
+		return child.containsNetwork(network)
 	}
 	return false, nil
 }
@@ -364,11 +453,32 @@ func (p *prefixTrie) hasEntry() bool {
 	return p.entry != nil
 }
 
+func (p *prefixTrie) ancestorHasEntry() bool {
+	if p.hasEntry() {
+		return true
+	}
+	if p.parent == nil {
+		return p.hasEntry()
+	}
+	return p.parent.ancestorHasEntry()
+}
+
 func (p *prefixTrie) level() int {
 	if p.parent == nil {
 		return 0
 	}
 	return p.parent.level() + 1
+}
+
+func (p *prefixTrie) sibling() *prefixTrie {
+	if p.parent == nil {
+		return nil
+	}
+	if p.parent.children[0] == p {
+		return p.parent.children[1]
+	} else {
+		return p.parent.children[0]
+	}
 }
 
 // walkDepth walks the trie in depth order, for unit testing.

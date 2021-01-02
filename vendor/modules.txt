@@ -195,7 +195,10 @@ github.com/google/cel-go/parser/gen
 github.com/google/go-querystring/query
 # github.com/google/uuid v1.1.2
 github.com/google/uuid
-# github.com/hslatman/ipstore v0.0.0-20210102115857-3854c78566e2
+# github.com/hslatman/cidranger v1.0.3-0.20210102151717-b2292da972c3
+github.com/hslatman/cidranger
+github.com/hslatman/cidranger/net
+# github.com/hslatman/ipstore v0.0.0-20210102184939-57531d84cc2c
 ## explicit
 github.com/hslatman/ipstore/pkg/ipstore
 # github.com/huandu/xstrings v1.3.1
@@ -347,8 +350,7 @@ github.com/spf13/cast
 # github.com/urfave/cli v1.22.2
 github.com/urfave/cli
 # github.com/yl2chen/cidranger v1.0.2
-github.com/yl2chen/cidranger
-github.com/yl2chen/cidranger/net
+## explicit
 # github.com/yuin/goldmark v1.2.1
 github.com/yuin/goldmark
 github.com/yuin/goldmark/ast

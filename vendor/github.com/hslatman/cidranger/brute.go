@@ -1,9 +1,10 @@
 package cidranger
 
 import (
+	"fmt"
 	"net"
 
-	rnet "github.com/yl2chen/cidranger/net"
+	rnet "github.com/hslatman/cidranger/net"
 )
 
 // bruteRanger is a brute force implementation of Ranger.  Insertion and
@@ -73,6 +74,21 @@ func (b *bruteRanger) Contains(ip net.IP) (bool, error) {
 	return false, nil
 }
 
+// ContainsNetwork returns bool indicating whether the exact network is contained.
+func (b *bruteRanger) ContainsNetwork(network net.IPNet) (bool, error) {
+	entries, err := b.getEntriesByVersion(network.IP)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		entrynet := entry.Network()
+		if entrynet.String() == network.String() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ContainingNetworks returns all RangerEntry(s) that given ip contained in.
 func (b *bruteRanger) ContainingNetworks(ip net.IP) ([]RangerEntry, error) {
 	entries, err := b.getEntriesByVersion(ip)
@@ -108,9 +124,19 @@ func (b *bruteRanger) CoveredNetworks(network net.IPNet) ([]RangerEntry, error) 
 	return results, nil
 }
 
+// MissingNetworks returns the list of networks that have no RangerEntry
+func (p *bruteRanger) MissingNetworks() ([]net.IPNet, error) {
+	return nil, fmt.Errorf("Not implemented")
+}
+
 // Len returns number of networks in ranger.
 func (b *bruteRanger) Len() int {
 	return len(b.ipV4Entries) + len(b.ipV6Entries)
+}
+
+// String returns a string representation of the networks
+func (b *bruteRanger) String() string {
+	return fmt.Sprintf("%s\n%s", b.ipV4Entries, b.ipV6Entries)
 }
 
 func (b *bruteRanger) getEntriesByVersion(ip net.IP) (map[string]RangerEntry, error) {

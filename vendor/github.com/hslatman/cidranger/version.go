@@ -1,9 +1,10 @@
 package cidranger
 
 import (
+	"fmt"
 	"net"
 
-	rnet "github.com/yl2chen/cidranger/net"
+	rnet "github.com/hslatman/cidranger/net"
 )
 
 type rangerFactory func(rnet.IPVersion) Ranger
@@ -45,6 +46,14 @@ func (v *versionedRanger) Contains(ip net.IP) (bool, error) {
 	return ranger.Contains(ip)
 }
 
+func (v *versionedRanger) ContainsNetwork(network net.IPNet) (bool, error) {
+	ranger, err := v.getRangerForIP(network.IP)
+	if err != nil {
+		return false, err
+	}
+	return ranger.ContainsNetwork(network)
+}
+
 func (v *versionedRanger) ContainingNetworks(ip net.IP) ([]RangerEntry, error) {
 	ranger, err := v.getRangerForIP(ip)
 	if err != nil {
@@ -61,9 +70,27 @@ func (v *versionedRanger) CoveredNetworks(network net.IPNet) ([]RangerEntry, err
 	return ranger.CoveredNetworks(network)
 }
 
+// MissingNetworks returns the list of networks that have no RangerEntry
+func (v *versionedRanger) MissingNetworks() ([]net.IPNet, error) {
+	missing4, err := v.ipV4Ranger.MissingNetworks()
+	if err != nil {
+		return nil, err
+	}
+	missing6, err := v.ipV4Ranger.MissingNetworks()
+	if err != nil {
+		return nil, err
+	}
+	return append(missing4, missing6...), nil
+}
+
 // Len returns number of networks in ranger.
 func (v *versionedRanger) Len() int {
 	return v.ipV4Ranger.Len() + v.ipV6Ranger.Len()
+}
+
+// String returns a string representation of the networks
+func (v *versionedRanger) String() string {
+	return fmt.Sprintf("%s\n%s", v.ipV4Ranger.String(), v.ipV6Ranger.String())
 }
 
 func (v *versionedRanger) getRangerForIP(ip net.IP) (Ranger, error) {

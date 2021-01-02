@@ -35,6 +35,9 @@ var ErrVersionMismatch = fmt.Errorf("Network input version mismatch")
 // exists for the cidr ranges.
 var ErrNoGreatestCommonBit = fmt.Errorf("No greatest common bit")
 
+// ErrBadMaskLength is returned when a request mask is invalid
+var ErrBadMaskLength = fmt.Errorf("Mask length invalid")
+
 // NetworkNumber represents an IP address using uint32 as internal storage.
 // IPv4 usings 1 uint32, while IPv6 uses 4 uint32.
 type NetworkNumber []uint32
@@ -84,9 +87,6 @@ func (n NetworkNumber) ToIP() net.IP {
 	for i := 0; i < len(n); i++ {
 		idx := i * net.IPv4len
 		binary.BigEndian.PutUint32(ip[idx:idx+net.IPv4len], n[i])
-	}
-	if len(ip) == net.IPv4len {
-		ip = net.IPv4(ip[0], ip[1], ip[2], ip[3])
 	}
 	return ip
 }
@@ -213,17 +213,15 @@ func (n Network) Covers(o Network) bool {
 	if len(n.Number) != len(o.Number) {
 		return false
 	}
-	nMaskSize, _ := n.IPNet.Mask.Size()
-	oMaskSize, _ := o.IPNet.Mask.Size()
-	return n.Contains(o.Number) && nMaskSize <= oMaskSize
+	return n.Contains(o.Number) && n.MaskLen() <= o.MaskLen()
 }
 
 // LeastCommonBitPosition returns the smallest position of the preceding common
 // bits of the 2 networks, and returns an error ErrNoGreatestCommonBit
 // if the two network number diverges from the first bit.
 func (n Network) LeastCommonBitPosition(n1 Network) (uint, error) {
-	maskSize, _ := n.IPNet.Mask.Size()
-	if maskSize1, _ := n1.IPNet.Mask.Size(); maskSize1 < maskSize {
+	maskSize := n.MaskLen()
+	if maskSize1 := n1.MaskLen(); maskSize1 < maskSize {
 		maskSize = maskSize1
 	}
 	maskPosition := len(n1.Number)*BitsPerUint32 - maskSize
@@ -236,11 +234,49 @@ func (n Network) LeastCommonBitPosition(n1 Network) (uint, error) {
 
 // Equal is the equality test for 2 networks.
 func (n Network) Equal(n1 Network) bool {
-	return n.String() == n1.String()
+	// mask the numbers in case of trailing bits after the mask
+	number, err := n.Mask.Mask(n.Number)
+	if err != nil {
+		panic(err)
+	}
+	number1, _ := n1.Mask.Mask(n1.Number)
+	if err != nil {
+		panic(err)
+	}
+	return number.Equal(number1) && n.Mask.Equal(n1.Mask)
 }
 
 func (n Network) String() string {
 	return n.IPNet.String()
+}
+
+func (n Network) MaskLen() int {
+	masklen, _ := n.IPNet.Mask.Size()
+	return masklen
+}
+
+// Next returns the next logical Network with the same mask
+func (n Network) Next() Network {
+	newIP := make(NetworkNumber, len(n.Number))
+	copy(newIP, n.Number)
+	prefix, all := n.IPNet.Mask.Size()
+	incr := uint32(1) << uint32((all-prefix)%BitsPerUint32)
+	i := (prefix - 1) / BitsPerUint32
+	newIP[i] += incr
+	// if rollover one of the uint32s, need to increment next chunk
+	if newIP[i] == 0 {
+		for i -= 1; i >= 0; i-- {
+			newIP[i]++
+			if newIP[i] > 0 {
+				break
+			}
+		}
+	}
+	return Network{
+		IPNet:  net.IPNet{IP: newIP.ToIP(), Mask: n.IPNet.Mask},
+		Number: newIP,
+		Mask:   n.Mask,
+	}
 }
 
 // NetworkNumberMask is an IP address.
@@ -261,6 +297,20 @@ func (m NetworkNumberMask) Mask(n NetworkNumber) (NetworkNumber, error) {
 	return result, nil
 }
 
+// Equal is the equality test for 2 network number masks.
+func (n NetworkNumberMask) Equal(n1 NetworkNumberMask) bool {
+	if len(n) != len(n1) {
+		return false
+	}
+	if n[0] != n1[0] {
+		return false
+	}
+	if len(n) == IPv6Uint32Count {
+		return n[1] == n1[1] && n[2] == n1[2] && n[3] == n1[3]
+	}
+	return true
+}
+
 // NextIP returns the next sequential ip.
 func NextIP(ip net.IP) net.IP {
 	return NewNetworkNumber(ip).Next().ToIP()
@@ -269,4 +319,22 @@ func NextIP(ip net.IP) net.IP {
 // PreviousIP returns the previous sequential ip.
 func PreviousIP(ip net.IP) net.IP {
 	return NewNetworkNumber(ip).Previous().ToIP()
+}
+
+// Subnet will return the subnets within the Network at the given prefix length.
+// The prefixlen must be larger than the current prefix.
+// If prefixlen is 0, will split the Network in half, /24 -> [/25, /25]
+func (n Network) Subnet(prefixlen int) ([]Network, error) {
+	ones, bits := n.IPNet.Mask.Size()
+	if prefixlen == 0 {
+		prefixlen = ones + 1
+	}
+	if ones > prefixlen || prefixlen > bits {
+		return nil, ErrBadMaskLength
+	}
+	subnets := []Network{n.Masked(prefixlen)}
+	for nsubnets := int(math.Pow(2, float64(prefixlen-ones))); len(subnets) < nsubnets; {
+		subnets = append(subnets, subnets[len(subnets)-1].Next())
+	}
+	return subnets, nil
 }
