@@ -71,14 +71,21 @@ func (s *IPStore) Remove(key net.IP) (interface{}, error) {
 
 // RemoveCIDR removes entry associated with net.IPNet from store
 func (s *IPStore) RemoveCIDR(key net.IPNet) (interface{}, error) {
+
 	re, err := s.trie.Remove(key)
 	if err != nil {
 		return nil, err
 	}
+
+	if re == nil {
+		return nil, nil
+	}
+
 	e, ok := re.(entry)
 	if !ok {
 		return nil, fmt.Errorf("error in type assertion")
 	}
+
 	return e.value, nil
 }
 

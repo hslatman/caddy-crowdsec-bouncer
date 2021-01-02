@@ -195,7 +195,7 @@ github.com/google/cel-go/parser/gen
 github.com/google/go-querystring/query
 # github.com/google/uuid v1.1.2
 github.com/google/uuid
-# github.com/hslatman/ipstore v0.0.0-20210102113357-bf7b625a5e11
+# github.com/hslatman/ipstore v0.0.0-20210102115857-3854c78566e2
 ## explicit
 github.com/hslatman/ipstore/pkg/ipstore
 # github.com/huandu/xstrings v1.3.1

@@ -539,6 +539,8 @@ github.com/hslatman/ipstore v0.0.0-20210102110546-54f6d27bddb9 h1:ASZnd/ET2Dpnbq
 github.com/hslatman/ipstore v0.0.0-20210102110546-54f6d27bddb9/go.mod h1:pGsF6vB/qb4jxlZIARjeKDDqpY3TYslPuQ7FhjDDQi4=
 github.com/hslatman/ipstore v0.0.0-20210102113357-bf7b625a5e11 h1:kVSEHwwM9Fkg9xANBbFYDa3YvWAZei1V14BleqxxHlY=
 github.com/hslatman/ipstore v0.0.0-20210102113357-bf7b625a5e11/go.mod h1:pGsF6vB/qb4jxlZIARjeKDDqpY3TYslPuQ7FhjDDQi4=
+github.com/hslatman/ipstore v0.0.0-20210102115857-3854c78566e2 h1:fltpX06i5qPpspO1kJubDajiitT6C95cGx4ivKhIzTM=
+github.com/hslatman/ipstore v0.0.0-20210102115857-3854c78566e2/go.mod h1:pGsF6vB/qb4jxlZIARjeKDDqpY3TYslPuQ7FhjDDQi4=
 github.com/huandu/xstrings v1.3.1 h1:4jgBlKK6tLKFvO8u5pmYjG91cqytmDCDvGh7ECVFfFs=
 github.com/huandu/xstrings v1.3.1/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq4ovT0aE=
 github.com/hudl/fargo v1.3.0/go.mod h1:y3CKSmjA+wD2gak7sUSXTAoopbhU08POFhmITJgmKTg=
