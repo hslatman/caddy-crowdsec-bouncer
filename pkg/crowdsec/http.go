@@ -54,8 +54,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	h.crowdsec = crowdsecAppIface.(*CrowdSec)
 
-	fmt.Println(h.crowdsec)
-
 	h.logger = ctx.Logger(h)
 	defer h.logger.Sync()
 
@@ -154,6 +152,7 @@ func determineIPFromRequest(r *http.Request) (net.IP, error) {
 	var remoteIP string
 	var err error
 	if strings.ContainsRune(r.RemoteAddr, ':') {
+		// TODO: does this work correctly with (all) IPv6 addresses?
 		remoteIP, _, err = net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			return nil, err

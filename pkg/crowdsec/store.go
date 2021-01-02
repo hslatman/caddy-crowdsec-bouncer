@@ -23,7 +23,7 @@ import (
 )
 
 type crowdSecStore struct {
-	store *ipstore.IPStore
+	store *ipstore.Store
 }
 
 func newStore() *crowdSecStore {

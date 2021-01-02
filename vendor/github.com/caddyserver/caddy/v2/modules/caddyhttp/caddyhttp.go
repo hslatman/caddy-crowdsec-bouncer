@@ -18,18 +18,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	weakrand "math/rand"
 	"net"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 )
 
 func init() {
-	weakrand.Seed(time.Now().UnixNano())
-
 	caddy.RegisterModule(tlsPlaceholderWrapper{})
 }
 
@@ -235,6 +232,8 @@ func (tlsPlaceholderWrapper) CaddyModule() caddy.ModuleInfo {
 
 func (tlsPlaceholderWrapper) WrapListener(ln net.Listener) net.Listener { return ln }
 
+func (tlsPlaceholderWrapper) UnmarshalCaddyfile(d *caddyfile.Dispenser) error { return nil }
+
 const (
 	// DefaultHTTPPort is the default port for HTTP.
 	DefaultHTTPPort = 80
@@ -245,3 +244,4 @@ const (
 
 // Interface guard
 var _ caddy.ListenerWrapper = (*tlsPlaceholderWrapper)(nil)
+var _ caddyfile.Unmarshaler = (*tlsPlaceholderWrapper)(nil)

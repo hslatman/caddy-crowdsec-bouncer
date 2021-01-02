@@ -137,7 +137,7 @@ func (t *TLS) Provision(ctx caddy.Context) error {
 			continue
 		}
 		t.Automation.defaultInternalAutomationPolicy = &AutomationPolicy{
-			IssuerRaw: json.RawMessage(`{"module":"internal"}`),
+			IssuersRaw: []json.RawMessage{json.RawMessage(`{"module":"internal"}`)},
 		}
 		err = t.Automation.defaultInternalAutomationPolicy.Provision(t)
 		if err != nil {
@@ -303,20 +303,22 @@ func (t *TLS) Manage(names []string) error {
 
 // HandleHTTPChallenge ensures that the HTTP challenge is handled for the
 // certificate named by r.Host, if it is an HTTP challenge request. It
-// requires that the automation policy for r.Host has an issue of type
-// *certmagic.ACMEManager.
+// requires that the automation policy for r.Host has an issuer of type
+// *certmagic.ACMEManager, or one that is ACME-enabled (GetACMEIssuer()).
 func (t *TLS) HandleHTTPChallenge(w http.ResponseWriter, r *http.Request) bool {
 	if !certmagic.LooksLikeHTTPChallenge(r) {
 		return false
 	}
+	// try all the issuers until we find the one that initiated the challenge
 	ap := t.getAutomationPolicyForName(r.Host)
-	if ap.magic.Issuer == nil {
-		return false
-	}
 	type acmeCapable interface{ GetACMEIssuer() *ACMEIssuer }
-	if am, ok := ap.magic.Issuer.(acmeCapable); ok {
-		iss := am.GetACMEIssuer()
-		return certmagic.NewACMEManager(iss.magic, iss.template).HandleHTTPChallenge(w, r)
+	for _, iss := range ap.magic.Issuers {
+		if am, ok := iss.(acmeCapable); ok {
+			iss := am.GetACMEIssuer()
+			if certmagic.NewACMEManager(iss.magic, iss.template).HandleHTTPChallenge(w, r) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -334,10 +336,26 @@ func (t *TLS) AddAutomationPolicy(ap *AutomationPolicy) error {
 	if err != nil {
 		return err
 	}
-	for i, other := range t.Automation.Policies {
-		// if a catch-all policy (or really, any policy with
-		// fewer names) exists, prioritize this new policy
-		if len(other.Subjects) < len(ap.Subjects) {
+	// sort new automation policies just before any other which is a superset
+	// of this one; if we find an existing policy that covers every subject in
+	// ap but less specifically (e.g. a catch-all policy, or one with wildcards
+	// or with fewer subjects), insert ap just before it, otherwise ap would
+	// never be used because the first matching policy is more general
+	for i, existing := range t.Automation.Policies {
+		// first see if existing is superset of ap for all names
+		var otherIsSuperset bool
+	outer:
+		for _, thisSubj := range ap.Subjects {
+			for _, otherSubj := range existing.Subjects {
+				if certmagic.MatchWildcard(thisSubj, otherSubj) {
+					otherIsSuperset = true
+					break outer
+				}
+			}
+		}
+		// if existing AP is a superset or if it contains fewer names (i.e. is
+		// more general), then new AP is more specific, so insert before it
+		if otherIsSuperset || len(existing.Subjects) < len(ap.Subjects) {
 			t.Automation.Policies = append(t.Automation.Policies[:i],
 				append([]*AutomationPolicy{ap}, t.Automation.Policies[i:]...)...)
 			return nil
@@ -479,8 +497,6 @@ var (
 	storageClean   time.Time
 	storageCleanMu sync.Mutex
 )
-
-const automateKey = "automate"
 
 // Interface guards
 var (

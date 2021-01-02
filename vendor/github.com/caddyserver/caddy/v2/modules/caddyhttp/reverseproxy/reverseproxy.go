@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -314,7 +315,7 @@ func (h *Handler) Cleanup() error {
 
 	// remove hosts from our config from the pool
 	for _, upstream := range h.Upstreams {
-		hosts.Delete(upstream.String())
+		_, _ = hosts.Delete(upstream.String())
 	}
 
 	return nil
@@ -339,7 +340,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		buf := bufPool.Get().(*bytes.Buffer)
 		buf.Reset()
 		defer bufPool.Put(buf)
-		io.Copy(buf, r.Body)
+		_, _ = io.Copy(buf, r.Body)
 		r.Body.Close()
 		r.Body = ioutil.NopCloser(buf)
 	}
@@ -368,7 +369,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	var proxyErr error
 	for {
 		// choose an available upstream
-		upstream := h.LoadBalancing.SelectionPolicy.Select(h.Upstreams, r)
+		upstream := h.LoadBalancing.SelectionPolicy.Select(h.Upstreams, r, w)
 		if upstream == nil {
 			if proxyErr == nil {
 				proxyErr = fmt.Errorf("no upstreams available")
@@ -384,8 +385,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		// DialInfo struct should have valid network address syntax
 		dialInfo, err := upstream.fillDialInfo(r)
 		if err != nil {
-			err = fmt.Errorf("making dial info: %v", err)
-			return caddyhttp.Error(http.StatusBadGateway, err)
+			return statusError(fmt.Errorf("making dial info: %v", err))
 		}
 
 		// attach to the request information about how to dial the upstream;
@@ -438,7 +438,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		}
 	}
 
-	return caddyhttp.Error(http.StatusBadGateway, proxyErr)
+	return statusError(proxyErr)
 }
 
 // prepareRequest modifies req so that it is ready to be proxied,
@@ -518,7 +518,8 @@ func (h Handler) prepareRequest(req *http.Request) error {
 // (This method is mostly the beginning of what was borrowed from the net/http/httputil package in the
 // Go standard library which was used as the foundation.)
 func (h *Handler) reverseProxy(rw http.ResponseWriter, req *http.Request, di DialInfo, next caddyhttp.Handler) error {
-	di.Upstream.Host.CountRequest(1)
+	_ = di.Upstream.Host.CountRequest(1)
+	//nolint:errcheck
 	defer di.Upstream.Host.CountRequest(-1)
 
 	// point the request to this upstream
@@ -742,33 +743,11 @@ func copyHeader(dst, src http.Header) {
 	}
 }
 
-func cloneHeader(h http.Header) http.Header {
-	h2 := make(http.Header, len(h))
-	for k, vv := range h {
-		vv2 := make([]string, len(vv))
-		copy(vv2, vv)
-		h2[k] = vv2
-	}
-	return h2
-}
-
 func upgradeType(h http.Header) string {
 	if !httpguts.HeaderValuesContainsToken(h["Connection"], "Upgrade") {
 		return ""
 	}
 	return strings.ToLower(h.Get("Upgrade"))
-}
-
-func singleJoiningSlash(a, b string) string {
-	aslash := strings.HasSuffix(a, "/")
-	bslash := strings.HasPrefix(b, "/")
-	switch {
-	case aslash && bslash:
-		return a + b[1:]
-	case !aslash && !bslash:
-		return a + "/" + b
-	}
-	return a + b
 }
 
 // removeConnectionHeaders removes hop-by-hop headers listed in the "Connection" header of h.
@@ -781,6 +760,27 @@ func removeConnectionHeaders(h http.Header) {
 			}
 		}
 	}
+}
+
+// statusError returns an error value that has a status code.
+func statusError(err error) error {
+	// errors proxying usually mean there is a problem with the upstream(s)
+	statusCode := http.StatusBadGateway
+
+	// if the client canceled the request (usually this means they closed
+	// the connection, so they won't see any response), we can report it
+	// as a client error (4xx) and not a server error (5xx); unfortunately
+	// the Go standard library, at least at time of writing in late 2020,
+	// obnoxiously wraps the exported, standard context.Canceled error with
+	// an unexported garbage value that we have to do a substring check for:
+	// https://github.com/golang/go/blob/6965b01ea248cabb70c3749fd218b36089a21efb/src/net/net.go#L416-L430
+	if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "operation was canceled") {
+		// regrettably, there is no standard error code for "client closed connection", but
+		// for historical reasons we can use a code that a lot of people are already using;
+		// using 5xx is problematic for users; see #3748
+		statusCode = 499
+	}
+	return caddyhttp.Error(statusCode, err)
 }
 
 // LoadBalancing has parameters related to load balancing.
@@ -816,7 +816,7 @@ type LoadBalancing struct {
 
 // Selector selects an available upstream from the pool.
 type Selector interface {
-	Select(UpstreamPool, *http.Request) *Upstream
+	Select(UpstreamPool, *http.Request, http.ResponseWriter) *Upstream
 }
 
 // Hop-by-hop headers. These are removed when sent to the backend.

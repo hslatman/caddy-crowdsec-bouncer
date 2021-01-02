@@ -195,14 +195,18 @@ func (ca CA) NewAuthority(authorityConfig AuthorityConfig) (*authority.Authority
 		issuerKey = ca.IntermediateKey()
 	}
 
-	auth, err := authority.NewEmbedded(
+	opts := []authority.Option{
 		authority.WithConfig(&authority.Config{
 			AuthorityConfig: authorityConfig.AuthConfig,
-			DB:              authorityConfig.DB,
 		}),
 		authority.WithX509Signer(issuerCert, issuerKey.(crypto.Signer)),
 		authority.WithX509RootCerts(rootCert),
-	)
+	}
+	// Add a database if we have one
+	if authorityConfig.DB != nil {
+		opts = append(opts, authority.WithDatabase(*authorityConfig.DB))
+	}
+	auth, err := authority.NewEmbedded(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("initializing certificate authority: %v", err)
 	}
@@ -309,14 +313,6 @@ func (ca CA) loadOrGenIntermediate(rootCert *x509.Certificate, rootKey interface
 func (ca CA) genIntermediate(rootCert *x509.Certificate, rootKey interface{}) (interCert *x509.Certificate, interKey interface{}, err error) {
 	repl := ca.newReplacer()
 
-	rootKeyPEM, err := ca.storage.Load(ca.storageKeyRootKey())
-	if err != nil {
-		return nil, nil, fmt.Errorf("loading root key to sign new intermediate: %v", err)
-	}
-	rootKey, err = pemDecodePrivateKey(rootKeyPEM)
-	if err != nil {
-		return nil, nil, fmt.Errorf("decoding root key: %v", err)
-	}
 	interCert, interKey, err = generateIntermediate(repl.ReplaceAll(ca.IntermediateCommonName, ""), rootCert, rootKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating CA intermediate: %v", err)
@@ -390,7 +386,7 @@ type AuthorityConfig struct {
 	SignWithRoot bool
 
 	// TODO: should we just embed the underlying authority.Config struct type?
-	DB         *db.Config
+	DB         *db.AuthDB
 	AuthConfig *authority.AuthConfig
 }
 

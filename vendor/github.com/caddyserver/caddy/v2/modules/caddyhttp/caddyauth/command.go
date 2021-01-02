@@ -25,8 +25,6 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
-	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/scrypt"
 	"golang.org/x/crypto/ssh/terminal"
 )
 
@@ -72,7 +70,7 @@ func cmdHashPassword(fs caddycmd.Flags) (int, error) {
 		if terminal.IsTerminal(fd) {
 			// ensure the terminal state is restored on SIGINT
 			state, _ := terminal.GetState(fd)
-			c := make(chan os.Signal)
+			c := make(chan os.Signal, 1)
 			signal.Notify(c, os.Interrupt)
 			go func() {
 				<-c
@@ -116,11 +114,11 @@ func cmdHashPassword(fs caddycmd.Flags) (int, error) {
 	var hash []byte
 	switch algorithm {
 	case "bcrypt":
-		hash, err = bcrypt.GenerateFromPassword(plaintext, 14)
+		hash, err = BcryptHash{}.Hash(plaintext, nil)
 	case "scrypt":
 		def := ScryptHash{}
 		def.SetDefaults()
-		hash, err = scrypt.Key(plaintext, salt, def.N, def.R, def.P, def.KeyLength)
+		hash, err = def.Hash(plaintext, salt)
 	default:
 		return caddy.ExitCodeFailedStartup, fmt.Errorf("unrecognized hash algorithm: %s", algorithm)
 	}

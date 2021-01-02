@@ -20,7 +20,7 @@ import (
 	"fmt"
 
 	"github.com/caddyserver/certmagic"
-	"github.com/klauspost/cpuid"
+	"github.com/klauspost/cpuid/v2"
 )
 
 // CipherSuiteNameSupported returns true if name is
@@ -75,7 +75,7 @@ var defaultCipherSuitesWithoutAESNI = []uint16{
 //
 // See https://github.com/caddyserver/caddy/issues/1674
 func getOptimalDefaultCipherSuites() []uint16 {
-	if cpuid.CPU.AesNi() {
+	if cpuid.CPU.Supports(cpuid.AESNI) {
 		return defaultCipherSuitesWithAESNI
 	}
 	return defaultCipherSuitesWithoutAESNI
@@ -122,6 +122,7 @@ var SupportedProtocols = map[string]uint16{
 // unsupportedProtocols is a map of unsupported protocols.
 // Used for logging only, not enforcement.
 var unsupportedProtocols = map[string]uint16{
+	//nolint:staticcheck
 	"ssl3.0": tls.VersionSSL30,
 	"tls1.0": tls.VersionTLS10,
 	"tls1.1": tls.VersionTLS11,

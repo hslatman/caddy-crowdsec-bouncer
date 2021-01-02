@@ -59,8 +59,8 @@ type Server struct {
 	WriteTimeout caddy.Duration `json:"write_timeout,omitempty"`
 
 	// IdleTimeout is the maximum time to wait for the next request
-	// when keep-alives are enabled. If zero, ReadTimeout is used.
-	// If both are zero, there is no timeout.
+	// when keep-alives are enabled. If zero, a default timeout of
+	// 5m is applied to help avoid resource exhaustion.
 	IdleTimeout caddy.Duration `json:"idle_timeout,omitempty"`
 
 	// MaxHeaderBytes is the maximum size to parse from a client's
@@ -74,6 +74,9 @@ type Server struct {
 	// handlers are executed sequentially. The sequence of invoked
 	// handlers comprises a compiled middleware chain that flows
 	// from each matching route and its handlers to the next.
+	//
+	// By default, all unrouted requests receive a 200 OK response
+	// to indicate the server is working.
 	Routes RouteList `json:"routes,omitempty"`
 
 	// Errors is how this server will handle errors returned from any
@@ -247,6 +250,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				zap.String("msg", errMsg),
 			}, errFields...)
 			logger.Error("error handling handler error", errFields...)
+			if handlerErr, ok := err.(HandlerError); ok {
+				w.WriteHeader(handlerErr.StatusCode)
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 		}
 	} else {
 		if errStatus >= 500 {

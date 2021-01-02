@@ -15,6 +15,33 @@
         "api_url": "http://127.0.0.1:8080/",
         "ticker_interval": "10s"
       },
+      "layer4": {
+        "servers": {
+          "https_proxy": {
+            "listen": ["localhost:8443"],
+            "routes": [
+              {
+                "match": [
+                  {
+                    "crowdsec": {},
+                    "tls": {}
+                  }
+                ],
+                "handle": [
+                  {
+                    "handler": "proxy",
+                    "upstreams": [
+                      {
+                        "dial": ["localhost:9443"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
       "http": {
         "http_port": 9080,
         "https_port": 9443,
