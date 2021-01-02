@@ -195,11 +195,9 @@ github.com/google/cel-go/parser/gen
 github.com/google/go-querystring/query
 # github.com/google/uuid v1.1.2
 github.com/google/uuid
-# github.com/hashicorp/go-immutable-radix v1.3.0
+# github.com/hslatman/ipstore v0.0.0-20210102115857-3854c78566e2
 ## explicit
-github.com/hashicorp/go-immutable-radix
-# github.com/hashicorp/golang-lru v0.5.1
-github.com/hashicorp/golang-lru/simplelru
+github.com/hslatman/ipstore/pkg/ipstore
 # github.com/huandu/xstrings v1.3.1
 github.com/huandu/xstrings
 # github.com/imdario/mergo v0.3.8
@@ -268,15 +266,7 @@ github.com/mholt/acmez
 github.com/mholt/acmez/acme
 # github.com/mholt/caddy-l4 v0.0.0-20201230212151-6587f40d4eb6
 ## explicit
-github.com/mholt/caddy-l4
 github.com/mholt/caddy-l4/layer4
-github.com/mholt/caddy-l4/modules/l4echo
-github.com/mholt/caddy-l4/modules/l4http
-github.com/mholt/caddy-l4/modules/l4proxy
-github.com/mholt/caddy-l4/modules/l4ssh
-github.com/mholt/caddy-l4/modules/l4tee
-github.com/mholt/caddy-l4/modules/l4throttle
-github.com/mholt/caddy-l4/modules/l4tls
 # github.com/miekg/dns v1.1.30
 github.com/miekg/dns
 # github.com/mitchellh/copystructure v1.0.0
@@ -307,8 +297,6 @@ github.com/prometheus/common/model
 github.com/prometheus/procfs
 github.com/prometheus/procfs/internal/fs
 github.com/prometheus/procfs/internal/util
-# github.com/remyoudompheng/bigfft v0.0.0-20200410134404-eec4a21b6bb0
-github.com/remyoudompheng/bigfft
 # github.com/rs/xid v1.2.1
 github.com/rs/xid
 # github.com/russross/blackfriday/v2 v2.0.1
@@ -358,6 +346,9 @@ github.com/smallstep/truststore
 github.com/spf13/cast
 # github.com/urfave/cli v1.22.2
 github.com/urfave/cli
+# github.com/yl2chen/cidranger v1.0.2
+github.com/yl2chen/cidranger
+github.com/yl2chen/cidranger/net
 # github.com/yuin/goldmark v1.2.1
 github.com/yuin/goldmark
 github.com/yuin/goldmark/ast
@@ -450,8 +441,6 @@ golang.org/x/text/transform
 golang.org/x/text/unicode/bidi
 golang.org/x/text/unicode/norm
 golang.org/x/text/width
-# golang.org/x/time v0.0.0-20201208040808-7e3f01d25324
-golang.org/x/time/rate
 # google.golang.org/genproto v0.0.0-20200806141610-86f49bd18e98
 google.golang.org/genproto/googleapis/api/annotations
 google.golang.org/genproto/googleapis/api/expr/v1alpha1
@@ -541,6 +530,3 @@ gopkg.in/square/go-jose.v2/jwt
 gopkg.in/yaml.v2
 # howett.net/plist v0.0.0-20200419221736-3b63eb3a43b5
 howett.net/plist
-# modernc.org/mathutil v1.2.1
-## explicit
-modernc.org/mathutil
