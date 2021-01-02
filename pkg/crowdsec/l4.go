@@ -79,6 +79,7 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 	}
 
 	if !isAllowed {
+		m.logger.Debug(fmt.Sprintf("connection from %s not allowed", clientIP.String()))
 		return false, nil
 	}
 
