@@ -42,10 +42,10 @@ Create a (custom) Caddy server (or use *xcaddy*)
 package main
 
 import (
-	cmd "github.com/caddyserver/caddy/v2/cmd"
+  cmd "github.com/caddyserver/caddy/v2/cmd"
 
-	_ "github.com/caddyserver/caddy/v2/modules/standard"
-	_ "github.com/caddyserver/format-encoder"
+  _ "github.com/caddyserver/caddy/v2/modules/standard"
+  _ "github.com/caddyserver/format-encoder"
 
   // import the http handler
   _ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/http"
@@ -54,7 +54,7 @@ import (
 )
 
 func main() {
-	cmd.Main()
+  cmd.Main()
 }
 ```
 
@@ -150,7 +150,6 @@ go run main.go run -config config.json
 ## TODO
 
 * Soft fail on connection error to CrowdSec
-* Fix UserAgent (CrowdSec writes: "bad user agent 'caddy-cs-bouncer' from ...)
 * Add log integration from Caddy to CrowdSec (i.e. using Nginx log format)
 * Add tests
 * Do testing with IPv6
@@ -161,4 +160,5 @@ go run main.go run -config config.json
 * Add metrics integration?
 * Add profiling integration?
 * Caddyfile configuration support?
+* Make the debug log a little bit less chatty (i.e. less occurrences of decision processing)
 * ...

@@ -31,7 +31,7 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 			APIKey:         apiKey,
 			APIUrl:         apiURL,
 			TickerInterval: tickerInterval,
-			UserAgent:      "caddy-cs-bouncer",
+			UserAgent:      "caddy-cs-bouncer/v0.1.0",
 		},
 		store:  newStore(),
 		logger: logger,
