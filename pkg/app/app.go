@@ -38,9 +38,10 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 
 // CrowdSec is a Caddy App that functions as a CrowdSec bouncer
 type CrowdSec struct {
-	APIKey         string `json:"api_key"`
-	APIUrl         string `json:"api_url,omitempty"`
-	TickerInterval string `json:"ticker_interval,omitempty"`
+	APIKey           string `json:"api_key"`
+	APIUrl           string `json:"api_url,omitempty"`
+	TickerInterval   string `json:"ticker_interval,omitempty"`
+	StreamingEnabled *bool  `json:"enable_streaming,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -59,6 +60,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
+	}
+
+	if c.isStreamingEnabled() {
+		bouncer.EnableStreaming()
 	}
 
 	if err := bouncer.Init(); err != nil {
@@ -103,6 +108,10 @@ func (c *CrowdSec) Stop() error {
 func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 	// TODO: check if running? fully loaded, etc?
 	return c.bouncer.IsAllowed(ip)
+}
+
+func (c *CrowdSec) isStreamingEnabled() bool {
+	return c.StreamingEnabled == nil || *c.StreamingEnabled
 }
 
 // Interface guards

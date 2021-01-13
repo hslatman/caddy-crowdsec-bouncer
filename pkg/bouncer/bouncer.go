@@ -26,12 +26,18 @@ import (
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+	userAgent := "caddy-cs-bouncer/v0.1.0"
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
 			APIKey:         apiKey,
 			APIUrl:         apiURL,
 			TickerInterval: tickerInterval,
-			UserAgent:      "caddy-cs-bouncer/v0.1.0",
+			UserAgent:      userAgent,
+		},
+		liveBouncer: &csbouncer.LiveBouncer{
+			APIKey:    apiKey,
+			APIUrl:    apiURL,
+			UserAgent: userAgent,
 		},
 		store:  newStore(),
 		logger: logger,
@@ -40,18 +46,33 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
-	streamingBouncer *csbouncer.StreamBouncer
-	store            *crowdSecStore
-	logger           *zap.Logger
+	streamingBouncer    *csbouncer.StreamBouncer
+	liveBouncer         *csbouncer.LiveBouncer
+	store               *crowdSecStore
+	logger              *zap.Logger
+	useStreamingBouncer bool
+}
+
+// EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer)
+func (b *Bouncer) EnableStreaming() {
+	b.useStreamingBouncer = true
 }
 
 // Init initializes the Bouncer
 func (b *Bouncer) Init() error {
-	return b.streamingBouncer.Init()
+	if b.useStreamingBouncer {
+		return b.streamingBouncer.Init()
+	}
+
+	return b.liveBouncer.Init()
 }
 
 // Run starts the Bouncer processes
 func (b *Bouncer) Run() {
+
+	if !b.useStreamingBouncer {
+		return
+	}
 
 	// TODO: handle errors? Return it to caller?
 
@@ -118,9 +139,8 @@ func (b *Bouncer) Delete(decision *models.Decision) error {
 func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
-
 	isAllowed := false
-	decision, err := b.store.get(ip)
+	decision, err := b.retrieveDecision(ip)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
 	}
@@ -132,5 +152,24 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 	// At this point we've determined the IP is allowed
 	isAllowed = true
 
-	return isAllowed, decision, nil
+	return isAllowed, nil, nil
+}
+
+func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
+
+	if b.useStreamingBouncer {
+		return b.store.get(ip)
+	}
+
+	decision, err := b.liveBouncer.Get(ip.String())
+	if err != nil {
+		return nil, err
+	}
+
+	if len(*decision) >= 1 {
+		return (*decision)[0], nil // TODO: decide if choosing the first decision is OK
+	}
+
+	return nil, nil
+
 }

@@ -13,7 +13,8 @@
       "crowdsec": {
         "api_key": "<api_key>",
         "api_url": "http://127.0.0.1:8080/",
-        "ticker_interval": "10s"
+        "ticker_interval": "10s",
+        "enable_streaming": true
       },
       "layer4": {
         "servers": {
