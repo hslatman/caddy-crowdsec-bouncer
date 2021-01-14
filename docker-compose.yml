@@ -1,9 +1,27 @@
 version: "3.4"
 
+volumes:
+  caddy-data: {}
+  caddy-config: {}
+  logs: {}
+
 services:
   crowdsec:
     image: crowdsecurity/crowdsec
     ports:
       - "8080:8080"
     volumes:
-      - ./logs:/var/log/nginx/
+      - logs:/var/log/nginx/
+
+  caddy:
+    build:
+      context: ./docker
+      target: caddy
+    ports:
+      - "9443:9443"
+      - "8443:8443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - logs:/var/log/caddy
+      - ./docker/config.json:/etc/caddy/config.json

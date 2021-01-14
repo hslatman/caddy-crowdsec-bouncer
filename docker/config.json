@@ -1,0 +1,118 @@
+{   
+    "logging": {
+        "logs": {
+            "default": {
+                "level": "DEBUG",
+                "writer": {
+                  "output": "stderr"
+                }
+            },
+            "access": {
+              "level": "DEBUG",
+              "writer": {
+                "output": "file",
+                "filename": "/var/log/caddy/access.log"
+              },
+              "encoder": {
+                "format": "formatted",
+                "template": "{common_log} \"{request>headers>Referer>[0]}\" \"{request>headers>User-Agent>[0]}\""
+              },
+              "include": [
+                "http.log.access.access"
+              ]
+          }
+        }
+    },
+    "apps": {
+      "crowdsec": {
+        "api_key": "<api_key>",
+        "api_url": "http://crowdsec:8080/",
+        "ticker_interval": "10s",
+        "enable_streaming": true
+      },
+      "layer4": {
+        "servers": {
+          "https_proxy": {
+            "listen": ["caddy:8443"],
+            "routes": [
+              {
+                "match": [
+                  {
+                    "crowdsec": {},
+                    "tls": {}
+                  }
+                ],
+                "handle": [
+                  {
+                    "handler": "proxy",
+                    "upstreams": [
+                      {
+                        "dial": ["caddy:9443"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "http": {
+        "http_port": 9080,
+        "https_port": 9443,
+        "servers": {
+          "server1": {
+            "listen": [
+              "0.0.0.0:9443"
+            ],
+            "routes": [
+              {
+                "group": "temp-example-group",
+                "match": [
+                  {
+                    "path": [
+                      "/*"
+                    ]
+                  }
+                ],
+                "handle": [
+                  {
+                    "handler": "crowdsec"
+                  },
+                  {
+                    "handler": "static_response",
+                    "status_code": "200",
+                    "body": "Hello World!"
+                  },
+                  {
+                    "handler": "headers",
+                    "response": {
+                      "set": {
+                        "Server": ["caddy-cs-bouncer"]
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "logs": {
+              "default_logger_name": "access"
+            }
+          }
+        }
+      },
+      "tls": {
+        "automation": {
+          "policies": [
+            {
+              "subjects": ["caddy", "localhost"],
+              "issuer":{
+                "module": "internal"
+              },
+              "on_demand": true
+            }
+          ]
+        }
+      }
+    }
+  }

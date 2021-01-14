@@ -45,6 +45,8 @@ import (
   cmd "github.com/caddyserver/caddy/v2/cmd"
 
   _ "github.com/caddyserver/caddy/v2/modules/standard"
+
+  // the format-encoder is used to write logs using Nginx format
   _ "github.com/caddyserver/format-encoder"
 
   // import the http handler
@@ -147,13 +149,40 @@ Run the Caddy server
 go run main.go run -config config.json
 ```
 
+## Demo
+
+This repository also contains an example using Docker.
+Steps to run this demo are as follows:
+
+```bash
+# run CrowdSec container
+$ docker-compose up -d crowdsec
+
+# add the Caddy bouncer, generating an API key
+$ docker-compose exec crowdsec cscli bouncers add caddy-bouncer
+
+# copy and paste the API key in the ./docker/config.json file
+# below is the git diff after changing the appropriate line:
+$ git diff
+
+- "api_key": "<api_key>",
++ "api_key": "9e4ac94cf9aebaa3625a1d51951230a9",
+
+# run Caddy; at first run a custom build will be created using xcaddy
+$ docker-compose up -d caddy
+
+# tail the logs
+$ docker-compose logs -tf
+```
+
+You can then access https://localhost:9443 and https://localhost:8443.
+The latter is an example of using the [Layer 4 App](https://github.com/mholt/caddy-l4) and will simply proxy to port 9443 in this case. 
+
 ## TODO
 
-* Soft fail on connection error to CrowdSec
-* Add log integration from Caddy to CrowdSec (i.e. using Nginx log format)
 * Add tests
-* Do testing with IPv6
-* Extend the Docker example with a more complete setup
+* Soft fail on connection errors to CrowdSec
+* Tests with IPv6
 * Add captcha action (currently works the same as a ban)
 * Add support for custom actions (defaults to blocking access now)
 * Test with *project conncept* (Caddy layer 4 app; TCP seems to work; UDP to be tested)
