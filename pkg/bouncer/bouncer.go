@@ -71,13 +71,14 @@ func (b *Bouncer) Init() error {
 func (b *Bouncer) Run() {
 
 	if !b.useStreamingBouncer {
+		// the LiveBouncer has nothing to run in the background; return early
 		return
 	}
 
 	// TODO: handle errors? Return it to caller?
 
 	go func() error {
-		b.logger.Info("start processing new and deleted decisions ...")
+		b.logger.Info("start processing new and deleted decisions")
 		for {
 			select {
 			// TODO: handle the process quitting

@@ -38,10 +38,16 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 
 // CrowdSec is a Caddy App that functions as a CrowdSec bouncer
 type CrowdSec struct {
-	APIKey           string `json:"api_key"`
-	APIUrl           string `json:"api_url,omitempty"`
-	TickerInterval   string `json:"ticker_interval,omitempty"`
-	StreamingEnabled *bool  `json:"enable_streaming,omitempty"`
+	// APIKey for the CrowdSec Local API
+	APIKey string `json:"api_key"`
+	// APIUrl for the CrowdSec Local API. Defaults to http://127.0.0.1:8080/
+	APIUrl string `json:"api_url,omitempty"`
+	// TickerInterval is the interval the StreamBouncer uses for querying
+	// the CrowdSec Local API. Defaults to "10s".
+	TickerInterval string `json:"ticker_interval,omitempty"`
+	// StreamingEnabled indicates whether the StreamBouncer should be used.
+	// If it's false, the LiveBouncer is used. Defaults to true.
+	StreamingEnabled *bool `json:"enable_streaming,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -82,6 +88,10 @@ func (c *CrowdSec) processDefaults() {
 	if c.TickerInterval == "" {
 		c.TickerInterval = "60s"
 	}
+	if c.StreamingEnabled == nil {
+		trueValue := true
+		c.StreamingEnabled = &trueValue
+	}
 }
 
 // Validate ensures the app's configuration is valid.
@@ -111,7 +121,7 @@ func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
-	return c.StreamingEnabled == nil || *c.StreamingEnabled
+	return *c.StreamingEnabled
 }
 
 // Interface guards
