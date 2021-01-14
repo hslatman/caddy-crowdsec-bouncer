@@ -85,7 +85,9 @@ func (b *Bouncer) Run() {
 			// 	c.logger.Info("terminating bouncer process")
 			// 	return nil
 			case decisions := <-b.streamingBouncer.Stream:
-				b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
+				if len(decisions.Deleted) > 0 {
+					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
+				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				for _, decision := range decisions.Deleted {
 					if err := b.Delete(decision); err != nil {
@@ -94,7 +96,9 @@ func (b *Bouncer) Run() {
 						b.logger.Debug(fmt.Sprintf("deleted '%s'", *decision.Value))
 					}
 				}
-				b.logger.Debug(fmt.Sprintf("processing %d added decisions", len(decisions.New)))
+				if len(decisions.New) > 0 {
+					b.logger.Debug(fmt.Sprintf("processing %d added decisions", len(decisions.New)))
+				}
 				for _, decision := range decisions.New {
 					if err := b.Add(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))

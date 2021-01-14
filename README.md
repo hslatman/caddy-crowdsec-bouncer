@@ -160,5 +160,4 @@ go run main.go run -config config.json
 * Add metrics integration?
 * Add profiling integration?
 * Caddyfile configuration support?
-* Make the debug log a little bit less chatty (i.e. less occurrences of decision processing)
 * ...
