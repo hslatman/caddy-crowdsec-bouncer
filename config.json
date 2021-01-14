@@ -6,7 +6,21 @@
                 "writer": {
                   "output": "stderr"
                 }
-            }
+            },
+            "access": {
+              "level": "DEBUG",
+              "writer": {
+                "output": "file",
+                "filename": "./logs/access.log"
+              },
+              "encoder": {
+                "format": "formatted",
+                "template": "{common_log} \"{request>headers>Referer>[0]}\" \"{request>headers>User-Agent>[0]}\""
+              },
+              "include": [
+                "http.log.access.access"
+              ]
+          }
         }
     },
     "apps": {
@@ -81,7 +95,9 @@
                 ]
               }
             ],
-            "logs": {}
+            "logs": {
+              "default_logger_name": "access"
+            }
           }
         }
       },

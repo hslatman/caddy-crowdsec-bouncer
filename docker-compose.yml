@@ -5,3 +5,5 @@ services:
     image: crowdsecurity/crowdsec
     ports:
       - "8080:8080"
+    volumes:
+      - ./logs:/var/log/nginx/
