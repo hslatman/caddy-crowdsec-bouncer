@@ -54,7 +54,7 @@ type CrowdSec struct {
 	bouncer *bouncer.Bouncer
 }
 
-// Provision sets up the OpenAPI Validator responder.
+// Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 	c.processDefaults()

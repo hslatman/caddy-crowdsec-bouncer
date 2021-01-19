@@ -1,20 +1,20 @@
 # CrowdSec Bouncer for Caddy
 
-A (WIP) Caddy app and http handler that blocks malicious traffic based on decisions made by [CrowdSec](https://crowdsec.net/).
+A [Caddy](https://caddyserver.com/) module that blocks malicious traffic based on decisions made by [CrowdSec](https://crowdsec.net/).
 
 ## Description
 
-__This repository is currently a WIP. Things are likely going to change a bit.__
+__This repository is currently a WIP. Things may change a bit.__
 
 CrowdSec is a free and open source security automation tool that uses local logs and a set of scenarios to infer malicious intent. 
 In addition to operating locally, an optional community integration is also available, through which crowd-sourced IP reputation lists are distributed.
 
 The architecture of CrowdSec is very modular.
-Its core is the CrowdSec Agent, which keeps track of all data and related systems.
+At its core is the CrowdSec Agent, which keeps track of all data and related systems.
 Bouncers are pieces of software that perform specific actions based on the decisions of the Agent.
 
 This repository contains a custom CrowdSec Bouncer that can be embedded as a Caddy module.
-It consists of the follwing two main pieces:
+It consists of the follwing three main pieces:
 
 * A Caddy App
 * A Caddy HTTP Handler
@@ -23,6 +23,7 @@ It consists of the follwing two main pieces:
 The App is responsible for communicating with a CrowdSec Agent via the CrowdSec *Local API* and keeping track of the decisions of the Agent.
 The HTTP Handler checks client IPs of incoming requests against the decisions stored by the App.
 This way, multiple independent HTTP Handlers or TCP Connection Matchers can use the storage exposed by the App.
+The App can be configured to use either the StreamBouncer, which gets decisions via a HTTP polling mechanism, or the LiveBouncer, which (currently) sends a request on every incoming HTTP request or Layer 4 connection setup.
 
 ## Usage
 
@@ -68,7 +69,8 @@ Example config.json:
       "crowdsec": {
         "api_key": "<insert_crowdsec_local_api_key_here>",
         "api_url": "http://127.0.0.1:8080/",
-        "ticker_interval": "10s"
+        "ticker_interval": "10s",
+	"enable_streaming": true
       },
       "http": {
         "http_port": 9080,
@@ -189,4 +191,6 @@ The latter is an example of using the [Layer 4 App](https://github.com/mholt/cad
 * Add metrics integration?
 * Add profiling integration?
 * Caddyfile configuration support?
+* Add note about `realip` to README.md (instead of just in code)
+* Caching the LiveBouncer (for the duration of the decision)?
 * ...
