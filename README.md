@@ -183,7 +183,6 @@ The latter is an example of using the [Layer 4 App](https://github.com/mholt/cad
 ## TODO
 
 * Add tests
-* Soft fail on connection errors to CrowdSec
 * Tests with IPv6
 * Add captcha action (currently works the same as a ban)
 * Add support for custom actions (defaults to blocking access now)

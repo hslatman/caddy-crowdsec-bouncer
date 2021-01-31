@@ -69,6 +69,7 @@ func (b *Bouncer) EnableHardFails() {
 
 // Init initializes the Bouncer
 func (b *Bouncer) Init() error {
+
 	if b.useStreamingBouncer {
 		return b.streamingBouncer.Init()
 	}
@@ -84,16 +85,10 @@ func (b *Bouncer) Run() {
 		return
 	}
 
-	// TODO: handle errors? Return it to caller?
-
 	go func() error {
 		b.logger.Info("start processing new and deleted decisions")
 		for {
 			select {
-			// TODO: handle the process quitting
-			// case <-t.Dying():
-			// 	c.logger.Info("terminating bouncer process")
-			// 	return nil
 			case decisions := <-b.streamingBouncer.Stream:
 				if len(decisions.Deleted) > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
@@ -136,7 +131,6 @@ func (b *Bouncer) Run() {
 		}
 	}()
 
-	// TODO: handle connection errors in here? Soft or hard fail? Reconnects?
 	go b.streamingBouncer.Run()
 }
 
@@ -193,7 +187,12 @@ func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
 
 	decision, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
-		return nil, err
+		if b.shouldFailHard {
+			b.logger.Fatal(err.Error())
+		} else {
+			b.logger.Error(err.Error())
+		}
+		return nil, nil // when not failing hard, we return no error
 	}
 
 	if len(*decision) >= 1 {
