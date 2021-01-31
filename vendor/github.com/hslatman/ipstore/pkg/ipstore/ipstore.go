@@ -17,12 +17,14 @@ package ipstore
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	cr "github.com/hslatman/cidranger"
 )
 
 // Store is a (simple) Key/Value store using IPs and CIDRs as keys
 type Store struct {
+	*sync.RWMutex
 	trie cr.Ranger
 }
 
@@ -38,7 +40,8 @@ func (e entry) Network() net.IPNet {
 // New returns a new instance of IPStore
 func New() *Store {
 	return &Store{
-		trie: cr.NewPCTrieRanger(),
+		RWMutex: &sync.RWMutex{},
+		trie:    cr.NewPCTrieRanger(),
 	}
 }
 
@@ -55,6 +58,9 @@ func (s *Store) Add(key net.IP, value interface{}) error {
 
 // AddCIDR adds a new entry to the store mapped by net.IPNet
 func (s *Store) AddCIDR(key net.IPNet, value interface{}) error {
+
+	s.Lock()
+	defer s.Unlock()
 
 	entry := entry{
 		net:   key,
@@ -84,6 +90,9 @@ func (s *Store) Remove(key net.IP) (interface{}, error) {
 // RemoveCIDR removes entry associated with net.IPNet from store
 func (s *Store) RemoveCIDR(key net.IPNet) (interface{}, error) {
 
+	s.Lock()
+	defer s.Unlock()
+
 	re, err := s.trie.Remove(key)
 	if err != nil {
 		return nil, err
@@ -109,6 +118,10 @@ func (s *Store) RemoveIPOrCIDR(ipOrCIDR string, value interface{}) (interface{},
 
 // Contains returns whether an entry is available for the net.IP
 func (s *Store) Contains(ip net.IP) (bool, error) {
+
+	s.RLock()
+	defer s.RUnlock()
+
 	return s.trie.Contains(ip)
 }
 
@@ -116,6 +129,9 @@ func (s *Store) Contains(ip net.IP) (bool, error) {
 // Because multiple CIDRs may contain the key, we return a slice
 // of entries instead of a single entry.
 func (s *Store) Get(key net.IP) ([]interface{}, error) {
+
+	s.RLock()
+	defer s.RUnlock()
 
 	r, err := s.trie.ContainingNetworks(key)
 	if err != nil {
@@ -139,6 +155,9 @@ func (s *Store) Get(key net.IP) ([]interface{}, error) {
 
 // GetCIDR returns entry from the store if it's available
 func (s *Store) GetCIDR(key net.IPNet) ([]interface{}, error) {
+
+	s.RLock()
+	defer s.RUnlock()
 
 	// TODO: decide if we only want to return a single interface{}, because a specific CIDR should only exist once now
 
@@ -180,6 +199,10 @@ func (s *Store) GetCIDR(key net.IPNet) ([]interface{}, error) {
 
 // Len returns the number of entries in the store
 func (s *Store) Len() int {
+
+	s.RLock()
+	defer s.RUnlock()
+
 	return s.trie.Len()
 }
 

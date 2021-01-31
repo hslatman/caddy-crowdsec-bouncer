@@ -198,7 +198,7 @@ github.com/google/uuid
 # github.com/hslatman/cidranger v1.0.3-0.20210102151717-b2292da972c3
 github.com/hslatman/cidranger
 github.com/hslatman/cidranger/net
-# github.com/hslatman/ipstore v0.0.0-20210102184939-57531d84cc2c
+# github.com/hslatman/ipstore v0.0.0-20210131120430-64b55d649887
 ## explicit
 github.com/hslatman/ipstore/pkg/ipstore
 # github.com/huandu/xstrings v1.3.1
