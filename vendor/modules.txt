@@ -292,6 +292,7 @@ github.com/naoina/go-stringutil
 github.com/naoina/toml
 github.com/naoina/toml/ast
 # github.com/pkg/errors v0.9.1
+## explicit
 github.com/pkg/errors
 # github.com/prometheus/client_golang v1.8.0
 github.com/prometheus/client_golang/prometheus
@@ -435,6 +436,8 @@ golang.org/x/net/internal/timeseries
 golang.org/x/net/ipv4
 golang.org/x/net/ipv6
 golang.org/x/net/trace
+# golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
+## explicit
 # golang.org/x/sys v0.0.0-20201116161645-c061ba923fbb
 golang.org/x/sys/cpu
 golang.org/x/sys/internal/unsafeheader

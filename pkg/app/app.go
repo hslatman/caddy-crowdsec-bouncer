@@ -47,7 +47,12 @@ type CrowdSec struct {
 	TickerInterval string `json:"ticker_interval,omitempty"`
 	// StreamingEnabled indicates whether the StreamBouncer should be used.
 	// If it's false, the LiveBouncer is used. Defaults to true.
-	StreamingEnabled *bool `json:"enable_streaming,omitempty"`
+	EnableStreaming *bool `json:"enable_streaming,omitempty"`
+	// FailHard indicates whether calls to the CrowdSec API should
+	// return in hard failures, resulting in Caddy quitting vs.
+	// Caddy continuing operation (with a chance of not performing)
+	// validations. Defaults to false.
+	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -72,6 +77,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		bouncer.EnableStreaming()
 	}
 
+	if c.shouldFailHard() {
+		bouncer.EnableHardFails()
+	}
+
 	if err := bouncer.Init(); err != nil {
 		return err
 	}
@@ -88,9 +97,13 @@ func (c *CrowdSec) processDefaults() {
 	if c.TickerInterval == "" {
 		c.TickerInterval = "60s"
 	}
-	if c.StreamingEnabled == nil {
+	if c.EnableStreaming == nil {
 		trueValue := true
-		c.StreamingEnabled = &trueValue
+		c.EnableStreaming = &trueValue
+	}
+	if c.EnableHardFails == nil {
+		falseValue := false
+		c.EnableHardFails = &falseValue
 	}
 }
 
@@ -121,7 +134,11 @@ func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
-	return *c.StreamingEnabled
+	return *c.EnableStreaming
+}
+
+func (c *CrowdSec) shouldFailHard() bool {
+	return *c.EnableHardFails
 }
 
 // Interface guards

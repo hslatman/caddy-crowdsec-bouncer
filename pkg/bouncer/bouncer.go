@@ -21,6 +21,8 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+
 	"go.uber.org/zap"
 )
 
@@ -28,7 +30,7 @@ import (
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	userAgent := "caddy-cs-bouncer/v0.1.0"
 	return &Bouncer{
-		streamingBouncer: &csbouncer.StreamBouncer{
+		streamingBouncer: &bouncer.StreamBouncer{
 			APIKey:         apiKey,
 			APIUrl:         apiURL,
 			TickerInterval: tickerInterval,
@@ -46,16 +48,23 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
-	streamingBouncer    *csbouncer.StreamBouncer
+	streamingBouncer    *bouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	store               *crowdSecStore
 	logger              *zap.Logger
 	useStreamingBouncer bool
+	shouldFailHard      bool
 }
 
 // EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer)
 func (b *Bouncer) EnableStreaming() {
 	b.useStreamingBouncer = true
+}
+
+// EnableHardFails will make the bouncer fail hard on (connection) errors
+// when contacting the CrowdSec Local API
+func (b *Bouncer) EnableHardFails() {
+	b.shouldFailHard = true
 }
 
 // Init initializes the Bouncer
@@ -90,6 +99,7 @@ func (b *Bouncer) Run() {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
 				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
+				// TODO: process in separate goroutines/waitgroup?
 				for _, decision := range decisions.Deleted {
 					if err := b.Delete(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to delete decision for '%s': %s", *decision.Value, err))
@@ -100,12 +110,27 @@ func (b *Bouncer) Run() {
 				if len(decisions.New) > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d added decisions", len(decisions.New)))
 				}
+				// TODO: process in separate goroutines/waitgroup?
 				for _, decision := range decisions.New {
 					if err := b.Add(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
 					} else {
 						b.logger.Debug(fmt.Sprintf("Adding '%s' for '%s'", *decision.Value, *decision.Duration))
 					}
+				}
+			}
+		}
+	}()
+
+	go func() {
+		b.logger.Info("start processing crowdsec api errors")
+		for {
+			select {
+			case err := <-b.streamingBouncer.Errors:
+				if b.shouldFailHard {
+					b.logger.Fatal(err.Error(), zap.String("address", b.streamingBouncer.APIUrl))
+				} else {
+					b.logger.Error(err.Error(), zap.String("address", b.streamingBouncer.APIUrl))
 				}
 			}
 		}
