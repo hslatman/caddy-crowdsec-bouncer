@@ -180,16 +180,26 @@ $ docker-compose logs -tf
 You can then access https://localhost:9443 and https://localhost:8443.
 The latter is an example of using the [Layer 4 App](https://github.com/mholt/caddy-l4) and will simply proxy to port 9443 in this case. 
 
-## TODO
+## Remote IPs
+
+The Caddy HTTP handler relies on the `RemoteAddr` of the `*http.Request` to determine the source IP address. 
+That IP is then used to check against the CrowdSec decisions to see if it's allowed in or not.
+These days many systems actually sit behind a proxy, a CDN or something different, which means that the IP of the client requesting a resource is masked by the system that sits between the client and the server.
+
+To ensure that the actual client IP is used to (dis)allow access, you can use the https://github.com/kirsch33/realip Caddy module.
+It can be configured to replace the `RemoteAddr` of the incoming request with a value from a header (such as the `X-Forwarded-For` header), resulting in the actual client IP being set in the RemoteAddr property. 
+The `realip` handler should be configured to execute before the `crowdsec` handler, so that the `RemoteAddr` has been updated before the `crowdsec` handler executes.
+Your exact configuration depends on the (configuration of the) system that exists between the client and your server.
+
+## Things That Can Be Done
 
 * Add tests
 * Tests with IPv6
 * Add captcha action (currently works the same as a ban)
 * Add support for custom actions (defaults to blocking access now)
 * Test with *project conncept* (Caddy layer 4 app; TCP seems to work; UDP to be tested)
-* Add metrics integration?
-* Add profiling integration?
+* Add Caddy metrics integration?
+* Add Caddy profiling integration?
 * Caddyfile configuration support?
-* Add note about `realip` to README.md (instead of just in code)
 * Caching the LiveBouncer (for the duration of the decision)?
 * ...
