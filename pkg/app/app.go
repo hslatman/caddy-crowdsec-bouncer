@@ -15,6 +15,7 @@
 package app
 
 import (
+	"errors"
 	"net"
 
 	"github.com/caddyserver/caddy/v2"
@@ -111,6 +112,10 @@ func (c *CrowdSec) processDefaults() {
 func (c *CrowdSec) Validate() error {
 
 	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
+
+	if c.bouncer == nil {
+		return errors.New("bouncer instance not available due to (potential) misconfiguration")
+	}
 
 	return nil
 }

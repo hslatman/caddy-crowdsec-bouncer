@@ -96,7 +96,7 @@ func (b *Bouncer) Run() {
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				// TODO: process in separate goroutines/waitgroup?
 				for _, decision := range decisions.Deleted {
-					if err := b.Delete(decision); err != nil {
+					if err := b.delete(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to delete decision for '%s': %s", *decision.Value, err))
 					} else {
 						b.logger.Debug(fmt.Sprintf("deleted '%s'", *decision.Value))
@@ -107,7 +107,7 @@ func (b *Bouncer) Run() {
 				}
 				// TODO: process in separate goroutines/waitgroup?
 				for _, decision := range decisions.New {
-					if err := b.Add(decision); err != nil {
+					if err := b.add(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
 					} else {
 						b.logger.Debug(fmt.Sprintf("Adding '%s' for '%s'", *decision.Value, *decision.Duration))
@@ -142,7 +142,7 @@ func (b *Bouncer) ShutDown() error {
 }
 
 // Add adds a Decision to the storage
-func (b *Bouncer) Add(decision *models.Decision) error {
+func (b *Bouncer) add(decision *models.Decision) error {
 
 	// TODO: provide additional ways for storing the decisions
 	// (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
@@ -150,12 +150,13 @@ func (b *Bouncer) Add(decision *models.Decision) error {
 	// requires looping through the ranges
 
 	// TODO: store additional data about the decision (i.e. time added to store, etc)
+	// TODO: wrap the *models.Decision in an internal model (after validation)?
 
 	return b.store.add(decision)
 }
 
 // Delete removes a Decision from the storage
-func (b *Bouncer) Delete(decision *models.Decision) error {
+func (b *Bouncer) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 

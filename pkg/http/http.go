@@ -15,6 +15,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -63,6 +64,11 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 // Validate ensures the app's configuration is valid.
 func (h *Handler) Validate() error {
+
+	if h.crowdsec == nil {
+		return errors.New("crowdsec app not available")
+	}
+
 	return nil
 }
 

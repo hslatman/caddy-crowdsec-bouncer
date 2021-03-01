@@ -34,6 +34,10 @@ func newStore() *crowdSecStore {
 
 func (s *crowdSecStore) add(decision *models.Decision) error {
 
+	if isInvalid(decision) {
+		return nil
+	}
+
 	scope := *decision.Scope
 	value := *decision.Value
 
@@ -56,6 +60,11 @@ func (s *crowdSecStore) add(decision *models.Decision) error {
 }
 
 func (s *crowdSecStore) delete(decision *models.Decision) error {
+
+	if isInvalid(decision) {
+		return nil
+	}
+
 	scope := *decision.Scope
 	value := *decision.Value
 
@@ -102,4 +111,28 @@ func (s *crowdSecStore) get(key net.IP) (*models.Decision, error) {
 	}
 
 	return first, err
+}
+
+// isInvalid determines if a *models.Decision struct is
+// valid, meaning that it's not pointing to nil and has a
+// Scope, Value and Type set, the minimum required to operate
+func isInvalid(d *models.Decision) bool {
+
+	if d == nil {
+		return true
+	}
+
+	if d.Scope == nil {
+		return true
+	}
+
+	if d.Value == nil {
+		return true
+	}
+
+	if d.Type == nil {
+		return true
+	}
+
+	return false
 }
