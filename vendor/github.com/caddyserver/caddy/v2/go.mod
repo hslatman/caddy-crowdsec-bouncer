@@ -6,7 +6,7 @@ require (
 	github.com/Masterminds/sprig/v3 v3.1.0
 	github.com/alecthomas/chroma v0.8.2
 	github.com/aryann/difflib v0.0.0-20170710044230-e206f873d14a
-	github.com/caddyserver/certmagic v0.12.1-0.20201209195841-b726d1ed13c3
+	github.com/caddyserver/certmagic v0.12.1-0.20201215190346-201f83a06067
 	github.com/dustin/go-humanize v1.0.1-0.20200219035652-afde56e7acac
 	github.com/go-chi/chi v4.1.2+incompatible
 	github.com/google/cel-go v0.6.0
@@ -17,7 +17,7 @@ require (
 	github.com/mholt/acmez v0.1.1
 	github.com/naoina/go-stringutil v0.1.0 // indirect
 	github.com/naoina/toml v0.1.1
-	github.com/prometheus/client_golang v1.7.1
+	github.com/prometheus/client_golang v1.9.0
 	github.com/smallstep/certificates v0.15.4
 	github.com/smallstep/cli v0.15.2
 	github.com/smallstep/nosql v0.3.0 // cannot upgrade from v0.3.0 until protobuf warning is fixed

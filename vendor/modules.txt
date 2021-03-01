@@ -46,18 +46,21 @@ github.com/alecthomas/chroma/lexers/z
 github.com/alecthomas/chroma/styles
 # github.com/antlr/antlr4 v0.0.0-20200503195918-621b933c7a7f
 github.com/antlr/antlr4/runtime/Go/antlr
+# github.com/aryann/difflib v0.0.0-20170710044230-e206f873d14a
+github.com/aryann/difflib
 # github.com/asaskevich/govalidator v0.0.0-20200907205600-7a23bdc65eef
 github.com/asaskevich/govalidator
 # github.com/beorn7/perks v1.0.1
 github.com/beorn7/perks/quantile
 # github.com/buger/jsonparser v1.0.0
 github.com/buger/jsonparser
-# github.com/caddyserver/caddy/v2 v2.3.0-rc.1
+# github.com/caddyserver/caddy/v2 v2.3.0
 ## explicit
 github.com/caddyserver/caddy/v2
 github.com/caddyserver/caddy/v2/caddyconfig
 github.com/caddyserver/caddy/v2/caddyconfig/caddyfile
 github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile
+github.com/caddyserver/caddy/v2/caddytest
 github.com/caddyserver/caddy/v2/cmd
 github.com/caddyserver/caddy/v2/modules/caddyhttp
 github.com/caddyserver/caddy/v2/modules/caddyhttp/caddyauth
@@ -83,7 +86,7 @@ github.com/caddyserver/caddy/v2/modules/filestorage
 github.com/caddyserver/caddy/v2/modules/logging
 github.com/caddyserver/caddy/v2/modules/metrics
 github.com/caddyserver/caddy/v2/modules/standard
-# github.com/caddyserver/certmagic v0.12.1-0.20201209195841-b726d1ed13c3
+# github.com/caddyserver/certmagic v0.12.1-0.20201215190346-201f83a06067
 github.com/caddyserver/certmagic
 # github.com/caddyserver/format-encoder v0.0.0-20201124212233-c10acf81b981
 ## explicit
@@ -294,7 +297,7 @@ github.com/naoina/toml/ast
 # github.com/pkg/errors v0.9.1
 ## explicit
 github.com/pkg/errors
-# github.com/prometheus/client_golang v1.8.0
+# github.com/prometheus/client_golang v1.9.0
 github.com/prometheus/client_golang/prometheus
 github.com/prometheus/client_golang/prometheus/internal
 github.com/prometheus/client_golang/prometheus/promauto
@@ -401,7 +404,9 @@ go.uber.org/zap/buffer
 go.uber.org/zap/internal/bufferpool
 go.uber.org/zap/internal/color
 go.uber.org/zap/internal/exit
+go.uber.org/zap/internal/ztest
 go.uber.org/zap/zapcore
+go.uber.org/zap/zaptest
 # golang.org/x/crypto v0.0.0-20201116153603-4be66e5b6582
 golang.org/x/crypto/bcrypt
 golang.org/x/crypto/blowfish
@@ -438,7 +443,7 @@ golang.org/x/net/ipv6
 golang.org/x/net/trace
 # golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
 ## explicit
-# golang.org/x/sys v0.0.0-20201116161645-c061ba923fbb
+# golang.org/x/sys v0.0.0-20201214210602-f9fddec55a1e
 golang.org/x/sys/cpu
 golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/plan9

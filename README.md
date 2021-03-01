@@ -193,11 +193,11 @@ Your exact configuration depends on the (configuration of the) system that exist
 
 ## Things That Can Be Done
 
-* Add tests
+* Add integration tests for the HTTP and L4 handlers
 * Tests with IPv6
-* Add captcha action (currently works the same as a ban)
-* Add support for custom actions (defaults to blocking access now)
 * Test with *project conncept* (Caddy layer 4 app; TCP seems to work; UDP to be tested)
+* Add captcha action (currently works the same as a ban)?
+* Add support for custom actions (defaults to blocking access now)?
 * Add Caddy metrics integration?
 * Add Caddy profiling integration?
 * Caddyfile configuration support?
