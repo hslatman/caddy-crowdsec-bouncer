@@ -110,7 +110,7 @@ func (b *Bouncer) Run() {
 					if err := b.add(decision); err != nil {
 						b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
 					} else {
-						b.logger.Debug(fmt.Sprintf("Adding '%s' for '%s'", *decision.Value, *decision.Duration))
+						b.logger.Debug(fmt.Sprintf("adding '%s' for '%s'", *decision.Value, *decision.Duration))
 					}
 				}
 			}
