@@ -70,17 +70,13 @@ func (b *StreamBouncer) Run() {
 		b.Stream <- data
 	}
 
-	for {
-		select {
-		case <-ticker.C:
-			data, _, err := b.APIClient.Decisions.GetStream(context.Background(), false)
-			if err != nil {
-				b.Errors <- err
-			}
-
-			if data != nil {
-				b.Stream <- data
-			}
+	for range ticker.C {
+		data, _, err := b.APIClient.Decisions.GetStream(context.Background(), false)
+		if err != nil {
+			b.Errors <- err
+		}
+		if data != nil {
+			b.Stream <- data
 		}
 	}
 }

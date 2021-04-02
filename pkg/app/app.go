@@ -67,7 +67,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
-	defer c.logger.Sync()
+	defer c.logger.Sync() // nolint
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
