@@ -57,7 +57,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.crowdsec = crowdsecAppIface.(*app.CrowdSec)
 
 	h.logger = ctx.Logger(h)
-	defer h.logger.Sync()
+	defer h.logger.Sync() // nolint
 
 	return nil
 }

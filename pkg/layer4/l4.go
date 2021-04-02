@@ -53,7 +53,7 @@ func (m *Matcher) Provision(ctx caddy.Context) error {
 	m.crowdsec = crowdsecAppIface.(*app.CrowdSec)
 
 	m.logger = ctx.Logger(m)
-	defer m.logger.Sync()
+	defer m.logger.Sync() // nolint
 
 	return nil
 }
