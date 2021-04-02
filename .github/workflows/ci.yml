@@ -35,16 +35,6 @@ jobs:
           $HOME/go/bin/golangci-lint run --timeout=30m \
                                          --max-issues-per-linter 0 \
                                          --max-same-issues 0 \
-                                         -E exportloopref \
-                                         -E gocritic \
-                                         -E godot \
-                                         -E goimports \
-                                         -E golint \
-                                         -E maligned \
-                                         -E misspell \
-                                         -E prealloc \
-                                         -E unconvert \
-                                         -E whitespace \
                                          ./...
 
       - name: Testing
