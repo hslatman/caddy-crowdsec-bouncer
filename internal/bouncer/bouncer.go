@@ -95,7 +95,7 @@ func (b *Bouncer) Run() {
 				if err := b.delete(decision); err != nil {
 					b.logger.Error(fmt.Sprintf("unable to delete decision for '%s': %s", *decision.Value, err))
 				} else {
-					b.logger.Debug(fmt.Sprintf("deleted '%s'", *decision.Value))
+					b.logger.Debug(fmt.Sprintf("deleted '%s' (scope: %s)", *decision.Value, *decision.Scope))
 				}
 			}
 			if len(decisions.New) > 0 {
@@ -106,7 +106,7 @@ func (b *Bouncer) Run() {
 				if err := b.add(decision); err != nil {
 					b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
 				} else {
-					b.logger.Debug(fmt.Sprintf("adding '%s' for '%s'", *decision.Value, *decision.Duration))
+					b.logger.Debug(fmt.Sprintf("adding '%s' (scope: %s) for '%s'", *decision.Value, *decision.Scope, *decision.Duration))
 				}
 			}
 		}
