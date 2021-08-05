@@ -14,7 +14,7 @@ import (
 // periodically to get (new) decisions. It's largely a copy of the
 // implementation in github.com/crowdsec/go-cs-bouncer, but without
 // the fatal calls to log.Fatalf when an API call fails. This allows
-// for more control over what happesn when a connection error
+// for more control over what happens when a connection error
 // occurs.
 type StreamBouncer struct {
 	APIKey                 string

@@ -28,7 +28,7 @@ func init() {
 	caddy.RegisterModule(Matcher{})
 }
 
-// Matcher matches denied IPs according to CrowdSec decisions
+// Matcher matches IPs to CrowdSec decisions to (dis)allow access
 type Matcher struct {
 	logger   *zap.Logger
 	crowdsec *crowdsec.CrowdSec

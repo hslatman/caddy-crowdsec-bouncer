@@ -31,7 +31,6 @@ func new(t *testing.T) (*Bouncer, error) {
 	bouncer.EnableStreaming()
 
 	// the code below mimicks the bouncer.streamingBouncer.Init() functionality
-	// this was
 	bouncer.streamingBouncer.Stream = make(chan *models.DecisionsStreamResponse)
 
 	apiURL, err := url.Parse(bouncer.streamingBouncer.APIUrl)

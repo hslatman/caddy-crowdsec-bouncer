@@ -31,10 +31,10 @@ Get the module
 
 ```bash
 # get the http handler
-go get github.com/hslatman/caddy-crowdsec-bouncer/pkg/http
+go get github.com/hslatman/caddy-crowdsec-bouncer/http
 
 # get the layer4 connection matcher
-go get github.com/hslatman/caddy-crowdsec-bouncer/pkg/layer4
+go get github.com/hslatman/caddy-crowdsec-bouncer/layer4
 ```
 
 Create a (custom) Caddy server (or use *xcaddy*)
@@ -51,9 +51,9 @@ import (
   _ "github.com/caddyserver/format-encoder"
 
   // import the http handler
-  _ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/http"
-  // import the layer4 matcher
-  _ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/layer4"
+  _ "github.com/hslatman/caddy-crowdsec-bouncer/http"
+  // import the layer4 matcher (in case you want to block connections to layer4 servers using CrowdSec)
+  _ "github.com/hslatman/caddy-crowdsec-bouncer/layer4"
 )
 
 func main() {
@@ -70,7 +70,7 @@ Example config.json:
         "api_key": "<insert_crowdsec_local_api_key_here>",
         "api_url": "http://127.0.0.1:8080/",
         "ticker_interval": "10s",
-	"enable_streaming": true
+        "enable_streaming": true
       },
       "http": {
         "http_port": 9080,

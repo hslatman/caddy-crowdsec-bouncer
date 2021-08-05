@@ -21,10 +21,18 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 
-	//"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
-
 	"go.uber.org/zap"
 )
+
+// Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
+type Bouncer struct {
+	streamingBouncer    *StreamBouncer
+	liveBouncer         *csbouncer.LiveBouncer
+	store               *crowdSecStore
+	logger              *zap.Logger
+	useStreamingBouncer bool
+	shouldFailHard      bool
+}
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
@@ -44,16 +52,6 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 		store:  newStore(),
 		logger: logger,
 	}, nil
-}
-
-// Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
-type Bouncer struct {
-	streamingBouncer    *StreamBouncer
-	liveBouncer         *csbouncer.LiveBouncer
-	store               *crowdSecStore
-	logger              *zap.Logger
-	useStreamingBouncer bool
-	shouldFailHard      bool
 }
 
 // EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer)

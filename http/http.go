@@ -32,7 +32,7 @@ func init() {
 	caddy.RegisterModule(Handler{})
 }
 
-// Handler is a Caddy HTTP handler that integrates with the CrowdSec Caddy app
+// Handler matches request IPs to CrowdSec decisions to (dis)allow access
 type Handler struct {
 	logger   *zap.Logger
 	crowdsec *crowdsec.CrowdSec

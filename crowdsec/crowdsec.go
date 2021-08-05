@@ -37,7 +37,10 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// CrowdSec is a Caddy App that functions as a CrowdSec bouncer
+// CrowdSec is a Caddy App that functions as a CrowdSec bouncer. It acts
+// as a CrowdSec API client as well as a local cache for CrowdSec decisions,
+// which can be used by the HTTP handler and Layer4 matcher to decide if
+// a request or connection is allowed or not.
 type CrowdSec struct {
 	// APIKey for the CrowdSec Local API
 	APIKey string `json:"api_key"`
@@ -46,11 +49,14 @@ type CrowdSec struct {
 	// TickerInterval is the interval the StreamBouncer uses for querying
 	// the CrowdSec Local API. Defaults to "10s".
 	TickerInterval string `json:"ticker_interval,omitempty"`
-	// StreamingEnabled indicates whether the StreamBouncer should be used.
-	// If it's false, the LiveBouncer is used. Defaults to true.
+	// EnableStreaming indicates whether the StreamBouncer should be used.
+	// If it's false, the LiveBouncer is used. The StreamBouncer keeps
+	// CrowdSec decisions in memory, resulting in quicker lookups. The
+	// LiveBouncer will perform an API call to your CrowdSec instance.
+	// Defaults to true.
 	EnableStreaming *bool `json:"enable_streaming,omitempty"`
-	// FailHard indicates whether calls to the CrowdSec API should
-	// return in hard failures, resulting in Caddy quitting vs.
+	// EnableHardFails indicates whether calls to the CrowdSec API should
+	// result in hard failures, resulting in Caddy quitting vs.
 	// Caddy continuing operation (with a chance of not performing)
 	// validations. Defaults to false.
 	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
