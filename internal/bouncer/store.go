@@ -43,9 +43,9 @@ func (s *crowdSecStore) add(decision *models.Decision) error {
 
 	switch scope {
 	case "Ip":
-		ip := net.ParseIP(value)
-		if ip == nil {
-			return fmt.Errorf("could not parse an IP from %s", value)
+		ip, err := parseIP(value)
+		if err != nil {
+			return err
 		}
 		return s.store.Add(ip, decision)
 	case "Range":
@@ -70,11 +70,11 @@ func (s *crowdSecStore) delete(decision *models.Decision) error {
 
 	switch scope {
 	case "Ip":
-		ip := net.ParseIP(value)
-		if ip == nil {
-			return fmt.Errorf("could not parse an IP from %s", value)
+		ip, err := parseIP(value)
+		if err != nil {
+			return err
 		}
-		_, err := s.store.Remove(ip)
+		_, err = s.store.Remove(ip)
 		return err
 	case "Range":
 		_, net, err := net.ParseCIDR(value)
@@ -111,6 +111,27 @@ func (s *crowdSecStore) get(key net.IP) (*models.Decision, error) {
 	}
 
 	return first, err
+}
+
+// parseIP parses a value
+func parseIP(value string) (net.IP, error) {
+	var err error
+	var ip net.IP
+	var nw *net.IPNet
+	ip = net.ParseIP(value)
+	if ip == nil {
+		// try parsing as CIDR instead as fallback
+		ip, nw, err = net.ParseCIDR(value)
+		if err != nil {
+			return nil, err
+		}
+		// expect all bits to be ones for an IP; otherwise this is probably a range
+		ones, bits := nw.Mask.Size()
+		if ones != bits {
+			return nil, fmt.Errorf("%s seems to be a range instead of an IP", value)
+		}
+	}
+	return ip, nil
 }
 
 // isInvalid determines if a *models.Decision struct is

@@ -22,8 +22,8 @@ It consists of the follwing three main pieces:
 
 The App is responsible for communicating with a CrowdSec Agent via the CrowdSec *Local API* and keeping track of the decisions of the Agent.
 The HTTP Handler checks client IPs of incoming requests against the decisions stored by the App.
-This way, multiple independent HTTP Handlers or TCP Connection Matchers can use the storage exposed by the App.
-The App can be configured to use either the StreamBouncer, which gets decisions via a HTTP polling mechanism, or the LiveBouncer, which (currently) sends a request on every incoming HTTP request or Layer 4 connection setup.
+This way, multiple independent HTTP Handlers or Connection Matchers can use the storage exposed by the App.
+The App can be configured to use either the StreamBouncer, which gets decisions via a HTTP polling mechanism, or the LiveBouncer, which sends a request on every incoming HTTP request or Layer 4 connection setup.
 
 ## Usage
 
@@ -44,12 +44,7 @@ package main
 
 import (
   cmd "github.com/caddyserver/caddy/v2/cmd"
-
   _ "github.com/caddyserver/caddy/v2/modules/standard"
-
-  // the format-encoder is used to write logs using Nginx format
-  _ "github.com/caddyserver/format-encoder"
-
   // import the http handler
   _ "github.com/hslatman/caddy-crowdsec-bouncer/http"
   // import the layer4 matcher (in case you want to block connections to layer4 servers using CrowdSec)
@@ -103,7 +98,7 @@ Example config.json:
                     "handler": "headers",
                     "response": {
                       "set": {
-                        "Server": ["caddy-cs-bouncer"]
+                        "Server": ["caddy-cs-bouncer-example-server"]
                       }
                     }
                   }

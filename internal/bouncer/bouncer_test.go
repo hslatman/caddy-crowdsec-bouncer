@@ -74,6 +74,8 @@ func decisions() *models.DecisionsStreamResponse {
 	value1 := "127.0.0.1"
 	value2 := "127.0.0.2"
 	value3 := "10.0.0.1/24"
+	value4 := "128.0.0.1/32"
+	value5 := "129.0.0.1/24" // this will fail to insert (with IP scope), resulting in 129.0.0.1 to be allowed
 
 	return &models.DecisionsStreamResponse{
 		Deleted: []*models.Decision{},
@@ -104,6 +106,24 @@ func decisions() *models.DecisionsStreamResponse {
 				Scope:    &scopeRange,
 				Type:     &typ,
 				Value:    &value3,
+			},
+			{
+				Duration: &duration,
+				ID:       4,
+				Origin:   &source,
+				Scenario: &scenario,
+				Scope:    &scopeIP,
+				Type:     &typ,
+				Value:    &value4,
+			},
+			{
+				Duration: &duration,
+				ID:       5,
+				Origin:   &source,
+				Scenario: &scenario,
+				Scope:    &scopeIP,
+				Type:     &typ,
+				Value:    &value5,
 			},
 		},
 	}
@@ -178,6 +198,22 @@ func TestStreamingBouncer(t *testing.T) {
 			name: "10.0.1.0 allowed",
 			args: args{
 				ip: net.ParseIP("10.0.1.0"),
+			},
+			want:    true,
+			wantErr: false,
+		},
+		{
+			name: "128.0.0.1 not allowed",
+			args: args{
+				ip: net.ParseIP("128.0.0.1"),
+			},
+			want:    false,
+			wantErr: false,
+		},
+		{
+			name: "129.0.0.1 allowed",
+			args: args{
+				ip: net.ParseIP("129.0.0.1"),
 			},
 			want:    true,
 			wantErr: false,
