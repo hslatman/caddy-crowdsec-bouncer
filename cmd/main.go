@@ -22,8 +22,8 @@ import (
 
 	_ "github.com/mholt/caddy-l4"
 
-	_ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/http"
-	_ "github.com/hslatman/caddy-crowdsec-bouncer/pkg/layer4"
+	_ "github.com/hslatman/caddy-crowdsec-bouncer/http"
+	_ "github.com/hslatman/caddy-crowdsec-bouncer/layer4"
 )
 
 func main() {

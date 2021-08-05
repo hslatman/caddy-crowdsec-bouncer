@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package app
+package crowdsec
 
 import (
 	"errors"
@@ -22,7 +22,7 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
 
-	"github.com/hslatman/caddy-crowdsec-bouncer/pkg/bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 )
 
 func init() {

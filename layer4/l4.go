@@ -19,10 +19,9 @@ import (
 	"net"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	l4 "github.com/mholt/caddy-l4/layer4"
 	"go.uber.org/zap"
-
-	"github.com/hslatman/caddy-crowdsec-bouncer/pkg/app"
 )
 
 func init() {
@@ -32,7 +31,7 @@ func init() {
 // Matcher matches denied IPs according to CrowdSec decisions
 type Matcher struct {
 	logger   *zap.Logger
-	crowdsec *app.CrowdSec
+	crowdsec *crowdsec.CrowdSec
 }
 
 // CaddyModule returns the Caddy module information.
@@ -50,7 +49,7 @@ func (m *Matcher) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
-	m.crowdsec = crowdsecAppIface.(*app.CrowdSec)
+	m.crowdsec = crowdsecAppIface.(*crowdsec.CrowdSec)
 
 	m.logger = ctx.Logger(m)
 	defer m.logger.Sync() // nolint

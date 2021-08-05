@@ -21,7 +21,7 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+	//"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 
 	"go.uber.org/zap"
 )
@@ -30,7 +30,7 @@ import (
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	userAgent := "caddy-cs-bouncer/v0.1.0"
 	return &Bouncer{
-		streamingBouncer: &bouncer.StreamBouncer{
+		streamingBouncer: &StreamBouncer{
 			APIKey:         apiKey,
 			APIUrl:         apiURL,
 			TickerInterval: tickerInterval,
@@ -48,7 +48,7 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
-	streamingBouncer    *bouncer.StreamBouncer
+	streamingBouncer    *StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	store               *crowdSecStore
 	logger              *zap.Logger

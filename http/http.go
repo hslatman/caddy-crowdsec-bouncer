@@ -24,9 +24,8 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	"go.uber.org/zap"
-
-	"github.com/hslatman/caddy-crowdsec-bouncer/pkg/app"
 )
 
 func init() {
@@ -36,7 +35,7 @@ func init() {
 // Handler is a Caddy HTTP handler that integrates with the CrowdSec Caddy app
 type Handler struct {
 	logger   *zap.Logger
-	crowdsec *app.CrowdSec
+	crowdsec *crowdsec.CrowdSec
 }
 
 // CaddyModule returns the Caddy module information.
@@ -54,7 +53,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
-	h.crowdsec = crowdsecAppIface.(*app.CrowdSec)
+	h.crowdsec = crowdsecAppIface.(*crowdsec.CrowdSec)
 
 	h.logger = ctx.Logger(h)
 	defer h.logger.Sync() // nolint
