@@ -19,6 +19,7 @@ import (
 	"net"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
 
@@ -42,10 +43,10 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 // which can be used by the HTTP handler and Layer4 matcher to decide if
 // a request or connection is allowed or not.
 type CrowdSec struct {
-	// APIKey for the CrowdSec Local API
-	APIKey string `json:"api_key"`
 	// APIUrl for the CrowdSec Local API. Defaults to http://127.0.0.1:8080/
 	APIUrl string `json:"api_url,omitempty"`
+	// APIKey for the CrowdSec Local API
+	APIKey string `json:"api_key"`
 	// TickerInterval is the interval the StreamBouncer uses for querying
 	// the CrowdSec Local API. Defaults to "10s".
 	TickerInterval string `json:"ticker_interval,omitempty"`
@@ -69,11 +70,14 @@ type CrowdSec struct {
 // Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
-	c.processDefaults()
-
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
+
+	err := c.processDefaults()
+	if err != nil {
+		return err
+	}
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
@@ -97,9 +101,12 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-func (c *CrowdSec) processDefaults() {
+func (c *CrowdSec) processDefaults() error {
 	if c.APIUrl == "" {
-		c.APIUrl = "http://127.0.0.1:8080"
+		return errors.New("crowdsec API URL is missing")
+	}
+	if c.APIKey == "" {
+		return errors.New("crowdsec API Key is missing")
 	}
 	if c.TickerInterval == "" {
 		c.TickerInterval = "60s"
@@ -112,6 +119,7 @@ func (c *CrowdSec) processDefaults() {
 		falseValue := false
 		c.EnableHardFails = &falseValue
 	}
+	return nil
 }
 
 // Validate ensures the app's configuration is valid.
@@ -154,8 +162,9 @@ func (c *CrowdSec) shouldFailHard() bool {
 
 // Interface guards
 var (
-	_ caddy.Module      = (*CrowdSec)(nil)
-	_ caddy.App         = (*CrowdSec)(nil)
-	_ caddy.Provisioner = (*CrowdSec)(nil)
-	_ caddy.Validator   = (*CrowdSec)(nil)
+	_ caddy.Module          = (*CrowdSec)(nil)
+	_ caddy.App             = (*CrowdSec)(nil)
+	_ caddy.Provisioner     = (*CrowdSec)(nil)
+	_ caddy.Validator       = (*CrowdSec)(nil)
+	_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
 )
