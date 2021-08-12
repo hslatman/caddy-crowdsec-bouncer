@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	"go.uber.org/zap"
@@ -30,6 +32,7 @@ import (
 
 func init() {
 	caddy.RegisterModule(Handler{})
+	httpcaddyfile.RegisterHandlerDirective("crowdsec", parseCaddyfileHandlerDirective)
 }
 
 // Handler matches request IPs to CrowdSec decisions to (dis)allow access
@@ -72,7 +75,7 @@ func (h *Handler) Validate() error {
 }
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
 	ipToCheck, err := determineIPFromRequest(r)
 	if err != nil {
@@ -90,17 +93,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		typ := *decision.Type
 		switch typ {
 		case "ban":
-			h.logger.Debug("serving ban response")
+			h.logger.Debug(fmt.Sprintf("serving ban response to %s", *decision.Value))
 			return writeBanResponse(w)
 		case "captcha":
-			h.logger.Debug("serving captcha (ban) response")
+			h.logger.Debug(fmt.Sprintf("serving captcha (ban) response to %s", *decision.Value))
 			return writeCaptchaResponse(w)
 		case "throttle":
-			h.logger.Debug("serving throttle response")
+			h.logger.Debug(fmt.Sprintf("serving throttle response to %s", *decision.Value))
 			return writeThrottleResponse(w, *decision.Duration)
 		default:
 			h.logger.Warn(fmt.Sprintf("got crowdsec decision type: %s", typ))
-			h.logger.Debug("serving ban response")
+			h.logger.Debug(fmt.Sprintf("serving ban response to %s", *decision.Value))
 			return writeBanResponse(w)
 		}
 	}
@@ -175,9 +178,24 @@ func determineIPFromRequest(r *http.Request) (net.IP, error) {
 	return ip, nil
 }
 
+// UnmarshalCaddyfile implements caddyfile.Unmarshaler.
+func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	// TODO: parse additional handler directives (none exist now)
+	return nil
+}
+
+// parseCaddyfileHandlerDirective parses the `crowdsec` Caddyfile directive
+func parseCaddyfileHandlerDirective(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var handler Handler
+	err := handler.UnmarshalCaddyfile(h.Dispenser)
+	return handler, err
+}
+
 // Interface guards
 var (
-	_ caddy.Module      = (*Handler)(nil)
-	_ caddy.Provisioner = (*Handler)(nil)
-	_ caddy.Validator   = (*Handler)(nil)
+	_ caddy.Module                = (*Handler)(nil)
+	_ caddy.Provisioner           = (*Handler)(nil)
+	_ caddy.Validator             = (*Handler)(nil)
+	_ caddyhttp.MiddlewareHandler = (*Handler)(nil)
+	_ caddyfile.Unmarshaler       = (*Handler)(nil)
 )

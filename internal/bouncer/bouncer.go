@@ -99,7 +99,7 @@ func (b *Bouncer) Run() {
 				}
 			}
 			if len(decisions.New) > 0 {
-				b.logger.Debug(fmt.Sprintf("processing %d added decisions", len(decisions.New)))
+				b.logger.Debug(fmt.Sprintf("processing %d new decisions", len(decisions.New)))
 			}
 			// TODO: process in separate goroutines/waitgroup?
 			for _, decision := range decisions.New {

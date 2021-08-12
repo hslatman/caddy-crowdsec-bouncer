@@ -89,7 +89,7 @@
                     "handler": "headers",
                     "response": {
                       "set": {
-                        "Server": ["caddy-cs-bouncer"]
+                        "Server": ["caddy-cs-bouncer-example-server"]
                       }
                     }
                   }

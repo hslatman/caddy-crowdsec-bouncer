@@ -1,0 +1,14 @@
+{
+    debug
+    crowdsec {
+        api_url http://localhost:8080
+        api_key <api_key>
+    }
+}
+
+localhost {
+    route {
+        crowdsec
+        respond "Allowed by CrowdSec!"
+    }
+}

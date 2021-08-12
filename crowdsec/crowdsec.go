@@ -16,17 +16,32 @@ package crowdsec
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"net/url"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 )
 
+var (
+	cfg *config
+)
+
+const (
+	defaultTickerInterval   string = "60s"
+	defaultStreamingEnabled bool   = true
+	defaultHardFailsEnabled bool   = false
+)
+
 func init() {
 	caddy.RegisterModule(CrowdSec{})
+	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCaddyfileGlobalOption)
 }
 
 // CaddyModule returns the Caddy module information.
@@ -37,15 +52,23 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+type config struct {
+	APIUrl          string
+	APIKey          string
+	TickerInterval  string
+	EnableStreaming bool
+	EnableHardFails bool
+}
+
 // CrowdSec is a Caddy App that functions as a CrowdSec bouncer. It acts
 // as a CrowdSec API client as well as a local cache for CrowdSec decisions,
 // which can be used by the HTTP handler and Layer4 matcher to decide if
 // a request or connection is allowed or not.
 type CrowdSec struct {
-	// APIKey for the CrowdSec Local API
-	APIKey string `json:"api_key"`
 	// APIUrl for the CrowdSec Local API. Defaults to http://127.0.0.1:8080/
 	APIUrl string `json:"api_url,omitempty"`
+	// APIKey for the CrowdSec Local API
+	APIKey string `json:"api_key"`
 	// TickerInterval is the interval the StreamBouncer uses for querying
 	// the CrowdSec Local API. Defaults to "10s".
 	TickerInterval string `json:"ticker_interval,omitempty"`
@@ -69,11 +92,14 @@ type CrowdSec struct {
 // Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
-	c.processDefaults()
-
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
+
+	err := c.configure()
+	if err != nil {
+		return err
+	}
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
@@ -97,21 +123,43 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-func (c *CrowdSec) processDefaults() {
-	if c.APIUrl == "" {
-		c.APIUrl = "http://127.0.0.1:8080"
+func (c *CrowdSec) configure() error {
+	if cfg != nil {
+		// A global config is provided through the Caddyfile; always use it
+		// TODO: combine this with the Unmarshaler approach?
+		c.APIUrl = cfg.APIUrl
+		c.APIKey = cfg.APIKey
+		c.TickerInterval = cfg.TickerInterval
+		c.EnableStreaming = &cfg.EnableStreaming
+		c.EnableHardFails = &cfg.EnableHardFails
+	}
+	s := c.APIUrl
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid CrowdSec API URL: %e", err)
+	}
+	if u.Scheme == "" {
+		return fmt.Errorf("URL %s does not have a scheme (i.e https)", u.String())
+	}
+	if !strings.HasSuffix(s, "/") {
+		s = s + "/"
+	}
+	c.APIUrl = s
+	if c.APIKey == "" {
+		return errors.New("crowdsec API Key is missing")
 	}
 	if c.TickerInterval == "" {
-		c.TickerInterval = "60s"
+		c.TickerInterval = defaultTickerInterval
 	}
 	if c.EnableStreaming == nil {
-		trueValue := true
-		c.EnableStreaming = &trueValue
+		value := defaultStreamingEnabled
+		c.EnableStreaming = &value
 	}
 	if c.EnableHardFails == nil {
-		falseValue := false
-		c.EnableHardFails = &falseValue
+		value := defaultHardFailsEnabled
+		c.EnableHardFails = &value
 	}
+	return nil
 }
 
 // Validate ensures the app's configuration is valid.
@@ -158,4 +206,5 @@ var (
 	_ caddy.App         = (*CrowdSec)(nil)
 	_ caddy.Provisioner = (*CrowdSec)(nil)
 	_ caddy.Validator   = (*CrowdSec)(nil)
+	//_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
 )

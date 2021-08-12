@@ -56,7 +56,31 @@ func main() {
 }
 ```
 
-Example config.json:
+Example Caddyfile:
+
+```
+{
+    debug
+    crowdsec {
+        api_url http://localhost:8080
+        api_key <api_key>
+        ticker_interval 15s
+        #disable_streaming
+        #enable_hard_fails
+    }
+}
+
+localhost {
+    route {
+        crowdsec
+        respond "Allowed by CrowdSec!"
+    }
+}
+```
+
+Configuration using a Caddyfile is only supported for HTTP handlers.
+In case you want to use the CrowdSec bouncer on TCP or UDP level, you'll need to configure Caddy using the native JSON format.
+An example configuration is shown below:
 
 ```json
 {   
@@ -65,7 +89,8 @@ Example config.json:
         "api_key": "<insert_crowdsec_local_api_key_here>",
         "api_url": "http://127.0.0.1:8080/",
         "ticker_interval": "10s",
-        "enable_streaming": true
+        "enable_streaming": true,
+        "enable_hard_fails": false,
       },
       "http": {
         "http_port": 9080,
@@ -143,6 +168,10 @@ Example config.json:
 Run the Caddy server
 
 ```bash
+# with a Caddyfile
+go run main.go run -config Caddyfile 
+
+# with JSON configuration
 go run main.go run -config config.json
 ```
 
@@ -195,6 +224,5 @@ Your exact configuration depends on the (configuration of the) system that exist
 * Add support for custom actions (defaults to blocking access now)?
 * Add Caddy metrics integration?
 * Add Caddy profiling integration?
-* Caddyfile configuration support?
 * Caching the LiveBouncer (for the duration of the decision)?
 * ...
