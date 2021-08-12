@@ -13,10 +13,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		d *caddyfile.Dispenser
 	}
 	tests := []struct {
-		name     string
-		expected *CrowdSec
-		args     args
-		wantErr  bool
+		name             string
+		expected         *CrowdSec
+		args             args
+		wantParseErr     bool
+		wantConfigureErr bool
 	}{
 		{
 			name:     "no args",
@@ -24,12 +25,13 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			args: args{
 				d: caddyfile.NewTestDispenser(`crowdsec`),
 			},
-			wantErr: false,
+			wantParseErr:     false,
+			wantConfigureErr: true,
 		},
 		{
 			name: "basic",
 			expected: &CrowdSec{
-				APIUrl: "http://127.0.0.1:8080",
+				APIUrl: "http://127.0.0.1:8080/",
 				APIKey: "some_random_key",
 			},
 			args: args{
@@ -38,12 +40,13 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 					api_key some_random_key
 				}`),
 			},
-			wantErr: false,
+			wantParseErr:     false,
+			wantConfigureErr: false,
 		},
 		{
 			name: "full",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.1:8080",
+				APIUrl:          "http://127.0.0.1:8080/",
 				APIKey:          "some_random_key",
 				TickerInterval:  "33s",
 				EnableStreaming: &falseValue,
@@ -58,14 +61,19 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 					enable_hard_fails
 				}`),
 			},
-			wantErr: false,
+			wantParseErr:     false,
+			wantConfigureErr: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := &CrowdSec{}
-			if _, err := parseCaddyfileGlobalOption(tt.args.d); (err != nil) != tt.wantErr {
-				t.Errorf("CrowdSec.UnmarshalCaddyfile() error = %v, wantErr %v", err, tt.wantErr)
+			if _, err := parseCaddyfileGlobalOption(tt.args.d); (err != nil) != tt.wantParseErr {
+				t.Errorf("CrowdSec.parseCaddyfileGlobalOption() error = %v, wantParseErr %v", err, tt.wantParseErr)
+				return
+			}
+			if err := c.configure(); (err != nil) != tt.wantConfigureErr {
+				t.Errorf("CrowdSec.configure) error = %v, wantConfigureErr %v", err, tt.wantConfigureErr)
 				return
 			}
 			// TODO: properly use go-cmp and get unexported fields to work

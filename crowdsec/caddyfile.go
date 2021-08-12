@@ -1,7 +1,6 @@
 package crowdsec
 
 import (
-	"fmt"
 	"net/url"
 	"time"
 
@@ -13,12 +12,10 @@ func parseCaddyfileGlobalOption(d *caddyfile.Dispenser) (interface{}, error) {
 	// TODO: make this work similar to the handler? Or doesn't that work for this
 	// app level module, because of shared config etc.
 
-	fmt.Println("parsing crowdsec global")
-
-	cfg = &Config{
-		TickerInterval:  "60s",
-		EnableStreaming: true,
-		EnableHardFails: false,
+	cfg = &config{
+		TickerInterval:  defaultTickerInterval,
+		EnableStreaming: defaultStreamingEnabled,
+		EnableHardFails: defaultHardFailsEnabled,
 	}
 
 	if !d.Next() {
@@ -61,10 +58,7 @@ func parseCaddyfileGlobalOption(d *caddyfile.Dispenser) (interface{}, error) {
 			}
 			cfg.EnableHardFails = true
 		}
-
 	}
-
-	fmt.Println(fmt.Sprintf("%#+v", cfg))
 
 	return nil, nil
 }

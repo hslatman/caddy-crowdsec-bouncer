@@ -18,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -28,7 +30,13 @@ import (
 )
 
 var (
-	cfg *Config
+	cfg *config
+)
+
+const (
+	defaultTickerInterval   string = "60s"
+	defaultStreamingEnabled bool   = true
+	defaultHardFailsEnabled bool   = false
 )
 
 func init() {
@@ -44,7 +52,7 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-type Config struct {
+type config struct {
 	APIUrl          string
 	APIKey          string
 	TickerInterval  string
@@ -84,8 +92,6 @@ type CrowdSec struct {
 // Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
-	fmt.Println("CROWDSEC PROVISION")
-
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
@@ -114,43 +120,44 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 	c.bouncer = bouncer
 
-	fmt.Println(fmt.Sprintf("%#+v", c.bouncer))
-
 	return nil
 }
 
 func (c *CrowdSec) configure() error {
-
 	if cfg != nil {
-		// A global config is provided (caddyfile format?), always use it
+		// A global config is provided through the Caddyfile; always use it
 		// TODO: combine this with the Unmarshaler approach?
 		c.APIUrl = cfg.APIUrl
 		c.APIKey = cfg.APIKey
 		c.TickerInterval = cfg.TickerInterval
 		c.EnableStreaming = &cfg.EnableStreaming
 		c.EnableHardFails = &cfg.EnableHardFails
-	} else {
-		// No global config (JSON format?), set the first handler config encountered as the global one
-		//c.Config = *cfg
-		// TODO: check that this is already unmarshalled correctly; or using the in-memory JSON?
 	}
-
-	if c.APIUrl == "" {
-		return errors.New("crowdsec API URL is missing") // TODO: move this to Validator?
+	s := c.APIUrl
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid CrowdSec API URL: %e", err)
 	}
+	if u.Scheme == "" {
+		return fmt.Errorf("URL %s does not have a scheme (i.e https)", u.String())
+	}
+	if !strings.HasSuffix(s, "/") {
+		s = s + "/"
+	}
+	c.APIUrl = s
 	if c.APIKey == "" {
 		return errors.New("crowdsec API Key is missing")
 	}
 	if c.TickerInterval == "" {
-		c.TickerInterval = "60s"
+		c.TickerInterval = defaultTickerInterval
 	}
 	if c.EnableStreaming == nil {
-		trueValue := true
-		c.EnableStreaming = &trueValue
+		value := defaultStreamingEnabled
+		c.EnableStreaming = &value
 	}
 	if c.EnableHardFails == nil {
-		falseValue := false
-		c.EnableHardFails = &falseValue
+		value := defaultHardFailsEnabled
+		c.EnableHardFails = &value
 	}
 	return nil
 }
@@ -169,7 +176,6 @@ func (c *CrowdSec) Validate() error {
 
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
-	fmt.Println("START")
 	c.bouncer.Run()
 	return nil
 }
