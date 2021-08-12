@@ -93,17 +93,17 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		typ := *decision.Type
 		switch typ {
 		case "ban":
-			h.logger.Debug("serving ban response")
+			h.logger.Debug(fmt.Sprintf("serving ban response to %s", *decision.Value))
 			return writeBanResponse(w)
 		case "captcha":
-			h.logger.Debug("serving captcha (ban) response")
+			h.logger.Debug(fmt.Sprintf("serving captcha (ban) response to %s", *decision.Value))
 			return writeCaptchaResponse(w)
 		case "throttle":
-			h.logger.Debug("serving throttle response")
+			h.logger.Debug(fmt.Sprintf("serving throttle response to %s", *decision.Value))
 			return writeThrottleResponse(w, *decision.Duration)
 		default:
 			h.logger.Warn(fmt.Sprintf("got crowdsec decision type: %s", typ))
-			h.logger.Debug("serving ban response")
+			h.logger.Debug(fmt.Sprintf("serving ban response to %s", *decision.Value))
 			return writeBanResponse(w)
 		}
 	}
@@ -184,6 +184,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
+// parseCaddyfileHandlerDirective parses the `crowdsec` Caddyfile directive
 func parseCaddyfileHandlerDirective(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var handler Handler
 	err := handler.UnmarshalCaddyfile(h.Dispenser)
