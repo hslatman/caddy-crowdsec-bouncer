@@ -16,18 +16,24 @@ package crowdsec
 
 import (
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/caddyserver/caddy/v2"
-	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 )
 
+var (
+	cfg *Config
+)
+
 func init() {
 	caddy.RegisterModule(CrowdSec{})
+	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCaddyfileGlobalOption)
 }
 
 // CaddyModule returns the Caddy module information.
@@ -36,6 +42,14 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 		ID:  "crowdsec",
 		New: func() caddy.Module { return new(CrowdSec) },
 	}
+}
+
+type Config struct {
+	APIUrl          string
+	APIKey          string
+	TickerInterval  string
+	EnableStreaming bool
+	EnableHardFails bool
 }
 
 // CrowdSec is a Caddy App that functions as a CrowdSec bouncer. It acts
@@ -70,11 +84,13 @@ type CrowdSec struct {
 // Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
+	fmt.Println("CROWDSEC PROVISION")
+
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
 
-	err := c.processDefaults()
+	err := c.configure()
 	if err != nil {
 		return err
 	}
@@ -98,12 +114,29 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 	c.bouncer = bouncer
 
+	fmt.Println(fmt.Sprintf("%#+v", c.bouncer))
+
 	return nil
 }
 
-func (c *CrowdSec) processDefaults() error {
+func (c *CrowdSec) configure() error {
+
+	if cfg != nil {
+		// A global config is provided (caddyfile format?), always use it
+		// TODO: combine this with the Unmarshaler approach?
+		c.APIUrl = cfg.APIUrl
+		c.APIKey = cfg.APIKey
+		c.TickerInterval = cfg.TickerInterval
+		c.EnableStreaming = &cfg.EnableStreaming
+		c.EnableHardFails = &cfg.EnableHardFails
+	} else {
+		// No global config (JSON format?), set the first handler config encountered as the global one
+		//c.Config = *cfg
+		// TODO: check that this is already unmarshalled correctly; or using the in-memory JSON?
+	}
+
 	if c.APIUrl == "" {
-		return errors.New("crowdsec API URL is missing")
+		return errors.New("crowdsec API URL is missing") // TODO: move this to Validator?
 	}
 	if c.APIKey == "" {
 		return errors.New("crowdsec API Key is missing")
@@ -136,6 +169,7 @@ func (c *CrowdSec) Validate() error {
 
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
+	fmt.Println("START")
 	c.bouncer.Run()
 	return nil
 }
@@ -162,9 +196,9 @@ func (c *CrowdSec) shouldFailHard() bool {
 
 // Interface guards
 var (
-	_ caddy.Module          = (*CrowdSec)(nil)
-	_ caddy.App             = (*CrowdSec)(nil)
-	_ caddy.Provisioner     = (*CrowdSec)(nil)
-	_ caddy.Validator       = (*CrowdSec)(nil)
-	_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
+	_ caddy.Module      = (*CrowdSec)(nil)
+	_ caddy.App         = (*CrowdSec)(nil)
+	_ caddy.Provisioner = (*CrowdSec)(nil)
+	_ caddy.Validator   = (*CrowdSec)(nil)
+	//_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
 )
