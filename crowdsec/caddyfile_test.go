@@ -20,7 +20,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		wantConfigureErr bool
 	}{
 		{
-			name:     "no args",
+			name:     "fail/no-args",
 			expected: &CrowdSec{},
 			args: args{
 				d: caddyfile.NewTestDispenser(`crowdsec`),
@@ -29,7 +29,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			wantConfigureErr: true,
 		},
 		{
-			name: "basic",
+			name: "ok/basic",
 			expected: &CrowdSec{
 				APIUrl: "http://127.0.0.1:8080/",
 				APIKey: "some_random_key",
@@ -44,7 +44,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			wantConfigureErr: false,
 		},
 		{
-			name: "full",
+			name: "ok/full",
 			expected: &CrowdSec{
 				APIUrl:          "http://127.0.0.1:8080/",
 				APIKey:          "some_random_key",
@@ -62,6 +62,32 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				}`),
 			},
 			wantParseErr:     false,
+			wantConfigureErr: false,
+		},
+		{
+			name:     "fail/invalid-duration",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://127.0.0.1:8080 
+					api_key some_random_key
+					ticker_interval 30x
+				}`),
+			},
+			wantParseErr:     true,
+			wantConfigureErr: false,
+		},
+		{
+			name:     "fail/unknown-token",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://127.0.0.1:8080 
+					api_key some_random_key
+					unknown_token 42
+				}`),
+			},
+			wantParseErr:     true,
 			wantConfigureErr: false,
 		},
 	}

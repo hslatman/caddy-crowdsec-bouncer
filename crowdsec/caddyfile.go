@@ -57,6 +57,8 @@ func parseCaddyfileGlobalOption(d *caddyfile.Dispenser) (interface{}, error) {
 				return nil, d.ArgErr()
 			}
 			cfg.EnableHardFails = true
+		default:
+			return nil, d.Errf("invalid configuration token provided: %s", d.Val())
 		}
 	}
 
