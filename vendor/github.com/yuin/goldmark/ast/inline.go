@@ -8,7 +8,7 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
-// A BaseInline struct implements the Node interface.
+// A BaseInline struct implements the Node interface partialliy.
 type BaseInline struct {
 	BaseNode
 }
@@ -91,7 +91,7 @@ func (n *Text) SetSoftLineBreak(v bool) {
 	if v {
 		n.flags |= textSoftLineBreak
 	} else {
-		n.flags = n.flags &^ textHardLineBreak
+		n.flags = n.flags &^ textSoftLineBreak
 	}
 }
 
@@ -111,7 +111,7 @@ func (n *Text) SetRaw(v bool) {
 }
 
 // HardLineBreak returns true if this node ends with a hard line break.
-// See https://spec.commonmark.org/0.29/#hard-line-breaks for details.
+// See https://spec.commonmark.org/0.30/#hard-line-breaks for details.
 func (n *Text) HardLineBreak() bool {
 	return n.flags&textHardLineBreak != 0
 }

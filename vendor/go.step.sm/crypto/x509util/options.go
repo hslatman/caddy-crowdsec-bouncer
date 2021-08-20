@@ -3,27 +3,19 @@ package x509util
 import (
 	"bytes"
 	"crypto/x509"
+	encoding_asn1 "encoding/asn1"
 	"encoding/base64"
-	"io/ioutil"
+	"os"
+	"strings"
 	"text/template"
 
-	"github.com/Masterminds/sprig/v3"
 	"github.com/pkg/errors"
-	"go.step.sm/crypto/internal/step"
-)
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
 
-// getFuncMap returns the list of functions provided by sprig. It changes the
-// function "fail" to set the given string, this way we can report template
-// errors directly to the template without having the wrapper that text/template
-// adds.
-func getFuncMap(failMessage *string) template.FuncMap {
-	m := sprig.TxtFuncMap()
-	m["fail"] = func(msg string) (string, error) {
-		*failMessage = msg
-		return "", errors.New(msg)
-	}
-	return m
-}
+	"go.step.sm/crypto/internal/step"
+	"go.step.sm/crypto/internal/templates"
+)
 
 // Options are the options that can be passed to NewCertificate.
 type Options struct {
@@ -47,8 +39,14 @@ type Option func(cr *x509.CertificateRequest, o *Options) error
 func WithTemplate(text string, data TemplateData) Option {
 	return func(cr *x509.CertificateRequest, o *Options) error {
 		terr := new(TemplateError)
-		funcMap := getFuncMap(&terr.Message)
+		funcMap := templates.GetFuncMap(&terr.Message)
+		// asn1 methods
+		funcMap["asn1Enc"] = asn1Encode
+		funcMap["asn1Marshal"] = asn1Marshal
+		funcMap["asn1Seq"] = asn1Sequence
+		funcMap["asn1Set"] = asn1Set
 
+		// Parse template
 		tmpl, err := template.New("template").Funcs(funcMap).Parse(text)
 		if err != nil {
 			return errors.Wrapf(err, "error parsing template")
@@ -85,11 +83,70 @@ func WithTemplateBase64(s string, data TemplateData) Option {
 func WithTemplateFile(path string, data TemplateData) Option {
 	return func(cr *x509.CertificateRequest, o *Options) error {
 		filename := step.Abs(path)
-		b, err := ioutil.ReadFile(filename)
+		b, err := os.ReadFile(filename)
 		if err != nil {
 			return errors.Wrapf(err, "error reading %s", path)
 		}
 		fn := WithTemplate(string(b), data)
 		return fn(cr, o)
 	}
+}
+
+func asn1Encode(str string) (string, error) {
+	value, params := str, "printable"
+	if strings.Contains(value, sanTypeSeparator) {
+		params = strings.SplitN(value, sanTypeSeparator, 2)[0]
+		value = value[len(params)+1:]
+	}
+	b, err := marshalValue(value, params)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+func asn1Marshal(v interface{}, params ...string) (string, error) {
+	b, err := encoding_asn1.MarshalWithParams(v, strings.Join(params, ","))
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+func asn1Sequence(b64enc ...string) (string, error) {
+	var builder cryptobyte.Builder
+	builder.AddASN1(asn1.SEQUENCE, func(child *cryptobyte.Builder) {
+		for _, s := range b64enc {
+			b, err := base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				child.SetError(err)
+				return
+			}
+			child.AddBytes(b)
+		}
+	})
+	b, err := builder.Bytes()
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+func asn1Set(b64enc ...string) (string, error) {
+	var builder cryptobyte.Builder
+	builder.AddASN1(asn1.SET, func(child *cryptobyte.Builder) {
+		for _, s := range b64enc {
+			b, err := base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				child.SetError(err)
+				return
+			}
+			child.AddBytes(b)
+		}
+	})
+	b, err := builder.Bytes()
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
 }

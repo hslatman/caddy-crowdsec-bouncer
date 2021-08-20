@@ -16,17 +16,17 @@ package types
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
 
-	"github.com/golang/protobuf/ptypes"
-
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 
-	structpb "github.com/golang/protobuf/ptypes/struct"
-	wrapperspb "github.com/golang/protobuf/ptypes/wrappers"
+	anypb "google.golang.org/protobuf/types/known/anypb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Int type that implements ref.Val as well as comparison and math operators.
@@ -62,46 +62,62 @@ var (
 func (i Int) Add(other ref.Val) ref.Val {
 	otherInt, ok := other.(Int)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
-	return i + otherInt
+	val, err := addInt64Checked(int64(i), int64(otherInt))
+	if err != nil {
+		return WrapErr(err)
+	}
+	return Int(val)
 }
 
 // Compare implements traits.Comparer.Compare.
 func (i Int) Compare(other ref.Val) ref.Val {
-	otherInt, ok := other.(Int)
-	if !ok {
-		return ValOrErr(other, "no such overload")
+	switch ov := other.(type) {
+	case Double:
+		if math.IsNaN(float64(ov)) {
+			return NewErr("NaN values cannot be ordered")
+		}
+		return compareIntDouble(i, ov)
+	case Int:
+		return compareInt(i, ov)
+	case Uint:
+		return compareIntUint(i, ov)
+	default:
+		return MaybeNoSuchOverloadErr(other)
 	}
-	if i < otherInt {
-		return IntNegOne
-	}
-	if i > otherInt {
-		return IntOne
-	}
-	return IntZero
 }
 
 // ConvertToNative implements ref.Val.ConvertToNative.
-func (i Int) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
+func (i Int) ConvertToNative(typeDesc reflect.Type) (any, error) {
 	switch typeDesc.Kind() {
-	case reflect.Int, reflect.Int32, reflect.Int64:
+	case reflect.Int, reflect.Int32:
 		// Enums are also mapped as int32 derivations.
 		// Note, the code doesn't convert to the enum value directly since this is not known, but
 		// the net effect with respect to proto-assignment is handled correctly by the reflection
 		// Convert method.
+		v, err := int64ToInt32Checked(int64(i))
+		if err != nil {
+			return nil, err
+		}
+		return reflect.ValueOf(v).Convert(typeDesc).Interface(), nil
+	case reflect.Int64:
 		return reflect.ValueOf(i).Convert(typeDesc).Interface(), nil
 	case reflect.Ptr:
 		switch typeDesc {
 		case anyValueType:
 			// Primitives must be wrapped before being set on an Any field.
-			return ptypes.MarshalAny(&wrapperspb.Int64Value{Value: int64(i)})
+			return anypb.New(wrapperspb.Int64(int64(i)))
 		case int32WrapperType:
-			// Convert the value to a protobuf.Int32Value (with truncation).
-			return &wrapperspb.Int32Value{Value: int32(i)}, nil
+			// Convert the value to a wrapperspb.Int32Value, error on overflow.
+			v, err := int64ToInt32Checked(int64(i))
+			if err != nil {
+				return nil, err
+			}
+			return wrapperspb.Int32(v), nil
 		case int64WrapperType:
-			// Convert the value to a protobuf.Int64Value.
-			return &wrapperspb.Int64Value{Value: int64(i)}, nil
+			// Convert the value to a wrapperspb.Int64Value.
+			return wrapperspb.Int64(int64(i)), nil
 		case jsonValueType:
 			// The proto-to-JSON conversion rules would convert all 64-bit integer values to JSON
 			// decimal strings. Because CEL ints might come from the automatic widening of 32-bit
@@ -118,21 +134,19 @@ func (i Int) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
 			// however, it is best to simply stay within the JSON number range when building JSON
 			// objects in CEL.
 			if i.isJSONSafe() {
-				return &structpb.Value{
-					Kind: &structpb.Value_NumberValue{NumberValue: float64(i)},
-				}, nil
+				return structpb.NewNumberValue(float64(i)), nil
 			}
 			// Proto3 to JSON conversion requires string-formatted int64 values
 			// since the conversion to floating point would result in truncation.
-			return &structpb.Value{
-				Kind: &structpb.Value_StringValue{
-					StringValue: strconv.FormatInt(int64(i), 10),
-				},
-			}, nil
+			return structpb.NewStringValue(strconv.FormatInt(int64(i), 10)), nil
 		}
 		switch typeDesc.Elem().Kind() {
 		case reflect.Int32:
-			v := int32(i)
+			// Convert the value to a wrapperspb.Int32Value, error on overflow.
+			v, err := int64ToInt32Checked(int64(i))
+			if err != nil {
+				return nil, err
+			}
 			p := reflect.New(typeDesc.Elem())
 			p.Elem().Set(reflect.ValueOf(v).Convert(typeDesc.Elem()))
 			return p.Interface(), nil
@@ -143,6 +157,10 @@ func (i Int) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
 			return p.Interface(), nil
 		}
 	case reflect.Interface:
+		iv := i.Value()
+		if reflect.TypeOf(iv).Implements(typeDesc) {
+			return iv, nil
+		}
 		if reflect.TypeOf(i).Implements(typeDesc) {
 			return i, nil
 		}
@@ -156,21 +174,22 @@ func (i Int) ConvertToType(typeVal ref.Type) ref.Val {
 	case IntType:
 		return i
 	case UintType:
-		if i < 0 {
-			return NewErr("range error converting %d to uint", i)
+		u, err := int64ToUint64Checked(int64(i))
+		if err != nil {
+			return WrapErr(err)
 		}
-		return Uint(i)
+		return Uint(u)
 	case DoubleType:
 		return Double(i)
 	case StringType:
 		return String(fmt.Sprintf("%d", int64(i)))
 	case TimestampType:
-		t := time.Unix(int64(i), 0)
-		ts, err := ptypes.TimestampProto(t)
-		if err != nil {
-			return NewErr(err.Error())
+		// The maximum positive value that can be passed to time.Unix is math.MaxInt64 minus the number
+		// of seconds between year 1 and year 1970. See comments on unixToInternal.
+		if int64(i) < minUnixTime || int64(i) > maxUnixTime {
+			return celErrTimestampOverflow
 		}
-		return Timestamp{Timestamp: ts}
+		return timestampOf(time.Unix(int64(i), 0).UTC())
 	case TypeType:
 		return IntType
 	}
@@ -181,56 +200,83 @@ func (i Int) ConvertToType(typeVal ref.Type) ref.Val {
 func (i Int) Divide(other ref.Val) ref.Val {
 	otherInt, ok := other.(Int)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
-	if otherInt == IntZero {
-		return NewErr("divide by zero")
+	val, err := divideInt64Checked(int64(i), int64(otherInt))
+	if err != nil {
+		return WrapErr(err)
 	}
-	return i / otherInt
+	return Int(val)
 }
 
 // Equal implements ref.Val.Equal.
 func (i Int) Equal(other ref.Val) ref.Val {
-	otherInt, ok := other.(Int)
-	if !ok {
-		return ValOrErr(other, "no such overload")
+	switch ov := other.(type) {
+	case Double:
+		if math.IsNaN(float64(ov)) {
+			return False
+		}
+		return Bool(compareIntDouble(i, ov) == 0)
+	case Int:
+		return Bool(i == ov)
+	case Uint:
+		return Bool(compareIntUint(i, ov) == 0)
+	default:
+		return False
 	}
-	return Bool(i == otherInt)
+}
+
+// IsZeroValue returns true if integer is equal to 0
+func (i Int) IsZeroValue() bool {
+	return i == IntZero
 }
 
 // Modulo implements traits.Modder.Modulo.
 func (i Int) Modulo(other ref.Val) ref.Val {
 	otherInt, ok := other.(Int)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
-	if otherInt == IntZero {
-		return NewErr("modulus by zero")
+	val, err := moduloInt64Checked(int64(i), int64(otherInt))
+	if err != nil {
+		return WrapErr(err)
 	}
-	return i % otherInt
+	return Int(val)
 }
 
 // Multiply implements traits.Multiplier.Multiply.
 func (i Int) Multiply(other ref.Val) ref.Val {
 	otherInt, ok := other.(Int)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
-	return i * otherInt
+	val, err := multiplyInt64Checked(int64(i), int64(otherInt))
+	if err != nil {
+		return WrapErr(err)
+	}
+	return Int(val)
 }
 
 // Negate implements traits.Negater.Negate.
 func (i Int) Negate() ref.Val {
-	return -i
+	val, err := negateInt64Checked(int64(i))
+	if err != nil {
+		return WrapErr(err)
+	}
+	return Int(val)
 }
 
 // Subtract implements traits.Subtractor.Subtract.
 func (i Int) Subtract(subtrahend ref.Val) ref.Val {
 	subtraInt, ok := subtrahend.(Int)
 	if !ok {
-		return ValOrErr(subtrahend, "no such overload")
+		return MaybeNoSuchOverloadErr(subtrahend)
 	}
-	return i - subtraInt
+	val, err := subtractInt64Checked(int64(i), int64(subtraInt))
+	if err != nil {
+		return WrapErr(err)
+	}
+	return Int(val)
 }
 
 // Type implements ref.Val.Type.
@@ -239,7 +285,7 @@ func (i Int) Type() ref.Type {
 }
 
 // Value implements ref.Val.Value.
-func (i Int) Value() interface{} {
+func (i Int) Value() any {
 	return int64(i)
 }
 

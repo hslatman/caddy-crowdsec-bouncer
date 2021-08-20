@@ -1,399 +1,381 @@
 package acme
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+
 	"github.com/pkg/errors"
+	"github.com/smallstep/certificates/api/render"
 )
 
-// AccountDoesNotExistErr returns a new acme error.
-func AccountDoesNotExistErr(err error) *Error {
-	return &Error{
-		Type:   accountDoesNotExistErr,
-		Detail: "Account does not exist",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// AlreadyRevokedErr returns a new acme error.
-func AlreadyRevokedErr(err error) *Error {
-	return &Error{
-		Type:   alreadyRevokedErr,
-		Detail: "Certificate already revoked",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// BadCSRErr returns a new acme error.
-func BadCSRErr(err error) *Error {
-	return &Error{
-		Type:   badCSRErr,
-		Detail: "The CSR is unacceptable",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// BadNonceErr returns a new acme error.
-func BadNonceErr(err error) *Error {
-	return &Error{
-		Type:   badNonceErr,
-		Detail: "Unacceptable anti-replay nonce",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// BadPublicKeyErr returns a new acme error.
-func BadPublicKeyErr(err error) *Error {
-	return &Error{
-		Type:   badPublicKeyErr,
-		Detail: "The jws was signed by a public key the server does not support",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// BadRevocationReasonErr returns a new acme error.
-func BadRevocationReasonErr(err error) *Error {
-	return &Error{
-		Type:   badRevocationReasonErr,
-		Detail: "The revocation reason provided is not allowed by the server",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// BadSignatureAlgorithmErr returns a new acme error.
-func BadSignatureAlgorithmErr(err error) *Error {
-	return &Error{
-		Type:   badSignatureAlgorithmErr,
-		Detail: "The JWS was signed with an algorithm the server does not support",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// CaaErr returns a new acme error.
-func CaaErr(err error) *Error {
-	return &Error{
-		Type:   caaErr,
-		Detail: "Certification Authority Authorization (CAA) records forbid the CA from issuing a certificate",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// CompoundErr returns a new acme error.
-func CompoundErr(err error) *Error {
-	return &Error{
-		Type:   compoundErr,
-		Detail: "Specific error conditions are indicated in the “subproblems” array",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// ConnectionErr returns a new acme error.
-func ConnectionErr(err error) *Error {
-	return &Error{
-		Type:   connectionErr,
-		Detail: "The server could not connect to validation target",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// DNSErr returns a new acme error.
-func DNSErr(err error) *Error {
-	return &Error{
-		Type:   dnsErr,
-		Detail: "There was a problem with a DNS query during identifier validation",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// ExternalAccountRequiredErr returns a new acme error.
-func ExternalAccountRequiredErr(err error) *Error {
-	return &Error{
-		Type:   externalAccountRequiredErr,
-		Detail: "The request must include a value for the \"externalAccountBinding\" field",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// IncorrectResponseErr returns a new acme error.
-func IncorrectResponseErr(err error) *Error {
-	return &Error{
-		Type:   incorrectResponseErr,
-		Detail: "Response received didn't match the challenge's requirements",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// InvalidContactErr returns a new acme error.
-func InvalidContactErr(err error) *Error {
-	return &Error{
-		Type:   invalidContactErr,
-		Detail: "A contact URL for an account was invalid",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// MalformedErr returns a new acme error.
-func MalformedErr(err error) *Error {
-	return &Error{
-		Type:   malformedErr,
-		Detail: "The request message was malformed",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// OrderNotReadyErr returns a new acme error.
-func OrderNotReadyErr(err error) *Error {
-	return &Error{
-		Type:   orderNotReadyErr,
-		Detail: "The request attempted to finalize an order that is not ready to be finalized",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// RateLimitedErr returns a new acme error.
-func RateLimitedErr(err error) *Error {
-	return &Error{
-		Type:   rateLimitedErr,
-		Detail: "The request exceeds a rate limit",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// RejectedIdentifierErr returns a new acme error.
-func RejectedIdentifierErr(err error) *Error {
-	return &Error{
-		Type:   rejectedIdentifierErr,
-		Detail: "The server will not issue certificates for the identifier",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// ServerInternalErr returns a new acme error.
-func ServerInternalErr(err error) *Error {
-	return &Error{
-		Type:   serverInternalErr,
-		Detail: "The server experienced an internal error",
-		Status: 500,
-		Err:    err,
-	}
-}
-
-// NotImplemented returns a new acme error.
-func NotImplemented(err error) *Error {
-	return &Error{
-		Type:   notImplemented,
-		Detail: "The requested operation is not implemented",
-		Status: 501,
-		Err:    err,
-	}
-}
-
-// TLSErr returns a new acme error.
-func TLSErr(err error) *Error {
-	return &Error{
-		Type:   tlsErr,
-		Detail: "The server received a TLS error during validation",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// UnauthorizedErr returns a new acme error.
-func UnauthorizedErr(err error) *Error {
-	return &Error{
-		Type:   unauthorizedErr,
-		Detail: "The client lacks sufficient authorization",
-		Status: 401,
-		Err:    err,
-	}
-}
-
-// UnsupportedContactErr returns a new acme error.
-func UnsupportedContactErr(err error) *Error {
-	return &Error{
-		Type:   unsupportedContactErr,
-		Detail: "A contact URL for an account used an unsupported protocol scheme",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// UnsupportedIdentifierErr returns a new acme error.
-func UnsupportedIdentifierErr(err error) *Error {
-	return &Error{
-		Type:   unsupportedIdentifierErr,
-		Detail: "An identifier is of an unsupported type",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// UserActionRequiredErr returns a new acme error.
-func UserActionRequiredErr(err error) *Error {
-	return &Error{
-		Type:   userActionRequiredErr,
-		Detail: "Visit the “instance” URL and take actions specified there",
-		Status: 400,
-		Err:    err,
-	}
-}
-
-// ProbType is the type of the ACME problem.
-type ProbType int
+// ProblemType is the type of the ACME problem.
+type ProblemType int
 
 const (
-	// The request specified an account that does not exist
-	accountDoesNotExistErr ProbType = iota
-	// The request specified a certificate to be revoked that has already been revoked
-	alreadyRevokedErr
-	// The CSR is unacceptable (e.g., due to a short key)
-	badCSRErr
-	// The client sent an unacceptable anti-replay nonce
-	badNonceErr
-	// The JWS was signed by a public key the server does not support
-	badPublicKeyErr
-	// The revocation reason provided is not allowed by the server
-	badRevocationReasonErr
-	// The JWS was signed with an algorithm the server does not support
-	badSignatureAlgorithmErr
-	// Certification Authority Authorization (CAA) records forbid the CA from issuing a certificate
-	caaErr
-	// Specific error conditions are indicated in the “subproblems” array.
-	compoundErr
-	// The server could not connect to validation target
-	connectionErr
-	// There was a problem with a DNS query during identifier validation
-	dnsErr
-	// The request must include a value for the “externalAccountBinding” field
-	externalAccountRequiredErr
-	// Response received didn’t match the challenge’s requirements
-	incorrectResponseErr
-	// A contact URL for an account was invalid
-	invalidContactErr
-	// The request message was malformed
-	malformedErr
-	// The request attempted to finalize an order that is not ready to be finalized
-	orderNotReadyErr
-	// The request exceeds a rate limit
-	rateLimitedErr
-	// The server will not issue certificates for the identifier
-	rejectedIdentifierErr
-	// The server experienced an internal error
-	serverInternalErr
-	// The server received a TLS error during validation
-	tlsErr
-	// The client lacks sufficient authorization
-	unauthorizedErr
-	// A contact URL for an account used an unsupported protocol scheme
-	unsupportedContactErr
-	// An identifier is of an unsupported type
-	unsupportedIdentifierErr
-	// Visit the “instance” URL and take actions specified there
-	userActionRequiredErr
-	// The operation is not implemented
-	notImplemented
+	// ErrorAccountDoesNotExistType request specified an account that does not exist
+	ErrorAccountDoesNotExistType ProblemType = iota
+	// ErrorAlreadyRevokedType request specified a certificate to be revoked that has already been revoked
+	ErrorAlreadyRevokedType
+	// ErrorBadAttestationStatementType WebAuthn attestation statement could not be verified
+	ErrorBadAttestationStatementType
+	// ErrorBadCSRType CSR is unacceptable (e.g., due to a short key)
+	ErrorBadCSRType
+	// ErrorBadNonceType client sent an unacceptable anti-replay nonce
+	ErrorBadNonceType
+	// ErrorBadPublicKeyType JWS was signed by a public key the server does not support
+	ErrorBadPublicKeyType
+	// ErrorBadRevocationReasonType revocation reason provided is not allowed by the server
+	ErrorBadRevocationReasonType
+	// ErrorBadSignatureAlgorithmType JWS was signed with an algorithm the server does not support
+	ErrorBadSignatureAlgorithmType
+	// ErrorCaaType Authority Authorization (CAA) records forbid the CA from issuing a certificate
+	ErrorCaaType
+	// ErrorCompoundType error conditions are indicated in the “subproblems” array.
+	ErrorCompoundType
+	// ErrorConnectionType server could not connect to validation target
+	ErrorConnectionType
+	// ErrorDNSType was a problem with a DNS query during identifier validation
+	ErrorDNSType
+	// ErrorExternalAccountRequiredType request must include a value for the “externalAccountBinding” field
+	ErrorExternalAccountRequiredType
+	// ErrorIncorrectResponseType received didn’t match the challenge’s requirements
+	ErrorIncorrectResponseType
+	// ErrorInvalidContactType URL for an account was invalid
+	ErrorInvalidContactType
+	// ErrorMalformedType request message was malformed
+	ErrorMalformedType
+	// ErrorOrderNotReadyType request attempted to finalize an order that is not ready to be finalized
+	ErrorOrderNotReadyType
+	// ErrorRateLimitedType request exceeds a rate limit
+	ErrorRateLimitedType
+	// ErrorRejectedIdentifierType server will not issue certificates for the identifier
+	ErrorRejectedIdentifierType
+	// ErrorServerInternalType server experienced an internal error
+	ErrorServerInternalType
+	// ErrorTLSType server received a TLS error during validation
+	ErrorTLSType
+	// ErrorUnauthorizedType client lacks sufficient authorization
+	ErrorUnauthorizedType
+	// ErrorUnsupportedContactType URL for an account used an unsupported protocol scheme
+	ErrorUnsupportedContactType
+	// ErrorUnsupportedIdentifierType identifier is of an unsupported type
+	ErrorUnsupportedIdentifierType
+	// ErrorUserActionRequiredType the “instance” URL and take actions specified there
+	ErrorUserActionRequiredType
+	// ErrorNotImplementedType operation is not implemented
+	ErrorNotImplementedType
 )
 
 // String returns the string representation of the acme problem type,
 // fulfilling the Stringer interface.
-func (ap ProbType) String() string {
+func (ap ProblemType) String() string {
 	switch ap {
-	case accountDoesNotExistErr:
+	case ErrorAccountDoesNotExistType:
 		return "accountDoesNotExist"
-	case alreadyRevokedErr:
+	case ErrorAlreadyRevokedType:
 		return "alreadyRevoked"
-	case badCSRErr:
+	case ErrorBadAttestationStatementType:
+		return "badAttestationStatement"
+	case ErrorBadCSRType:
 		return "badCSR"
-	case badNonceErr:
+	case ErrorBadNonceType:
 		return "badNonce"
-	case badPublicKeyErr:
+	case ErrorBadPublicKeyType:
 		return "badPublicKey"
-	case badRevocationReasonErr:
+	case ErrorBadRevocationReasonType:
 		return "badRevocationReason"
-	case badSignatureAlgorithmErr:
+	case ErrorBadSignatureAlgorithmType:
 		return "badSignatureAlgorithm"
-	case caaErr:
+	case ErrorCaaType:
 		return "caa"
-	case compoundErr:
+	case ErrorCompoundType:
 		return "compound"
-	case connectionErr:
+	case ErrorConnectionType:
 		return "connection"
-	case dnsErr:
+	case ErrorDNSType:
 		return "dns"
-	case externalAccountRequiredErr:
+	case ErrorExternalAccountRequiredType:
 		return "externalAccountRequired"
-	case incorrectResponseErr:
+	case ErrorInvalidContactType:
 		return "incorrectResponse"
-	case invalidContactErr:
-		return "invalidContact"
-	case malformedErr:
+	case ErrorMalformedType:
 		return "malformed"
-	case orderNotReadyErr:
+	case ErrorOrderNotReadyType:
 		return "orderNotReady"
-	case rateLimitedErr:
+	case ErrorRateLimitedType:
 		return "rateLimited"
-	case rejectedIdentifierErr:
+	case ErrorRejectedIdentifierType:
 		return "rejectedIdentifier"
-	case serverInternalErr:
+	case ErrorServerInternalType:
 		return "serverInternal"
-	case tlsErr:
+	case ErrorTLSType:
 		return "tls"
-	case unauthorizedErr:
+	case ErrorUnauthorizedType:
 		return "unauthorized"
-	case unsupportedContactErr:
+	case ErrorUnsupportedContactType:
 		return "unsupportedContact"
-	case unsupportedIdentifierErr:
+	case ErrorUnsupportedIdentifierType:
 		return "unsupportedIdentifier"
-	case userActionRequiredErr:
+	case ErrorUserActionRequiredType:
 		return "userActionRequired"
-	case notImplemented:
+	case ErrorNotImplementedType:
 		return "notImplemented"
 	default:
-		return "unsupported type"
+		return fmt.Sprintf("unsupported type ACME error type '%d'", int(ap))
 	}
 }
 
-// Error is an ACME error type complete with problem document.
-type Error struct {
-	Type       ProbType
-	Detail     string
-	Err        error
-	Status     int
-	Sub        []*Error
-	Identifier *Identifier
+type errorMetadata struct {
+	details string
+	status  int
+	typ     string
+	String  string
 }
 
-// Wrap attempts to wrap the internal error.
-func Wrap(err error, wrap string) *Error {
-	switch e := err.(type) {
-	case nil:
+var (
+	officialACMEPrefix          = "urn:ietf:params:acme:error:"
+	errorServerInternalMetadata = errorMetadata{
+		typ:     officialACMEPrefix + ErrorServerInternalType.String(),
+		details: "The server experienced an internal error",
+		status:  500,
+	}
+	errorMap = map[ProblemType]errorMetadata{
+		ErrorAccountDoesNotExistType: {
+			typ:     officialACMEPrefix + ErrorAccountDoesNotExistType.String(),
+			details: "Account does not exist",
+			status:  400,
+		},
+		ErrorAlreadyRevokedType: {
+			typ:     officialACMEPrefix + ErrorAlreadyRevokedType.String(),
+			details: "Certificate already revoked",
+			status:  400,
+		},
+		ErrorBadCSRType: {
+			typ:     officialACMEPrefix + ErrorBadCSRType.String(),
+			details: "The CSR is unacceptable",
+			status:  400,
+		},
+		ErrorBadNonceType: {
+			typ:     officialACMEPrefix + ErrorBadNonceType.String(),
+			details: "Unacceptable anti-replay nonce",
+			status:  400,
+		},
+		ErrorBadPublicKeyType: {
+			typ:     officialACMEPrefix + ErrorBadPublicKeyType.String(),
+			details: "The jws was signed by a public key the server does not support",
+			status:  400,
+		},
+		ErrorBadRevocationReasonType: {
+			typ:     officialACMEPrefix + ErrorBadRevocationReasonType.String(),
+			details: "The revocation reason provided is not allowed by the server",
+			status:  400,
+		},
+		ErrorBadSignatureAlgorithmType: {
+			typ:     officialACMEPrefix + ErrorBadSignatureAlgorithmType.String(),
+			details: "The JWS was signed with an algorithm the server does not support",
+			status:  400,
+		},
+		ErrorBadAttestationStatementType: {
+			typ:     officialACMEPrefix + ErrorBadAttestationStatementType.String(),
+			details: "Attestation statement cannot be verified",
+			status:  400,
+		},
+		ErrorCaaType: {
+			typ:     officialACMEPrefix + ErrorCaaType.String(),
+			details: "Certification Authority Authorization (CAA) records forbid the CA from issuing a certificate",
+			status:  400,
+		},
+		ErrorCompoundType: {
+			typ:     officialACMEPrefix + ErrorCompoundType.String(),
+			details: "Specific error conditions are indicated in the “subproblems” array",
+			status:  400,
+		},
+		ErrorConnectionType: {
+			typ:     officialACMEPrefix + ErrorConnectionType.String(),
+			details: "The server could not connect to validation target",
+			status:  400,
+		},
+		ErrorDNSType: {
+			typ:     officialACMEPrefix + ErrorDNSType.String(),
+			details: "There was a problem with a DNS query during identifier validation",
+			status:  400,
+		},
+		ErrorExternalAccountRequiredType: {
+			typ:     officialACMEPrefix + ErrorExternalAccountRequiredType.String(),
+			details: "The request must include a value for the \"externalAccountBinding\" field",
+			status:  400,
+		},
+		ErrorIncorrectResponseType: {
+			typ:     officialACMEPrefix + ErrorIncorrectResponseType.String(),
+			details: "Response received didn't match the challenge's requirements",
+			status:  400,
+		},
+		ErrorInvalidContactType: {
+			typ:     officialACMEPrefix + ErrorInvalidContactType.String(),
+			details: "A contact URL for an account was invalid",
+			status:  400,
+		},
+		ErrorMalformedType: {
+			typ:     officialACMEPrefix + ErrorMalformedType.String(),
+			details: "The request message was malformed",
+			status:  400,
+		},
+		ErrorOrderNotReadyType: {
+			typ:     officialACMEPrefix + ErrorOrderNotReadyType.String(),
+			details: "The request attempted to finalize an order that is not ready to be finalized",
+			status:  400,
+		},
+		ErrorRateLimitedType: {
+			typ:     officialACMEPrefix + ErrorRateLimitedType.String(),
+			details: "The request exceeds a rate limit",
+			status:  400,
+		},
+		ErrorRejectedIdentifierType: {
+			typ:     officialACMEPrefix + ErrorRejectedIdentifierType.String(),
+			details: "The server will not issue certificates for the identifier",
+			status:  400,
+		},
+		ErrorNotImplementedType: {
+			typ:     officialACMEPrefix + ErrorRejectedIdentifierType.String(),
+			details: "The requested operation is not implemented",
+			status:  501,
+		},
+		ErrorTLSType: {
+			typ:     officialACMEPrefix + ErrorTLSType.String(),
+			details: "The server received a TLS error during validation",
+			status:  400,
+		},
+		ErrorUnauthorizedType: {
+			typ:     officialACMEPrefix + ErrorUnauthorizedType.String(),
+			details: "The client lacks sufficient authorization",
+			status:  401,
+		},
+		ErrorUnsupportedContactType: {
+			typ:     officialACMEPrefix + ErrorUnsupportedContactType.String(),
+			details: "A contact URL for an account used an unsupported protocol scheme",
+			status:  400,
+		},
+		ErrorUnsupportedIdentifierType: {
+			typ:     officialACMEPrefix + ErrorUnsupportedIdentifierType.String(),
+			details: "An identifier is of an unsupported type",
+			status:  400,
+		},
+		ErrorUserActionRequiredType: {
+			typ:     officialACMEPrefix + ErrorUserActionRequiredType.String(),
+			details: "Visit the “instance” URL and take actions specified there",
+			status:  400,
+		},
+		ErrorServerInternalType: errorServerInternalMetadata,
+	}
+)
+
+// Error represents an ACME Error
+type Error struct {
+	Type        string       `json:"type"`
+	Detail      string       `json:"detail"`
+	Subproblems []Subproblem `json:"subproblems,omitempty"`
+	Err         error        `json:"-"`
+	Status      int          `json:"-"`
+}
+
+// Subproblem represents an ACME subproblem. It's fairly
+// similar to an ACME error, but differs in that it can't
+// include subproblems itself, the error is reflected
+// in the Detail property and doesn't have a Status.
+type Subproblem struct {
+	Type   string `json:"type"`
+	Detail string `json:"detail"`
+	// The "identifier" field MUST NOT be present at the top level in ACME
+	// problem documents.  It can only be present in subproblems.
+	// Subproblems need not all have the same type, and they do not need to
+	// match the top level type.
+	Identifier *Identifier `json:"identifier,omitempty"`
+}
+
+// AddSubproblems adds the Subproblems to Error. It
+// returns the Error, allowing for fluent addition.
+func (e *Error) AddSubproblems(subproblems ...Subproblem) *Error {
+	e.Subproblems = append(e.Subproblems, subproblems...)
+	return e
+}
+
+// NewError creates a new Error type.
+func NewError(pt ProblemType, msg string, args ...interface{}) *Error {
+	return newError(pt, errors.Errorf(msg, args...))
+}
+
+// NewSubproblem creates a new Subproblem. The msg and args
+// are used to create a new error, which is set as the Detail, allowing
+// for more detailed error messages to be returned to the ACME client.
+func NewSubproblem(pt ProblemType, msg string, args ...interface{}) Subproblem {
+	e := newError(pt, fmt.Errorf(msg, args...))
+	s := Subproblem{
+		Type:   e.Type,
+		Detail: e.Err.Error(),
+	}
+	return s
+}
+
+// NewSubproblemWithIdentifier creates a new Subproblem with a specific ACME
+// Identifier. It calls NewSubproblem and sets the Identifier.
+func NewSubproblemWithIdentifier(pt ProblemType, identifier Identifier, msg string, args ...interface{}) Subproblem {
+	s := NewSubproblem(pt, msg, args...)
+	s.Identifier = &identifier
+	return s
+}
+
+func newError(pt ProblemType, err error) *Error {
+	meta, ok := errorMap[pt]
+	if !ok {
+		meta = errorServerInternalMetadata
+		return &Error{
+			Type:   meta.typ,
+			Detail: meta.details,
+			Status: meta.status,
+			Err:    err,
+		}
+	}
+
+	return &Error{
+		Type:   meta.typ,
+		Detail: meta.details,
+		Status: meta.status,
+		Err:    err,
+	}
+}
+
+// NewErrorISE creates a new ErrorServerInternalType Error.
+func NewErrorISE(msg string, args ...interface{}) *Error {
+	return NewError(ErrorServerInternalType, msg, args...)
+}
+
+// WrapError attempts to wrap the internal error.
+func WrapError(typ ProblemType, err error, msg string, args ...interface{}) *Error {
+	var e *Error
+	switch {
+	case err == nil:
 		return nil
-	case *Error:
+	case errors.As(err, &e):
 		if e.Err == nil {
-			e.Err = errors.New(wrap + "; " + e.Detail)
+			e.Err = errors.Errorf(msg+"; "+e.Detail, args...)
 		} else {
-			e.Err = errors.Wrap(e.Err, wrap)
+			e.Err = errors.Wrapf(e.Err, msg, args...)
 		}
 		return e
 	default:
-		return ServerInternalErr(errors.Wrap(err, wrap))
+		return newError(typ, errors.Wrapf(err, msg, args...))
 	}
+}
+
+// WrapErrorISE shortcut to wrap an internal server error type.
+func WrapErrorISE(err error, msg string, args ...interface{}) *Error {
+	return WrapError(ErrorServerInternalType, err, msg, args...)
+}
+
+// StatusCode returns the status code and implements the StatusCoder interface.
+func (e *Error) StatusCode() int {
+	return e.Status
 }
 
 // Error implements the error interface.
@@ -412,70 +394,17 @@ func (e *Error) Cause() error {
 	return e.Err
 }
 
-// Official returns true if this error's type is listed in §6.7 of RFC 8555.
-// Error types in §6.7 are registered under IETF urn namespace:
-//
-//   "urn:ietf:params:acme:error:"
-//
-// and should include the namespace as a prefix when appearing as a problem
-// document.
-//
-// RFC 8555 also says:
-//
-//   This list is not exhaustive.  The server MAY return errors whose
-//   "type" field is set to a URI other than those defined above.  Servers
-//   MUST NOT use the ACME URN namespace for errors not listed in the
-//   appropriate IANA registry (see Section 9.6).  Clients SHOULD display
-//   the "detail" field of all errors.
-//
-// In this case Official returns `false` so that a different namespace can
-// be used.
-func (e *Error) Official() bool {
-	return e.Type != notImplemented
-}
-
-// ToACME returns an acme representation of the problem type.
-// For official errors, the IETF ACME namespace is prepended to the error type.
-// For our own errors, we use an (yet) unregistered smallstep acme namespace.
-func (e *Error) ToACME() *AError {
-	prefix := "urn:step:acme:error"
-	if e.Official() {
-		prefix = "urn:ietf:params:acme:error:"
+// ToLog implements the EnableLogger interface.
+func (e *Error) ToLog() (interface{}, error) {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return nil, WrapErrorISE(err, "error marshaling acme.Error for logging")
 	}
-	ae := &AError{
-		Type:   prefix + e.Type.String(),
-		Detail: e.Error(),
-		Status: e.Status,
-	}
-	if e.Identifier != nil {
-		ae.Identifier = *e.Identifier
-	}
-	for _, p := range e.Sub {
-		ae.Subproblems = append(ae.Subproblems, p.ToACME())
-	}
-	return ae
+	return string(b), nil
 }
 
-// StatusCode returns the status code and implements the StatusCode interface.
-func (e *Error) StatusCode() int {
-	return e.Status
-}
-
-// AError is the error type as seen in acme request/responses.
-type AError struct {
-	Type        string        `json:"type"`
-	Detail      string        `json:"detail"`
-	Identifier  interface{}   `json:"identifier,omitempty"`
-	Subproblems []interface{} `json:"subproblems,omitempty"`
-	Status      int           `json:"-"`
-}
-
-// Error allows AError to implement the error interface.
-func (ae *AError) Error() string {
-	return ae.Detail
-}
-
-// StatusCode returns the status code and implements the StatusCode interface.
-func (ae *AError) StatusCode() int {
-	return ae.Status
+// Render implements render.RenderableError for Error.
+func (e *Error) Render(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	render.JSONStatus(w, e, e.StatusCode())
 }

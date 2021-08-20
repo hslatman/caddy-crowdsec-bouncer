@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package linkedca;
+
+option go_package = "go.step.sm/linkedca";
+
+message Policy {
+	X509Policy x509 = 1;
+	SSHPolicy ssh = 2;
+}
+
+message X509Policy {
+	X509Names allow = 1;
+	X509Names deny = 2;
+	bool allow_wildcard_names = 3;
+}
+
+message SSHPolicy {
+	SSHHostPolicy host = 1;
+	SSHUserPolicy user = 2;
+}
+
+message SSHHostPolicy {
+	SSHHostNames allow = 1;
+	SSHHostNames deny = 2;
+}
+
+message SSHUserPolicy {
+	SSHUserNames allow = 1;
+	SSHUserNames deny = 2;
+}
+
+message X509Names {
+	repeated string dns = 1;
+	repeated string ips = 2;
+	repeated string emails = 3;
+	repeated string uris = 4;
+	repeated string common_names = 5;
+}
+
+message SSHHostNames {
+	repeated string dns = 1;
+	repeated string ips = 2;
+	repeated string principals = 3;
+}
+
+message SSHUserNames {
+	repeated string emails = 1;
+	repeated string principals = 2;
+}

@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 )
@@ -118,14 +117,14 @@ func uninstallCertificate(filename string, cert *x509.Certificate, opts []Option
 
 // ReadCertificate reads a certificate file and returns a x509.Certificate struct.
 func ReadCertificate(filename string) (*x509.Certificate, error) {
-	b, err := ioutil.ReadFile(filename)
+	b, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
 	// PEM format
 	if bytes.HasPrefix(b, []byte("-----BEGIN ")) {
-		b, err = ioutil.ReadFile(filename)
+		b, err = os.ReadFile(filename)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +147,7 @@ func SaveCertificate(filename string, cert *x509.Certificate) error {
 		Type:  "CERTIFICATE",
 		Bytes: cert.Raw,
 	}
-	return ioutil.WriteFile(filename, pem.EncodeToMemory(block), 0600)
+	return os.WriteFile(filename, pem.EncodeToMemory(block), 0600)
 }
 
 type options struct {
@@ -225,7 +224,7 @@ func uniqueName(cert *x509.Certificate) string {
 }
 
 func saveTempCert(cert *x509.Certificate) (string, func(), error) {
-	f, err := ioutil.TempFile(os.TempDir(), "truststore.*.pem")
+	f, err := os.CreateTemp(os.TempDir(), "truststore.*.pem")
 	if err != nil {
 		return "", func() {}, err
 	}

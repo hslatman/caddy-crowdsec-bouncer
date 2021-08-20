@@ -15,11 +15,18 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 
 	"github.com/google/cel-go/common/types/ref"
 )
+
+// Error interface which allows types types.Err values to be treated as error values.
+type Error interface {
+	error
+	ref.Val
+}
 
 // Err type which extends the built-in go error and implements ref.Val.
 type Err struct {
@@ -29,17 +36,40 @@ type Err struct {
 var (
 	// ErrType singleton.
 	ErrType = NewTypeValue("error")
+
+	// errDivideByZero is an error indicating a division by zero of an integer value.
+	errDivideByZero = errors.New("division by zero")
+	// errModulusByZero is an error indicating a modulus by zero of an integer value.
+	errModulusByZero = errors.New("modulus by zero")
+	// errIntOverflow is an error representing integer overflow.
+	errIntOverflow = errors.New("integer overflow")
+	// errUintOverflow is an error representing unsigned integer overflow.
+	errUintOverflow = errors.New("unsigned integer overflow")
+	// errDurationOverflow is an error representing duration overflow.
+	errDurationOverflow = errors.New("duration overflow")
+	// errTimestampOverflow is an error representing timestamp overflow.
+	errTimestampOverflow    = errors.New("timestamp overflow")
+	celErrTimestampOverflow = &Err{error: errTimestampOverflow}
+
+	// celErrNoSuchOverload indicates that the call arguments did not match a supported method signature.
+	celErrNoSuchOverload = NewErr("no such overload")
 )
 
 // NewErr creates a new Err described by the format string and args.
 // TODO: Audit the use of this function and standardize the error messages and codes.
-func NewErr(format string, args ...interface{}) ref.Val {
+func NewErr(format string, args ...any) ref.Val {
 	return &Err{fmt.Errorf(format, args...)}
 }
 
 // NoSuchOverloadErr returns a new types.Err instance with a no such overload message.
 func NoSuchOverloadErr() ref.Val {
-	return NewErr("no such overload")
+	return celErrNoSuchOverload
+}
+
+// UnsupportedRefValConversionErr returns a types.NewErr instance with a no such conversion
+// message that indicates that the native value could not be converted to a CEL ref.Val.
+func UnsupportedRefValConversionErr(val any) ref.Val {
+	return NewErr("unsupported conversion to ref.Val: (%T)%v", val, val)
 }
 
 // MaybeNoSuchOverloadErr returns the error or unknown if the input ref.Val is one of these types,
@@ -48,22 +78,22 @@ func MaybeNoSuchOverloadErr(val ref.Val) ref.Val {
 	return ValOrErr(val, "no such overload")
 }
 
-// ValOrErr either returns the existing error or create a new one.
+// ValOrErr either returns the existing error or creates a new one.
 // TODO: Audit the use of this function and standardize the error messages and codes.
-func ValOrErr(val ref.Val, format string, args ...interface{}) ref.Val {
-	if val == nil {
+func ValOrErr(val ref.Val, format string, args ...any) ref.Val {
+	if val == nil || !IsUnknownOrError(val) {
 		return NewErr(format, args...)
 	}
-	switch val.Type() {
-	case ErrType, UnknownType:
-		return val
-	default:
-		return NewErr(format, args...)
-	}
+	return val
+}
+
+// WrapErr wraps an existing Go error value into a CEL Err value.
+func WrapErr(err error) ref.Val {
+	return &Err{error: err}
 }
 
 // ConvertToNative implements ref.Val.ConvertToNative.
-func (e *Err) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
+func (e *Err) ConvertToNative(typeDesc reflect.Type) (any, error) {
 	return nil, e.error
 }
 
@@ -90,12 +120,22 @@ func (e *Err) Type() ref.Type {
 }
 
 // Value implements ref.Val.Value.
-func (e *Err) Value() interface{} {
+func (e *Err) Value() any {
 	return e.error
+}
+
+// Is implements errors.Is.
+func (e *Err) Is(target error) bool {
+	return e.error.Error() == target.Error()
 }
 
 // IsError returns whether the input element ref.Type or ref.Val is equal to
 // the ErrType singleton.
 func IsError(val ref.Val) bool {
-	return val.Type() == ErrType
+	switch val.(type) {
+	case *Err:
+		return true
+	default:
+		return false
+	}
 }

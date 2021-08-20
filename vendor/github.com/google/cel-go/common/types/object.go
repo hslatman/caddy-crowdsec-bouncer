@@ -18,23 +18,21 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/google/cel-go/common/types/pb"
 	"github.com/google/cel-go/common/types/ref"
 
-	structpb "github.com/golang/protobuf/ptypes/struct"
+	anypb "google.golang.org/protobuf/types/known/anypb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 type protoObj struct {
 	ref.TypeAdapter
 	value     proto.Message
-	refValue  reflect.Value
 	typeDesc  *pb.TypeDescription
 	typeValue *TypeValue
-	isAny     bool
 }
 
 // NewObject returns an object based on a proto.Message value which handles
@@ -51,38 +49,55 @@ func NewObject(adapter ref.TypeAdapter,
 	return &protoObj{
 		TypeAdapter: adapter,
 		value:       value,
-		refValue:    reflect.ValueOf(value),
 		typeDesc:    typeDesc,
 		typeValue:   typeValue}
 }
 
-func (o *protoObj) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
-	pb := o.Value().(proto.Message)
+func (o *protoObj) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	srcPB := o.value
+	if reflect.TypeOf(srcPB).AssignableTo(typeDesc) {
+		return srcPB, nil
+	}
+	if reflect.TypeOf(o).AssignableTo(typeDesc) {
+		return o, nil
+	}
 	switch typeDesc {
 	case anyValueType:
-		if o.isAny {
-			return pb, nil
+		_, isAny := srcPB.(*anypb.Any)
+		if isAny {
+			return srcPB, nil
 		}
-		return ptypes.MarshalAny(pb)
+		return anypb.New(srcPB)
 	case jsonValueType:
 		// Marshal the proto to JSON first, and then rehydrate as protobuf.Value as there is no
 		// support for direct conversion from proto.Message to protobuf.Value.
-		jsonTxt, err := (&jsonpb.Marshaler{}).MarshalToString(pb)
+		bytes, err := protojson.Marshal(srcPB)
 		if err != nil {
 			return nil, err
 		}
 		json := &structpb.Value{}
-		err = jsonpb.UnmarshalString(jsonTxt, json)
+		err = protojson.Unmarshal(bytes, json)
 		if err != nil {
 			return nil, err
 		}
 		return json, nil
+	default:
+		if typeDesc == o.typeDesc.ReflectType() {
+			return o.value, nil
+		}
+		if typeDesc.Kind() == reflect.Ptr {
+			val := reflect.New(typeDesc.Elem()).Interface()
+			dstPB, ok := val.(proto.Message)
+			if ok {
+				err := pb.Merge(dstPB, srcPB)
+				if err != nil {
+					return nil, fmt.Errorf("type conversion error: %v", err)
+				}
+				return dstPB, nil
+			}
+		}
 	}
-	if o.refValue.Type().AssignableTo(typeDesc) {
-		return pb, nil
-	}
-	return nil, fmt.Errorf("type conversion error from '%v' to '%v'",
-		o.refValue.Type(), typeDesc)
+	return nil, fmt.Errorf("type conversion error from '%T' to '%v'", o.value, typeDesc)
 }
 
 func (o *protoObj) ConvertToType(typeVal ref.Type) ref.Val {
@@ -94,45 +109,47 @@ func (o *protoObj) ConvertToType(typeVal ref.Type) ref.Val {
 	case TypeType:
 		return o.typeValue
 	}
-	return NewErr("type conversion error from '%s' to '%s'",
-		o.typeDesc.Name(), typeVal)
+	return NewErr("type conversion error from '%s' to '%s'", o.typeDesc.Name(), typeVal)
 }
 
 func (o *protoObj) Equal(other ref.Val) ref.Val {
-	if o.typeDesc.Name() != other.Type().TypeName() {
-		return ValOrErr(other, "no such overload")
-	}
-	return Bool(proto.Equal(o.value, other.Value().(proto.Message)))
+	otherPB, ok := other.Value().(proto.Message)
+	return Bool(ok && pb.Equal(o.value, otherPB))
 }
 
 // IsSet tests whether a field which is defined is set to a non-default value.
 func (o *protoObj) IsSet(field ref.Val) ref.Val {
 	protoFieldName, ok := field.(String)
 	if !ok {
-		return ValOrErr(field, "no such overload")
+		return MaybeNoSuchOverloadErr(field)
 	}
 	protoFieldStr := string(protoFieldName)
 	fd, found := o.typeDesc.FieldByName(protoFieldStr)
 	if !found {
 		return NewErr("no such field '%s'", field)
 	}
-	if fd.IsSet(o.refValue) {
+	if fd.IsSet(o.value) {
 		return True
 	}
 	return False
 }
 
+// IsZeroValue returns true if the protobuf object is empty.
+func (o *protoObj) IsZeroValue() bool {
+	return proto.Equal(o.value, o.typeDesc.Zero())
+}
+
 func (o *protoObj) Get(index ref.Val) ref.Val {
 	protoFieldName, ok := index.(String)
 	if !ok {
-		return ValOrErr(index, "no such overload")
+		return MaybeNoSuchOverloadErr(index)
 	}
 	protoFieldStr := string(protoFieldName)
 	fd, found := o.typeDesc.FieldByName(protoFieldStr)
 	if !found {
 		return NewErr("no such field '%s'", index)
 	}
-	fv, err := fd.GetFrom(o.refValue)
+	fv, err := fd.GetFrom(o.value)
 	if err != nil {
 		return NewErr(err.Error())
 	}
@@ -143,6 +160,6 @@ func (o *protoObj) Type() ref.Type {
 	return o.typeValue
 }
 
-func (o *protoObj) Value() interface{} {
+func (o *protoObj) Value() any {
 	return o.value
 }

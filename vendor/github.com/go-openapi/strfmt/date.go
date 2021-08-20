@@ -57,7 +57,7 @@ func (d *Date) UnmarshalText(text []byte) error {
 	if len(text) == 0 {
 		return nil
 	}
-	dd, err := time.Parse(RFC3339FullDate, string(text))
+	dd, err := time.ParseInLocation(RFC3339FullDate, string(text), DefaultTimeLocation)
 	if err != nil {
 		return err
 	}
@@ -107,7 +107,7 @@ func (d *Date) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &strdate); err != nil {
 		return err
 	}
-	tt, err := time.Parse(RFC3339FullDate, strdate)
+	tt, err := time.ParseInLocation(RFC3339FullDate, strdate, DefaultTimeLocation)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (d *Date) UnmarshalBSON(data []byte) error {
 	}
 
 	if data, ok := m["data"].(string); ok {
-		rd, err := time.Parse(RFC3339FullDate, data)
+		rd, err := time.ParseInLocation(RFC3339FullDate, data, DefaultTimeLocation)
 		if err != nil {
 			return err
 		}
@@ -179,4 +179,9 @@ func (d *Date) UnmarshalBinary(data []byte) error {
 	*d = Date(original)
 
 	return nil
+}
+
+// Equal checks if two Date instances are equal
+func (d Date) Equal(d2 Date) bool {
+	return time.Time(d).Equal(time.Time(d2))
 }

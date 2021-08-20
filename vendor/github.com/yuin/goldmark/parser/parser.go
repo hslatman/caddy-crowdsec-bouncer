@@ -138,6 +138,9 @@ type Context interface {
 	// Get returns a value associated with the given key.
 	Get(ContextKey) interface{}
 
+	// ComputeIfAbsent computes a value if a value associated with the given key is absent and returns the value.
+	ComputeIfAbsent(ContextKey, func() interface{}) interface{}
+
 	// Set sets the given value to the context.
 	Set(ContextKey, interface{})
 
@@ -250,6 +253,15 @@ func NewContext(options ...ContextOption) Context {
 
 func (p *parseContext) Get(key ContextKey) interface{} {
 	return p.store[key]
+}
+
+func (p *parseContext) ComputeIfAbsent(key ContextKey, f func() interface{}) interface{} {
+	v := p.store[key]
+	if v == nil {
+		v = f()
+		p.store[key] = v
+	}
+	return v
 }
 
 func (p *parseContext) Set(key ContextKey, value interface{}) {
@@ -418,6 +430,7 @@ type Config struct {
 	InlineParsers         util.PrioritizedSlice /*<InlineParser>*/
 	ParagraphTransformers util.PrioritizedSlice /*<ParagraphTransformer>*/
 	ASTTransformers       util.PrioritizedSlice /*<ASTTransformer>*/
+	EscapedSpace          bool
 }
 
 // NewConfig returns a new Config.
@@ -554,16 +567,16 @@ type ASTTransformer interface {
 // DefaultBlockParsers returns a new list of default BlockParsers.
 // Priorities of default BlockParsers are:
 //
-//     SetextHeadingParser, 100
-//     ThematicBreakParser, 200
-//     ListParser, 300
-//     ListItemParser, 400
-//     CodeBlockParser, 500
-//     ATXHeadingParser, 600
-//     FencedCodeBlockParser, 700
-//     BlockquoteParser, 800
-//     HTMLBlockParser, 900
-//     ParagraphParser, 1000
+//	SetextHeadingParser, 100
+//	ThematicBreakParser, 200
+//	ListParser, 300
+//	ListItemParser, 400
+//	CodeBlockParser, 500
+//	ATXHeadingParser, 600
+//	FencedCodeBlockParser, 700
+//	BlockquoteParser, 800
+//	HTMLBlockParser, 900
+//	ParagraphParser, 1000
 func DefaultBlockParsers() []util.PrioritizedValue {
 	return []util.PrioritizedValue{
 		util.Prioritized(NewSetextHeadingParser(), 100),
@@ -582,11 +595,11 @@ func DefaultBlockParsers() []util.PrioritizedValue {
 // DefaultInlineParsers returns a new list of default InlineParsers.
 // Priorities of default InlineParsers are:
 //
-//     CodeSpanParser, 100
-//     LinkParser, 200
-//     AutoLinkParser, 300
-//     RawHTMLParser, 400
-//     EmphasisParser, 500
+//	CodeSpanParser, 100
+//	LinkParser, 200
+//	AutoLinkParser, 300
+//	RawHTMLParser, 400
+//	EmphasisParser, 500
 func DefaultInlineParsers() []util.PrioritizedValue {
 	return []util.PrioritizedValue{
 		util.Prioritized(NewCodeSpanParser(), 100),
@@ -600,7 +613,7 @@ func DefaultInlineParsers() []util.PrioritizedValue {
 // DefaultParagraphTransformers returns a new list of default ParagraphTransformers.
 // Priorities of default ParagraphTransformers are:
 //
-//     LinkReferenceParagraphTransformer, 100
+//	LinkReferenceParagraphTransformer, 100
 func DefaultParagraphTransformers() []util.PrioritizedValue {
 	return []util.PrioritizedValue{
 		util.Prioritized(LinkReferenceParagraphTransformer, 100),
@@ -623,6 +636,7 @@ type parser struct {
 	closeBlockers         []CloseBlocker
 	paragraphTransformers []ParagraphTransformer
 	astTransformers       []ASTTransformer
+	escapedSpace          bool
 	config                *Config
 	initSync              sync.Once
 }
@@ -681,6 +695,18 @@ func (o *withASTTransformers) SetParserOption(c *Config) {
 // ASTTransformers to the parser.
 func WithASTTransformers(ps ...util.PrioritizedValue) Option {
 	return &withASTTransformers{ps}
+}
+
+type withEscapedSpace struct {
+}
+
+func (o *withEscapedSpace) SetParserOption(c *Config) {
+	c.EscapedSpace = true
+}
+
+// WithEscapedSpace is a functional option indicates that a '\' escaped half-space(0x20) should not trigger parsers.
+func WithEscapedSpace() Option {
+	return &withEscapedSpace{}
 }
 
 type withOption struct {
@@ -834,6 +860,7 @@ func (p *parser) Parse(reader text.Reader, opts ...ParseOption) ast.Node {
 		for _, v := range p.config.ASTTransformers {
 			p.addASTTransformer(v, p.config.Options)
 		}
+		p.escapedSpace = p.config.EscapedSpace
 		p.config = nil
 	})
 	c := &ParseConfig{}
@@ -872,10 +899,12 @@ func (p *parser) closeBlocks(from, to int, reader text.Reader, pc Context) {
 	blocks := pc.OpenedBlocks()
 	for i := from; i >= to; i-- {
 		node := blocks[i].Node
-		blocks[i].Parser.Close(blocks[i].Node, reader, pc)
 		paragraph, ok := node.(*ast.Paragraph)
 		if ok && node.Parent() != nil {
 			p.transformParagraph(paragraph, reader, pc)
+		}
+		if node.Parent() != nil { // closes only if node has not been transformed
+			blocks[i].Parser.Close(blocks[i].Node, reader, pc)
 		}
 	}
 	if from == len(blocks)-1 {
@@ -1103,6 +1132,12 @@ func (p *parser) walkBlock(block ast.Node, cb func(node ast.Node)) {
 	cb(block)
 }
 
+const (
+	lineBreakHard uint8 = 1 << iota
+	lineBreakSoft
+	lineBreakVisible
+)
+
 func (p *parser) parseBlock(block text.BlockReader, parent ast.Node, pc Context) {
 	if parent.IsRaw() {
 		return
@@ -1117,21 +1152,25 @@ func (p *parser) parseBlock(block text.BlockReader, parent ast.Node, pc Context)
 			break
 		}
 		lineLength := len(line)
-		hardlineBreak := false
-		softLinebreak := line[lineLength-1] == '\n'
-		if lineLength >= 2 && line[lineLength-2] == '\\' && softLinebreak { // ends with \\n
+		var lineBreakFlags uint8 = 0
+		hasNewLine := line[lineLength-1] == '\n'
+		if ((lineLength >= 3 && line[lineLength-2] == '\\' && line[lineLength-3] != '\\') || (lineLength == 2 && line[lineLength-2] == '\\')) && hasNewLine { // ends with \\n
 			lineLength -= 2
-			hardlineBreak = true
-
-		} else if lineLength >= 3 && line[lineLength-3] == '\\' && line[lineLength-2] == '\r' && softLinebreak { // ends with \\r\n
+			lineBreakFlags |= lineBreakHard | lineBreakVisible
+		} else if ((lineLength >= 4 && line[lineLength-3] == '\\' && line[lineLength-2] == '\r' && line[lineLength-4] != '\\') || (lineLength == 3 && line[lineLength-3] == '\\' && line[lineLength-2] == '\r')) && hasNewLine { // ends with \\r\n
 			lineLength -= 3
-			hardlineBreak = true
-		} else if lineLength >= 3 && line[lineLength-3] == ' ' && line[lineLength-2] == ' ' && softLinebreak { // ends with [space][space]\n
+			lineBreakFlags |= lineBreakHard | lineBreakVisible
+		} else if lineLength >= 3 && line[lineLength-3] == ' ' && line[lineLength-2] == ' ' && hasNewLine { // ends with [space][space]\n
 			lineLength -= 3
-			hardlineBreak = true
-		} else if lineLength >= 4 && line[lineLength-4] == ' ' && line[lineLength-3] == ' ' && line[lineLength-2] == '\r' && softLinebreak { // ends with [space][space]\r\n
+			lineBreakFlags |= lineBreakHard
+		} else if lineLength >= 4 && line[lineLength-4] == ' ' && line[lineLength-3] == ' ' && line[lineLength-2] == '\r' && hasNewLine { // ends with [space][space]\r\n
 			lineLength -= 4
-			hardlineBreak = true
+			lineBreakFlags |= lineBreakHard
+		} else if hasNewLine {
+			// If the line ends with a newline character, but it is not a hardlineBreak, then it is a softLinebreak
+			// If the line ends with a hardlineBreak, then it cannot end with a softLinebreak
+			// See https://spec.commonmark.org/0.30/#soft-line-breaks
+			lineBreakFlags |= lineBreakSoft
 		}
 
 		l, startPosition := block.Position()
@@ -1141,9 +1180,9 @@ func (p *parser) parseBlock(block text.BlockReader, parent ast.Node, pc Context)
 			if c == '\n' {
 				break
 			}
-			isSpace := util.IsSpace(c)
+			isSpace := util.IsSpace(c) && c != '\r' && c != '\n'
 			isPunct := util.IsPunct(c)
-			if (isPunct && !escaped) || isSpace || i == 0 {
+			if (isPunct && !escaped) || isSpace && !(escaped && p.escapedSpace) || i == 0 {
 				parserChar := c
 				if isSpace || (i == 0 && !isPunct) {
 					parserChar = ' '
@@ -1195,11 +1234,14 @@ func (p *parser) parseBlock(block text.BlockReader, parent ast.Node, pc Context)
 			continue
 		}
 		diff := startPosition.Between(currentPosition)
-		stop := diff.Stop
-		rest := diff.WithStop(stop)
-		text := ast.NewTextSegment(rest.TrimRightSpace(source))
-		text.SetSoftLineBreak(softLinebreak)
-		text.SetHardLineBreak(hardlineBreak)
+		var text *ast.Text
+		if lineBreakFlags&(lineBreakHard|lineBreakVisible) == lineBreakHard|lineBreakVisible {
+			text = ast.NewTextSegment(diff)
+		} else {
+			text = ast.NewTextSegment(diff.TrimRightSpace(source))
+		}
+		text.SetSoftLineBreak(lineBreakFlags&lineBreakSoft != 0)
+		text.SetHardLineBreak(lineBreakFlags&lineBreakHard != 0)
 		parent.AppendChild(parent, text)
 		block.AdvanceLine()
 	}

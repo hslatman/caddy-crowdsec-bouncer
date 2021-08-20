@@ -32,14 +32,20 @@ Current matchers:
 - **layer4.matchers.tls** - matches connections that start with TLS handshakes. In addition, any [`tls.handshake_match` modules](https://caddyserver.com/docs/modules/) can be used for matching on TLS-specific properties of the ClientHello, such as ServerName (SNI).
 - **layer4.matchers.ssh** - matches connections that look like SSH connections.
 - **layer4.matchers.ip** - matches connections based on remote IP (or CIDR range).
+- **layer4.matchers.local_ip** - matches connections based on local IP (or CIDR range).
+- **layer4.matchers.proxy_protocol** - matches connections that start with [HAPROXY proxy protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt).
+- **layer4.matchers.socks4** - matches connections that look like [SOCKSv4](https://www.openssh.com/txt/socks4.protocol).
+- **layer4.matchers.socks5** - matches connections that look like [SOCKSv5](https://www.rfc-editor.org/rfc/rfc1928.html).
 
 Current handlers:
 
 - **layer4.handlers.echo** - An echo server.
-- **layer4.handlers.proxy** - Powerful layer 4 proxy, capable of multiple upstreams (with load balancing and health checks) and establishing new TLS connections to backends.
+- **layer4.handlers.proxy** - Powerful layer 4 proxy, capable of multiple upstreams (with load balancing and health checks) and establishing new TLS connections to backends. Optionally supports sending the [HAProxy proxy protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt).
 - **layer4.handlers.tee** - Branches the handling of a connection into a concurrent handler chain.
 - **layer4.handlers.throttle** - Throttle connections to simulate slowness and latency.
 - **layer4.handlers.tls** - TLS termination.
+- **layer4.handlers.proxy_protocol** - Accepts the [HAPROXY proxy protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) on the receiving side.
+- **layer4.handlers.socks5** - Handles [SOCKSv5](https://www.rfc-editor.org/rfc/rfc1928.html) proxy protocol connections.
 
 Like the `http` app, some handlers are "terminal" meaning that they don't call the next handler in the chain. For example: `echo` and `proxy` are terminal handlers because they consume the client's input.
 
@@ -118,9 +124,60 @@ A simple echo server with TLS termination that uses a self-signed cert for `loca
 			"automation": {
 				"policies": [
 					{
-						"issuer": {"module": "internal"}
+						"issuers": [{"module": "internal"}]
 					}
 				]
+			}
+		}
+	}
+}
+```
+
+A simple TCP reverse proxy that terminates TLS on 993, and sends the PROXY protocol header to 1143 through 143:
+
+```json
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"secure-imap": {
+					"listen": ["0.0.0.0:993"],
+					"routes": [
+						{
+							"handle": [
+								{
+									"handler": "tls"
+								},
+								{
+									"handler": "proxy",
+									"proxy_protocol": "v1",
+									"upstreams": [
+										{"dial": ["localhost:143"]}
+									]
+								}
+							]
+						}
+					]
+				},
+				"normal-imap": {
+					"listen": ["0.0.0.0:143"],
+					"routes": [
+						{
+							"handle": [
+								{
+									"handler": "proxy_protocol"
+								},
+								{
+									"handler": "proxy",
+									"proxy_protocol": "v2",
+									"upstreams": [
+										{"dial": ["localhost:1143"]}
+									]
+								}
+							]
+						}
+					]
+				}
 			}
 		}
 	}
@@ -175,7 +232,69 @@ A multiplexer that proxies HTTP to one backend, and TLS to another (without term
 }
 ```
 
+Same as previous, but only applies to HTTP requests with specific hosts:
 
+```json
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"example": {
+					"listen": ["127.0.0.1:5000"],
+					"routes": [
+						{
+							"match": [
+								{
+									"http": [
+										{"host": ["example.com"]}
+									]
+								}
+							],
+							"handle": [
+								{
+									"handler": "subroute",
+									"routes": [
+										{
+											"match": [
+												{
+													"http": []
+												}
+											],
+											"handle": [
+												{
+													"handler": "proxy",
+													"upstreams": [
+														{"dial": ["localhost:80"]}
+													]
+												}
+											]
+										},
+										{
+											"match": [
+												{
+													"tls": {}
+												}
+											],
+											"handle": [
+												{
+													"handler": "proxy",
+													"upstreams": [
+														{"dial": ["localhost:443"]}
+													]
+												}
+											]
+										}
+									]
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}
+```
 
 Same as previous, but filter by HTTP Host header and/or TLS ClientHello ServerName:
 
@@ -217,6 +336,57 @@ Same as previous, but filter by HTTP Host header and/or TLS ClientHello ServerNa
 									"handler": "proxy",
 									"upstreams": [
 										{"dial": ["localhost:443"]}
+									]
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}
+```
+
+
+Forwarding SOCKSv4 to a remote server and handling SOCKSv5 directly in caddy.  
+While only allowing connections from a specific network and requiring a username and password for SOCKSv5.
+
+```json
+{
+	"apps": {
+		"layer4": {
+			"servers": {
+				"socks": {
+					"listen": ["0.0.0.0:1080"],
+					"routes": [
+						{
+							"match": [
+								{
+									"socks5": {},
+									"ip": {"ranges": ["10.0.0.0/24"]}
+								}
+							],
+							"handle": [
+								{
+									"handler": "socks5",
+									"credentials": {
+										"bob": "qHoEtVpGRM"
+									}
+								}
+							]
+						},
+						{
+							"match": [
+								{
+									"socks4": {}
+								}
+							],
+							"handle": [
+								{
+									"handler": "proxy",
+									"upstreams": [
+										{"dial": ["10.64.0.1:1080"]}
 									]
 								}
 							]

@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 
@@ -60,19 +59,20 @@ func installPlatform(filename string, cert *x509.Certificate) error {
 
 	// Make trustSettings explicit, as older Go does not know the defaults.
 	// https://github.com/golang/go/issues/24652
-	plistFile, err := ioutil.TempFile("", "trust-settings")
+	plistFile, err := os.CreateTemp("", "trust-settings")
 	if err != nil {
 		return wrapError(err, "failed to create temp file")
 	}
 	defer os.Remove(plistFile.Name())
 
+	//nolint:gosec // tolerable risk necessary for function
 	cmd = exec.Command("sudo", "security", "trust-settings-export", "-d", plistFile.Name())
 	out, err = cmd.CombinedOutput()
 	if err != nil {
 		return NewCmdError(err, cmd, out)
 	}
 
-	plistData, err := ioutil.ReadFile(plistFile.Name())
+	plistData, err := os.ReadFile(plistFile.Name())
 	if err != nil {
 		return wrapError(err, "failed to read trust settings")
 	}
@@ -106,11 +106,12 @@ func installPlatform(filename string, cert *x509.Certificate) error {
 		return wrapError(err, "failed to serialize trust settings")
 	}
 
-	err = ioutil.WriteFile(plistFile.Name(), plistData, 0600)
+	err = os.WriteFile(plistFile.Name(), plistData, 0600)
 	if err != nil {
 		return wrapError(err, "failed to write trust settings")
 	}
 
+	//nolint:gosec // tolerable risk necessary for function
 	cmd = exec.Command("sudo", "security", "trust-settings-import", "-d", plistFile.Name())
 	out, err = cmd.CombinedOutput()
 	if err != nil {

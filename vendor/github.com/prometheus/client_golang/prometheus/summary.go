@@ -22,11 +22,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/beorn7/perks/quantile"
-	//lint:ignore SA1019 Need to keep deprecated package for compatibility.
-	"github.com/golang/protobuf/proto"
-
 	dto "github.com/prometheus/client_model/go"
+
+	"github.com/beorn7/perks/quantile"
+	"google.golang.org/protobuf/proto"
 )
 
 // quantileLabel is used for the label that defines the quantile in a
@@ -55,7 +54,12 @@ type Summary interface {
 	Metric
 	Collector
 
-	// Observe adds a single observation to the summary.
+	// Observe adds a single observation to the summary. Observations are
+	// usually positive or zero. Negative observations are accepted but
+	// prevent current versions of Prometheus from properly detecting
+	// counter resets in the sum of observations. See
+	// https://prometheus.io/docs/practices/histograms/#count-and-sum-of-observations
+	// for details.
 	Observe(float64)
 }
 
@@ -121,7 +125,9 @@ type SummaryOpts struct {
 	Objectives map[float64]float64
 
 	// MaxAge defines the duration for which an observation stays relevant
-	// for the summary. Must be positive. The default value is DefMaxAge.
+	// for the summary. Only applies to pre-calculated quantiles, does not
+	// apply to _sum and _count. Must be positive. The default value is
+	// DefMaxAge.
 	MaxAge time.Duration
 
 	// AgeBuckets is the number of buckets used to exclude observations that
@@ -139,6 +145,18 @@ type SummaryOpts struct {
 	// is the internal buffer size of the underlying package
 	// "github.com/bmizerany/perks/quantile").
 	BufCap uint32
+}
+
+// SummaryVecOpts bundles the options to create a SummaryVec metric.
+// It is mandatory to set SummaryOpts, see there for mandatory fields. VariableLabels
+// is optional and can safely be left to its default value.
+type SummaryVecOpts struct {
+	SummaryOpts
+
+	// VariableLabels are used to partition the metric vector by the given set
+	// of labels. Each label value will be constrained with the optional Contraint
+	// function, if provided.
+	VariableLabels ConstrainableLabels
 }
 
 // Problem with the sliding-window decay algorithm... The Merge method of
@@ -171,11 +189,11 @@ func NewSummary(opts SummaryOpts) Summary {
 
 func newSummary(desc *Desc, opts SummaryOpts, labelValues ...string) Summary {
 	if len(desc.variableLabels) != len(labelValues) {
-		panic(makeInconsistentCardinalityError(desc.fqName, desc.variableLabels, labelValues))
+		panic(makeInconsistentCardinalityError(desc.fqName, desc.variableLabels.labelNames(), labelValues))
 	}
 
 	for _, n := range desc.variableLabels {
-		if n == quantileLabel {
+		if n.Name == quantileLabel {
 			panic(errQuantileLabelNotAllowed)
 		}
 	}
@@ -523,20 +541,28 @@ type SummaryVec struct {
 // it is handled by the Prometheus server internally, “quantile” is an illegal
 // label name. NewSummaryVec will panic if this label name is used.
 func NewSummaryVec(opts SummaryOpts, labelNames []string) *SummaryVec {
-	for _, ln := range labelNames {
+	return V2.NewSummaryVec(SummaryVecOpts{
+		SummaryOpts:    opts,
+		VariableLabels: UnconstrainedLabels(labelNames),
+	})
+}
+
+// NewSummaryVec creates a new SummaryVec based on the provided SummaryVecOpts.
+func (v2) NewSummaryVec(opts SummaryVecOpts) *SummaryVec {
+	for _, ln := range opts.VariableLabels.labelNames() {
 		if ln == quantileLabel {
 			panic(errQuantileLabelNotAllowed)
 		}
 	}
-	desc := NewDesc(
+	desc := V2.NewDesc(
 		BuildFQName(opts.Namespace, opts.Subsystem, opts.Name),
 		opts.Help,
-		labelNames,
+		opts.VariableLabels,
 		opts.ConstLabels,
 	)
 	return &SummaryVec{
 		MetricVec: NewMetricVec(desc, func(lvs ...string) Metric {
-			return newSummary(desc, opts, lvs...)
+			return newSummary(desc, opts.SummaryOpts, lvs...)
 		}),
 	}
 }
@@ -596,7 +622,8 @@ func (v *SummaryVec) GetMetricWith(labels Labels) (Observer, error) {
 // WithLabelValues works as GetMetricWithLabelValues, but panics where
 // GetMetricWithLabelValues would have returned an error. Not returning an
 // error allows shortcuts like
-//     myVec.WithLabelValues("404", "GET").Observe(42.21)
+//
+//	myVec.WithLabelValues("404", "GET").Observe(42.21)
 func (v *SummaryVec) WithLabelValues(lvs ...string) Observer {
 	s, err := v.GetMetricWithLabelValues(lvs...)
 	if err != nil {
@@ -607,7 +634,8 @@ func (v *SummaryVec) WithLabelValues(lvs ...string) Observer {
 
 // With works as GetMetricWith, but panics where GetMetricWithLabels would have
 // returned an error. Not returning an error allows shortcuts like
-//     myVec.With(prometheus.Labels{"code": "404", "method": "GET"}).Observe(42.21)
+//
+//	myVec.With(prometheus.Labels{"code": "404", "method": "GET"}).Observe(42.21)
 func (v *SummaryVec) With(labels Labels) Observer {
 	s, err := v.GetMetricWith(labels)
 	if err != nil {
@@ -694,7 +722,8 @@ func (s *constSummary) Write(out *dto.Metric) error {
 //
 // quantiles maps ranks to quantile values. For example, a median latency of
 // 0.23s and a 99th percentile latency of 0.56s would be expressed as:
-//     map[float64]float64{0.5: 0.23, 0.99: 0.56}
+//
+//	map[float64]float64{0.5: 0.23, 0.99: 0.56}
 //
 // NewConstSummary returns an error if the length of labelValues is not
 // consistent with the variable labels in Desc or if Desc is invalid.

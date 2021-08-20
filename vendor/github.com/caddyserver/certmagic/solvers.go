@@ -32,6 +32,7 @@ import (
 	"github.com/libdns/libdns"
 	"github.com/mholt/acmez"
 	"github.com/mholt/acmez/acme"
+	"github.com/miekg/dns"
 )
 
 // httpSolver solves the HTTP challenge. It must be
@@ -45,9 +46,9 @@ import (
 // can access the keyAuth material is by loading it
 // from storage, which is done by distributedSolver.
 type httpSolver struct {
-	closed      int32 // accessed atomically
-	acmeManager *ACMEManager
-	address     string
+	closed     int32 // accessed atomically
+	acmeIssuer *ACMEIssuer
+	address    string
 }
 
 // Present starts an HTTP server if none is already listening on s.address.
@@ -71,13 +72,13 @@ func (s *httpSolver) Present(ctx context.Context, _ acme.Challenge) error {
 
 	// successfully bound socket, so save listener and start key auth HTTP server
 	si.listener = ln
-	go s.serve(si)
+	go s.serve(ctx, si)
 
 	return nil
 }
 
 // serve is an HTTP server that serves only HTTP challenge responses.
-func (s *httpSolver) serve(si *solverInfo) {
+func (s *httpSolver) serve(ctx context.Context, si *solverInfo) {
 	defer func() {
 		if err := recover(); err != nil {
 			buf := make([]byte, stackTraceBufferSize)
@@ -86,7 +87,10 @@ func (s *httpSolver) serve(si *solverInfo) {
 		}
 	}()
 	defer close(si.done)
-	httpServer := &http.Server{Handler: s.acmeManager.HTTPChallengeHandler(http.NewServeMux())}
+	httpServer := &http.Server{
+		Handler:     s.acmeIssuer.HTTPChallengeHandler(http.NewServeMux()),
+		BaseContext: func(listener net.Listener) context.Context { return ctx },
+	}
 	httpServer.SetKeepAlivesEnabled(false)
 	err := httpServer.Serve(si.listener)
 	if err != nil && atomic.LoadInt32(&s.closed) != 1 {
@@ -95,7 +99,7 @@ func (s *httpSolver) serve(si *solverInfo) {
 }
 
 // CleanUp cleans up the HTTP server if it is the last one to finish.
-func (s *httpSolver) CleanUp(ctx context.Context, _ acme.Challenge) error {
+func (s *httpSolver) CleanUp(_ context.Context, _ acme.Challenge) error {
 	solversMu.Lock()
 	defer solversMu.Unlock()
 	si := getSolverInfo(s.address)
@@ -123,22 +127,21 @@ type tlsALPNSolver struct {
 // Present adds the certificate to the certificate cache and, if
 // needed, starts a TLS server for answering TLS-ALPN challenges.
 func (s *tlsALPNSolver) Present(ctx context.Context, chal acme.Challenge) error {
-	// load the certificate into the cache; this isn't strictly necessary
-	// if we're using the distributed solver since our GetCertificate
-	// function will check storage for the keyAuth anyway, but it seems
-	// like loading it into the cache is the right thing to do
+	// we pre-generate the certificate for efficiency with multi-perspective
+	// validation, so it only has to be done once (at least, by this instance;
+	// distributed solving does not have that luxury, oh well) - update the
+	// challenge data in memory to be the generated certificate
 	cert, err := acmez.TLSALPN01ChallengeCert(chal)
 	if err != nil {
 		return err
 	}
-	certHash := hashCertificateChain(cert.Certificate)
-	s.config.certCache.mu.Lock()
-	s.config.certCache.cache[tlsALPNCertKeyName(chal.Identifier.Value)] = Certificate{
-		Certificate: *cert,
-		Names:       []string{chal.Identifier.Value},
-		hash:        certHash, // perhaps not necesssary
-	}
-	s.config.certCache.mu.Unlock()
+
+	key := challengeKey(chal)
+	activeChallengesMu.Lock()
+	chalData := activeChallenges[key]
+	chalData.data = cert
+	activeChallenges[key] = chalData
+	activeChallengesMu.Unlock()
 
 	// the rest of this function increments the
 	// challenge count for the solver at this
@@ -217,11 +220,7 @@ func (*tlsALPNSolver) handleConn(conn net.Conn) {
 
 // CleanUp removes the challenge certificate from the cache, and if
 // it is the last one to finish, stops the TLS server.
-func (s *tlsALPNSolver) CleanUp(ctx context.Context, chal acme.Challenge) error {
-	s.config.certCache.mu.Lock()
-	delete(s.config.certCache.cache, tlsALPNCertKeyName(chal.Identifier.Value))
-	s.config.certCache.mu.Unlock()
-
+func (s *tlsALPNSolver) CleanUp(_ context.Context, chal acme.Challenge) error {
 	solversMu.Lock()
 	defer solversMu.Unlock()
 	si := getSolverInfo(s.address)
@@ -235,21 +234,21 @@ func (s *tlsALPNSolver) CleanUp(ctx context.Context, chal acme.Challenge) error 
 		}
 		delete(solvers, s.address)
 	}
-
 	return nil
 }
 
-// tlsALPNCertKeyName returns the key to use when caching a cert
-// for use with the TLS-ALPN ACME challenge. It is simply to help
-// avoid conflicts (although at time of writing, there shouldn't
-// be, since the cert cache is keyed by hash of certificate chain).
-func tlsALPNCertKeyName(sniName string) string {
-	return sniName + ":acme-tls-alpn"
-}
-
-// DNS01Solver is a type that makes libdns providers usable
-// as ACME dns-01 challenge solvers.
-// See https://github.com/libdns/libdns
+// DNS01Solver is a type that makes libdns providers usable as ACME dns-01
+// challenge solvers. See https://github.com/libdns/libdns
+//
+// Note that challenges may be solved concurrently by some clients (such as
+// acmez, which CertMagic uses), meaning that multiple TXT records may be
+// created in a DNS zone simultaneously, and in some cases distinct TXT records
+// may have the same name. For example, solving challenges for both example.com
+// and *.example.com create a TXT record named _acme_challenge.example.com,
+// but with different tokens as their values. This solver distinguishes
+// between different records with the same name by looking at their values.
+// DNS provider APIs and implementations of the libdns interfaces must also
+// support multiple same-named TXT records.
 type DNS01Solver struct {
 	// The implementation that interacts with the DNS
 	// provider to set or delete records. (REQUIRED)
@@ -258,55 +257,72 @@ type DNS01Solver struct {
 	// The TTL for the temporary challenge records.
 	TTL time.Duration
 
-	// Maximum time to wait for temporary record to appear.
+	// How long to wait before starting propagation checks.
+	// Default: 0 (no wait).
+	PropagationDelay time.Duration
+
+	// Maximum time to wait for temporary DNS record to appear.
+	// Set to -1 to disable propagation checks.
+	// Default: 2 minutes.
 	PropagationTimeout time.Duration
 
 	// Preferred DNS resolver(s) to use when doing DNS lookups.
 	Resolvers []string
 
-	txtRecords   map[string]dnsPresentMemory // keyed by domain name
+	// Override the domain to set the TXT record on. This is
+	// to delegate the challenge to a different domain. Note
+	// that the solver doesn't follow CNAME/NS record.
+	OverrideDomain string
+
+	// Remember DNS records while challenges are active; i.e.
+	// records we have presented and not yet cleaned up.
+	// This lets us clean them up quickly and efficiently.
+	// Keyed by domain name (specifically the ACME DNS name).
+	// The map value is a slice because there can be multiple
+	// concurrent challenges for different domains that have
+	// the same ACME DNS name, for example: example.com and
+	// *.example.com. We distinguish individual memories by
+	// the value of their TXT records, which should contain
+	// unique challenge tokens.
+	// See https://github.com/caddyserver/caddy/issues/3474.
+	txtRecords   map[string][]dnsPresentMemory
 	txtRecordsMu sync.Mutex
 }
 
 // Present creates the DNS TXT record for the given ACME challenge.
 func (s *DNS01Solver) Present(ctx context.Context, challenge acme.Challenge) error {
 	dnsName := challenge.DNS01TXTRecordName()
-	keyAuth := challenge.DNS01KeyAuthorization()
-
-	rec := libdns.Record{
-		Type:  "TXT",
-		Name:  dnsName,
-		Value: keyAuth,
-		TTL:   s.TTL,
+	if s.OverrideDomain != "" {
+		dnsName = s.OverrideDomain
 	}
-
-	// multiple identifiers can have the same ACME challenge
-	// domain (e.g. example.com and *.example.com) so we need
-	// to ensure that we don't solve those concurrently and
-	// step on each challenges' metaphorical toes; see
-	// https://github.com/caddyserver/caddy/issues/3474
-	activeDNSChallenges.Lock(dnsName)
+	keyAuth := challenge.DNS01KeyAuthorization()
 
 	zone, err := findZoneByFQDN(dnsName, recursiveNameservers(s.Resolvers))
 	if err != nil {
 		return fmt.Errorf("could not determine zone for domain %q: %v", dnsName, err)
 	}
 
+	rec := libdns.Record{
+		Type:  "TXT",
+		Name:  libdns.RelativeName(dnsName+".", zone),
+		Value: keyAuth,
+		TTL:   s.TTL,
+	}
+
 	results, err := s.DNSProvider.AppendRecords(ctx, zone, []libdns.Record{rec})
 	if err != nil {
-		return fmt.Errorf("adding temporary record for zone %s: %w", zone, err)
+		return fmt.Errorf("adding temporary record for zone %q: %w", zone, err)
 	}
 	if len(results) != 1 {
 		return fmt.Errorf("expected one record, got %d: %v", len(results), results)
 	}
 
 	// remember the record and zone we got so we can clean up more efficiently
-	s.txtRecordsMu.Lock()
-	if s.txtRecords == nil {
-		s.txtRecords = make(map[string]dnsPresentMemory)
-	}
-	s.txtRecords[dnsName] = dnsPresentMemory{dnsZone: zone, rec: results[0]}
-	s.txtRecordsMu.Unlock()
+	s.saveDNSPresentMemory(dnsPresentMemory{
+		dnsZone: zone,
+		dnsName: dnsName,
+		rec:     results[0],
+	})
 
 	return nil
 }
@@ -315,15 +331,36 @@ func (s *DNS01Solver) Present(ctx context.Context, challenge acme.Challenge) err
 // authoritative lookups, i.e. until it has propagated, or until
 // timeout, whichever is first.
 func (s *DNS01Solver) Wait(ctx context.Context, challenge acme.Challenge) error {
+	// if configured to, pause before doing propagation checks
+	// (even if they are disabled, the wait might be desirable on its own)
+	if s.PropagationDelay > 0 {
+		select {
+		case <-time.After(s.PropagationDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	// skip propagation checks if configured to do so
+	if s.PropagationTimeout == -1 {
+		return nil
+	}
+
+	// prepare for the checks by determining what to look for
 	dnsName := challenge.DNS01TXTRecordName()
+	if s.OverrideDomain != "" {
+		dnsName = s.OverrideDomain
+	}
 	keyAuth := challenge.DNS01KeyAuthorization()
 
+	// timings
 	timeout := s.PropagationTimeout
 	if timeout == 0 {
-		timeout = 2 * time.Minute
+		timeout = defaultDNSPropagationTimeout
 	}
 	const interval = 2 * time.Second
 
+	// how we'll do the checks
 	resolvers := recursiveNameservers(s.Resolvers)
 
 	var err error
@@ -337,7 +374,7 @@ func (s *DNS01Solver) Wait(ctx context.Context, challenge acme.Challenge) error 
 		var ready bool
 		ready, err = checkDNSPropagation(dnsName, keyAuth, resolvers)
 		if err != nil {
-			return fmt.Errorf("checking DNS propagation of %s: %w", dnsName, err)
+			return fmt.Errorf("checking DNS propagation of %q: %w", dnsName, err)
 		}
 		if ready {
 			return nil
@@ -348,40 +385,92 @@ func (s *DNS01Solver) Wait(ctx context.Context, challenge acme.Challenge) error 
 }
 
 // CleanUp deletes the DNS TXT record created in Present().
-func (s *DNS01Solver) CleanUp(ctx context.Context, challenge acme.Challenge) error {
+//
+// We ignore the context because cleanup is often/likely performed after
+// a context cancellation, and properly-implemented DNS providers should
+// honor cancellation, which would result in cleanup being aborted.
+// Cleanup must always occur.
+func (s *DNS01Solver) CleanUp(_ context.Context, challenge acme.Challenge) error {
 	dnsName := challenge.DNS01TXTRecordName()
+	if s.OverrideDomain != "" {
+		dnsName = s.OverrideDomain
+	}
+	keyAuth := challenge.DNS01KeyAuthorization()
 
-	defer func() {
-		// always forget about it so we don't leak memory
-		s.txtRecordsMu.Lock()
-		delete(s.txtRecords, dnsName)
-		s.txtRecordsMu.Unlock()
-
-		// always do this last - but always do it!
-		activeDNSChallenges.Unlock(dnsName)
-	}()
+	// always forget about the record so we don't leak memory
+	defer s.deleteDNSPresentMemory(dnsName, keyAuth)
 
 	// recall the record we created and zone we looked up
-	s.txtRecordsMu.Lock()
-	memory, ok := s.txtRecords[dnsName]
-	if !ok {
-		s.txtRecordsMu.Unlock()
-		return fmt.Errorf("no memory of presenting a DNS record for %s (probably OK if presenting failed)", challenge.Identifier.Value)
-	}
-	s.txtRecordsMu.Unlock()
-
-	// clean up the record
-	_, err := s.DNSProvider.DeleteRecords(ctx, memory.dnsZone, []libdns.Record{memory.rec})
+	memory, err := s.getDNSPresentMemory(dnsName, keyAuth)
 	if err != nil {
-		return fmt.Errorf("deleting temporary record for zone %s: %w", memory.dnsZone, err)
+		return err
+	}
+
+	// clean up the record - use a different context though, since
+	// one common reason cleanup is performed is because a context
+	// was canceled, and if so, any HTTP requests by this provider
+	// should fail if the provider is properly implemented
+	// (see issue #200)
+	timeout := s.PropagationTimeout
+	if timeout <= 0 {
+		timeout = defaultDNSPropagationTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err = s.DNSProvider.DeleteRecords(ctx, memory.dnsZone, []libdns.Record{memory.rec})
+	if err != nil {
+		return fmt.Errorf("deleting temporary record for name %q in zone %q: %w", memory.dnsName, memory.dnsZone, err)
 	}
 
 	return nil
 }
 
+const defaultDNSPropagationTimeout = 2 * time.Minute
+
 type dnsPresentMemory struct {
 	dnsZone string
+	dnsName string
 	rec     libdns.Record
+}
+
+func (s *DNS01Solver) saveDNSPresentMemory(mem dnsPresentMemory) {
+	s.txtRecordsMu.Lock()
+	if s.txtRecords == nil {
+		s.txtRecords = make(map[string][]dnsPresentMemory)
+	}
+	s.txtRecords[mem.dnsName] = append(s.txtRecords[mem.dnsName], mem)
+	s.txtRecordsMu.Unlock()
+}
+
+func (s *DNS01Solver) getDNSPresentMemory(dnsName, keyAuth string) (dnsPresentMemory, error) {
+	s.txtRecordsMu.Lock()
+	defer s.txtRecordsMu.Unlock()
+
+	var memory dnsPresentMemory
+	for _, mem := range s.txtRecords[dnsName] {
+		if mem.rec.Value == keyAuth {
+			memory = mem
+			break
+		}
+	}
+
+	if memory.rec.Name == "" {
+		return dnsPresentMemory{}, fmt.Errorf("no memory of presenting a DNS record for %q (usually OK if presenting also failed)", dnsName)
+	}
+
+	return memory, nil
+}
+
+func (s *DNS01Solver) deleteDNSPresentMemory(dnsName, keyAuth string) {
+	s.txtRecordsMu.Lock()
+	defer s.txtRecordsMu.Unlock()
+
+	for i, mem := range s.txtRecords[dnsName] {
+		if mem.rec.Value == keyAuth {
+			s.txtRecords[dnsName] = append(s.txtRecords[dnsName][:i], s.txtRecords[dnsName][i+1:]...)
+			return
+		}
+	}
 }
 
 // ACMEDNSProvider defines the set of operations required for
@@ -392,48 +481,6 @@ type dnsPresentMemory struct {
 type ACMEDNSProvider interface {
 	libdns.RecordAppender
 	libdns.RecordDeleter
-}
-
-// activeDNSChallenges synchronizes DNS challenges for
-// names to ensure that challenges for the same ACME
-// DNS name do not overlap; for example, the TXT record
-// to make for both example.com and *.example.com are
-// the same; thus we cannot solve them concurrently.
-var activeDNSChallenges = newMapMutex()
-
-// mapMutex implements named mutexes.
-type mapMutex struct {
-	cond *sync.Cond
-	set  map[interface{}]struct{}
-}
-
-func newMapMutex() *mapMutex {
-	return &mapMutex{
-		cond: sync.NewCond(new(sync.Mutex)),
-		set:  make(map[interface{}]struct{}),
-	}
-}
-
-func (mmu *mapMutex) Lock(key interface{}) {
-	mmu.cond.L.Lock()
-	defer mmu.cond.L.Unlock()
-	for mmu.locked(key) {
-		mmu.cond.Wait()
-	}
-	mmu.set[key] = struct{}{}
-	return
-}
-
-func (mmu *mapMutex) Unlock(key interface{}) {
-	mmu.cond.L.Lock()
-	defer mmu.cond.L.Unlock()
-	delete(mmu.set, key)
-	mmu.cond.Broadcast()
-}
-
-func (mmu *mapMutex) locked(key interface{}) (ok bool) {
-	_, ok = mmu.set[key]
-	return
 }
 
 // distributedSolver allows the ACME HTTP-01 and TLS-ALPN challenges
@@ -475,14 +522,14 @@ type distributedSolver struct {
 
 // Present invokes the underlying solver's Present method
 // and also stores domain, token, and keyAuth to the storage
-// backing the certificate cache of dhs.acmeManager.
+// backing the certificate cache of dhs.acmeIssuer.
 func (dhs distributedSolver) Present(ctx context.Context, chal acme.Challenge) error {
 	infoBytes, err := json.Marshal(chal)
 	if err != nil {
 		return err
 	}
 
-	err = dhs.storage.Store(dhs.challengeTokensKey(chal.Identifier.Value), infoBytes)
+	err = dhs.storage.Store(ctx, dhs.challengeTokensKey(challengeKey(chal)), infoBytes)
 	if err != nil {
 		return err
 	}
@@ -494,10 +541,18 @@ func (dhs distributedSolver) Present(ctx context.Context, chal acme.Challenge) e
 	return nil
 }
 
+// Wait wraps the underlying solver's Wait() method, if any. Implements acmez.Waiter.
+func (dhs distributedSolver) Wait(ctx context.Context, challenge acme.Challenge) error {
+	if waiter, ok := dhs.solver.(acmez.Waiter); ok {
+		return waiter.Wait(ctx, challenge)
+	}
+	return nil
+}
+
 // CleanUp invokes the underlying solver's CleanUp method
 // and also cleans up any assets saved to storage.
 func (dhs distributedSolver) CleanUp(ctx context.Context, chal acme.Challenge) error {
-	err := dhs.storage.Delete(dhs.challengeTokensKey(chal.Identifier.Value))
+	err := dhs.storage.Delete(ctx, dhs.challengeTokensKey(challengeKey(chal)))
 	if err != nil {
 		return err
 	}
@@ -606,6 +661,15 @@ func dialTCPSocket(addr string) error {
 	return err
 }
 
+// GetACMEChallenge returns an active ACME challenge for the given identifier,
+// or false if no active challenge for that identifier is known.
+func GetACMEChallenge(identifier string) (Challenge, bool) {
+	activeChallengesMu.Lock()
+	chalData, ok := activeChallenges[identifier]
+	activeChallengesMu.Unlock()
+	return chalData, ok
+}
+
 // The active challenge solvers, keyed by listener address,
 // and protected by a mutex. Note that the creation of
 // solver listeners and the incrementing of their counts
@@ -615,8 +679,68 @@ var (
 	solversMu sync.Mutex
 )
 
+// activeChallenges holds information about all known, currently-active
+// ACME challenges, keyed by identifier. CertMagic guarantees that
+// challenges for the same identifier do not overlap, by its locking
+// mechanisms; thus if a challenge comes in for a certain identifier,
+// we can be confident that if this process initiated the challenge,
+// the correct information to solve it is in this map. (It may have
+// alternatively been initiated by another instance in a cluster, in
+// which case the distributed solver will take care of that.)
+var (
+	activeChallenges   = make(map[string]Challenge)
+	activeChallengesMu sync.Mutex
+)
+
+// Challenge is an ACME challenge, but optionally paired with
+// data that can make it easier or more efficient to solve.
+type Challenge struct {
+	acme.Challenge
+	data any
+}
+
+// challengeKey returns the map key for a given challenge; it is the identifier
+// unless it is an IP address using the TLS-ALPN challenge.
+func challengeKey(chal acme.Challenge) string {
+	if chal.Type == acme.ChallengeTypeTLSALPN01 && chal.Identifier.Type == "ip" {
+		reversed, err := dns.ReverseAddr(chal.Identifier.Value)
+		if err == nil {
+			return reversed[:len(reversed)-1] // strip off '.'
+		}
+	}
+	return chal.Identifier.Value
+}
+
+// solverWrapper should be used to wrap all challenge solvers so that
+// we can add the challenge info to memory; this makes challenges globally
+// solvable by a single HTTP or TLS server even if multiple servers with
+// different configurations/scopes need to get certificates.
+type solverWrapper struct{ acmez.Solver }
+
+func (sw solverWrapper) Present(ctx context.Context, chal acme.Challenge) error {
+	activeChallengesMu.Lock()
+	activeChallenges[challengeKey(chal)] = Challenge{Challenge: chal}
+	activeChallengesMu.Unlock()
+	return sw.Solver.Present(ctx, chal)
+}
+
+func (sw solverWrapper) Wait(ctx context.Context, chal acme.Challenge) error {
+	if waiter, ok := sw.Solver.(acmez.Waiter); ok {
+		return waiter.Wait(ctx, chal)
+	}
+	return nil
+}
+
+func (sw solverWrapper) CleanUp(ctx context.Context, chal acme.Challenge) error {
+	activeChallengesMu.Lock()
+	delete(activeChallenges, challengeKey(chal))
+	activeChallengesMu.Unlock()
+	return sw.Solver.CleanUp(ctx, chal)
+}
+
 // Interface guards
 var (
-	_ acmez.Solver = (*DNS01Solver)(nil)
-	_ acmez.Waiter = (*DNS01Solver)(nil)
+	_ acmez.Solver = (*solverWrapper)(nil)
+	_ acmez.Waiter = (*solverWrapper)(nil)
+	_ acmez.Waiter = (*distributedSolver)(nil)
 )

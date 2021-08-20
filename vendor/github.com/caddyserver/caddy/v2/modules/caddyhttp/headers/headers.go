@@ -118,10 +118,16 @@ type HeaderOps struct {
 	// Sets HTTP headers; replaces existing header fields.
 	Set http.Header `json:"set,omitempty"`
 
-	// Names of HTTP header fields to delete.
+	// Names of HTTP header fields to delete. Basic wildcards are supported:
+	//
+	// - Start with `*` for all field names with the given suffix;
+	// - End with `*` for all field names with the given prefix;
+	// - Start and end with `*` for all field names containing a substring.
 	Delete []string `json:"delete,omitempty"`
 
-	// Performs substring replacements of HTTP headers in-situ.
+	// Performs in-situ substring replacements of HTTP headers.
+	// Keys are the field names on which to perform the associated replacements.
+	// If the field name is `*`, the replacements are performed on all header fields.
 	Replace map[string][]Replacement `json:"replace,omitempty"`
 }
 
@@ -186,40 +192,78 @@ type RespHeaderOps struct {
 
 // ApplyTo applies ops to hdr using repl.
 func (ops HeaderOps) ApplyTo(hdr http.Header, repl *caddy.Replacer) {
+	// before manipulating headers in other ways, check if there
+	// is configuration to delete all headers, and do that first
+	// because if a header is to be added, we don't want to delete
+	// it also
+	for _, fieldName := range ops.Delete {
+		fieldName = repl.ReplaceKnown(fieldName, "")
+		if fieldName == "*" {
+			for existingField := range hdr {
+				delete(hdr, existingField)
+			}
+		}
+	}
+
 	// add
 	for fieldName, vals := range ops.Add {
-		fieldName = repl.ReplaceAll(fieldName, "")
+		fieldName = repl.ReplaceKnown(fieldName, "")
 		for _, v := range vals {
-			hdr.Add(fieldName, repl.ReplaceAll(v, ""))
+			hdr.Add(fieldName, repl.ReplaceKnown(v, ""))
 		}
 	}
 
 	// set
 	for fieldName, vals := range ops.Set {
-		fieldName = repl.ReplaceAll(fieldName, "")
+		fieldName = repl.ReplaceKnown(fieldName, "")
 		var newVals []string
 		for i := range vals {
 			// append to new slice so we don't overwrite
 			// the original values in ops.Set
-			newVals = append(newVals, repl.ReplaceAll(vals[i], ""))
+			newVals = append(newVals, repl.ReplaceKnown(vals[i], ""))
 		}
 		hdr.Set(fieldName, strings.Join(newVals, ","))
 	}
 
 	// delete
 	for _, fieldName := range ops.Delete {
-		hdr.Del(repl.ReplaceAll(fieldName, ""))
+		fieldName = strings.ToLower(repl.ReplaceKnown(fieldName, ""))
+		if fieldName == "*" {
+			continue // handled above
+		}
+		switch {
+		case strings.HasPrefix(fieldName, "*") && strings.HasSuffix(fieldName, "*"):
+			for existingField := range hdr {
+				if strings.Contains(strings.ToLower(existingField), fieldName[1:len(fieldName)-1]) {
+					delete(hdr, existingField)
+				}
+			}
+		case strings.HasPrefix(fieldName, "*"):
+			for existingField := range hdr {
+				if strings.HasSuffix(strings.ToLower(existingField), fieldName[1:]) {
+					delete(hdr, existingField)
+				}
+			}
+		case strings.HasSuffix(fieldName, "*"):
+			for existingField := range hdr {
+				if strings.HasPrefix(strings.ToLower(existingField), fieldName[:len(fieldName)-1]) {
+					delete(hdr, existingField)
+				}
+			}
+		default:
+			hdr.Del(fieldName)
+		}
 	}
 
 	// replace
 	for fieldName, replacements := range ops.Replace {
-		fieldName = repl.ReplaceAll(fieldName, "")
+		fieldName = http.CanonicalHeaderKey(repl.ReplaceKnown(fieldName, ""))
 
 		// all fields...
 		if fieldName == "*" {
 			for _, r := range replacements {
-				search := repl.ReplaceAll(r.Search, "")
-				replace := repl.ReplaceAll(r.Replace, "")
+				search := repl.ReplaceKnown(r.Search, "")
+				replace := repl.ReplaceKnown(r.Replace, "")
 				for fieldName, vals := range hdr {
 					for i := range vals {
 						if r.re != nil {
@@ -235,13 +279,19 @@ func (ops HeaderOps) ApplyTo(hdr http.Header, repl *caddy.Replacer) {
 
 		// ...or only with the named field
 		for _, r := range replacements {
-			search := repl.ReplaceAll(r.Search, "")
-			replace := repl.ReplaceAll(r.Replace, "")
-			for i := range hdr[fieldName] {
-				if r.re != nil {
-					hdr[fieldName][i] = r.re.ReplaceAllString(hdr[fieldName][i], replace)
-				} else {
-					hdr[fieldName][i] = strings.ReplaceAll(hdr[fieldName][i], search, replace)
+			search := repl.ReplaceKnown(r.Search, "")
+			replace := repl.ReplaceKnown(r.Replace, "")
+			for hdrFieldName, vals := range hdr {
+				// see issue #4330 for why we don't simply use hdr[fieldName]
+				if http.CanonicalHeaderKey(hdrFieldName) != fieldName {
+					continue
+				}
+				for i := range vals {
+					if r.re != nil {
+						hdr[hdrFieldName][i] = r.re.ReplaceAllString(hdr[hdrFieldName][i], replace)
+					} else {
+						hdr[hdrFieldName][i] = strings.ReplaceAll(hdr[hdrFieldName][i], search, replace)
+					}
 				}
 			}
 		}
@@ -298,7 +348,10 @@ func (rww *responseWriterWrapper) WriteHeader(status int) {
 	if rww.wroteHeader {
 		return
 	}
-	rww.wroteHeader = true
+	// 1xx responses aren't final; just informational
+	if status < 100 || status > 199 {
+		rww.wroteHeader = true
+	}
 	if rww.require == nil || rww.require.Match(status, rww.ResponseWriterWrapper.Header()) {
 		if rww.headerOps != nil {
 			rww.headerOps.ApplyTo(rww.ResponseWriterWrapper.Header(), rww.replacer)

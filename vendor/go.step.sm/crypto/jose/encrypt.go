@@ -19,12 +19,28 @@ type PasswordPrompter func(s string) ([]byte, error)
 // the parse of the key will fail.
 var PromptPassword PasswordPrompter
 
-// EncryptJWK returns the given JWK encrypted with the default encryption
+// Encrypt returns the given data encrypted with the default encryption
 // algorithm (PBES2-HS256+A128KW).
-func EncryptJWK(jwk *JSONWebKey, passphrase []byte) (*JSONWebEncryption, error) {
-	b, err := json.Marshal(jwk)
+func Encrypt(data []byte, opts ...Option) (*JSONWebEncryption, error) {
+	ctx, err := new(context).apply(opts...)
 	if err != nil {
-		return nil, errors.Wrap(err, "error marshaling JWK")
+		return nil, err
+	}
+
+	var passphrase []byte
+	switch {
+	case len(ctx.password) > 0:
+		passphrase = ctx.password
+	case ctx.passwordPrompter != nil:
+		if passphrase, err = ctx.passwordPrompter(ctx.passwordPrompt); err != nil {
+			return nil, err
+		}
+	case PromptPassword != nil:
+		if passphrase, err = PromptPassword("Please enter the password to encrypt the data"); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New("failed to encrypt the data: missing password")
 	}
 
 	salt, err := randutil.Salt(PBKDF2SaltSize)
@@ -40,20 +56,33 @@ func EncryptJWK(jwk *JSONWebKey, passphrase []byte) (*JSONWebEncryption, error) 
 		PBES2Salt:  salt,
 	}
 
-	opts := new(EncrypterOptions)
-	opts.WithContentType(ContentType("jwk+json"))
+	encrypterOptions := new(EncrypterOptions)
+	if ctx.contentType != "" {
+		encrypterOptions.WithContentType(ContentType(ctx.contentType))
+	}
 
-	encrypter, err := NewEncrypter(DefaultEncAlgorithm, recipient, opts)
+	encrypter, err := NewEncrypter(DefaultEncAlgorithm, recipient, encrypterOptions)
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating cipher")
 	}
 
-	jwe, err := encrypter.Encrypt(b)
+	jwe, err := encrypter.Encrypt(data)
 	if err != nil {
 		return nil, errors.Wrap(err, "error encrypting data")
 	}
 
 	return jwe, nil
+}
+
+// EncryptJWK returns the given JWK encrypted with the default encryption
+// algorithm (PBES2-HS256+A128KW).
+func EncryptJWK(jwk *JSONWebKey, passphrase []byte) (*JSONWebEncryption, error) {
+	b, err := json.Marshal(jwk)
+	if err != nil {
+		return nil, errors.Wrap(err, "error marshaling JWK")
+	}
+
+	return Encrypt(b, WithPassword(passphrase), WithContentType("jwk+json"))
 }
 
 // Decrypt returns the decrypted version of the given data if it's encrypted,
@@ -65,10 +94,9 @@ func Decrypt(data []byte, opts ...Option) ([]byte, error) {
 		return nil, err
 	}
 
-	// Return the given data if we cannot parse it as encrypted.
 	enc, err := ParseEncrypted(string(data))
 	if err != nil {
-		return data, nil
+		return data, nil //nolint:nilerr // Return the given data if we cannot parse it as encrypted.
 	}
 
 	// Try with the given password.
@@ -83,11 +111,16 @@ func Decrypt(data []byte, opts ...Option) ([]byte, error) {
 	if ctx.passwordPrompter != nil || PromptPassword != nil {
 		var pass []byte
 		for i := 0; i < MaxDecryptTries; i++ {
-			if ctx.passwordPrompter != nil {
+			switch {
+			case ctx.passwordPrompter != nil:
 				if pass, err = ctx.passwordPrompter(ctx.passwordPrompt); err != nil {
 					return nil, err
 				}
-			} else {
+			case ctx.filename != "":
+				if pass, err = PromptPassword("Please enter the password to decrypt " + ctx.filename); err != nil {
+					return nil, err
+				}
+			default:
 				if pass, err = PromptPassword("Please enter the password to decrypt the JWE"); err != nil {
 					return nil, err
 				}

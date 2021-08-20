@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package eab;
+
+option go_package = "go.step.sm/linkedca";
+
+import "google/protobuf/timestamp.proto";
+import "policy.proto";
+
+message EABKey {
+    string id = 1;                              // the KeyID
+    bytes hmac_key = 2;                         // the key bytes
+    string provisioner = 3;                     // the provisioner for which to create the key
+    string reference = 4;                       // name/reference to the key; can be linked to external system
+    string account = 5;                         // account the key is bound to
+    google.protobuf.Timestamp created_at = 6;   // time the key was created_at
+    google.protobuf.Timestamp bound_at = 7;     // time the key was bound to an account
+    linkedca.Policy policy = 8;
+}

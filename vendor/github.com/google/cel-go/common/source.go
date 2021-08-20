@@ -18,6 +18,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/google/cel-go/common/runes"
+
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -59,11 +61,13 @@ type Source interface {
 
 // The sourceImpl type implementation of the Source interface.
 type sourceImpl struct {
-	contents    []rune
+	runes.Buffer
 	description string
 	lineOffsets []int32
 	idOffsets   map[int64]int32
 }
+
+var _ runes.Buffer = &sourceImpl{}
 
 // TODO(jimlarson) "Character offsets" should index the code points
 // within the UTF-8 encoded string.  It currently indexes bytes.
@@ -85,7 +89,7 @@ func NewStringSource(contents string, description string) Source {
 		offsets[int32(i)] = offset
 	}
 	return &sourceImpl{
-		contents:    []rune(contents),
+		Buffer:      runes.NewBuffer(contents),
 		description: description,
 		lineOffsets: offsets,
 		idOffsets:   map[int64]int32{},
@@ -95,16 +99,16 @@ func NewStringSource(contents string, description string) Source {
 // NewInfoSource creates a new Source from a SourceInfo.
 func NewInfoSource(info *exprpb.SourceInfo) Source {
 	return &sourceImpl{
-		contents:    []rune(""),
-		description: info.Location,
-		lineOffsets: info.LineOffsets,
-		idOffsets:   info.Positions,
+		Buffer:      runes.NewBuffer(""),
+		description: info.GetLocation(),
+		lineOffsets: info.GetLineOffsets(),
+		idOffsets:   info.GetPositions(),
 	}
 }
 
 // Content implements the Source interface method.
 func (s *sourceImpl) Content() string {
-	return string(s.contents)
+	return s.Slice(0, s.Len())
 }
 
 // Description implements the Source interface method.
@@ -139,14 +143,14 @@ func (s *sourceImpl) OffsetLocation(offset int32) (Location, bool) {
 // Snippet implements the Source interface method.
 func (s *sourceImpl) Snippet(line int) (string, bool) {
 	charStart, found := s.findLineOffset(line)
-	if !found || len(s.contents) == 0 {
+	if !found || s.Len() == 0 {
 		return "", false
 	}
 	charEnd, found := s.findLineOffset(line + 1)
 	if found {
-		return string(s.contents[charStart : charEnd-1]), true
+		return s.Slice(int(charStart), int(charEnd-1)), true
 	}
-	return string(s.contents[charStart:]), true
+	return s.Slice(int(charStart), s.Len()), true
 }
 
 // findLineOffset returns the offset where the (1-indexed) line begins,
@@ -179,25 +183,4 @@ func (s *sourceImpl) findLine(characterOffset int32) (int32, int32) {
 		return line, 0
 	}
 	return line, s.lineOffsets[line-2]
-}
-
-// idOffset returns the raw character offset of an expression within the
-// source, or false if the expression cannot be found.
-func (s *sourceImpl) idOffset(exprID int64) (int32, bool) {
-	if offset, found := s.idOffsets[exprID]; found {
-		return offset, true
-	}
-	return -1, false
-}
-
-// idLocation returns a Location for the given expression id, or false if one
-// cannot be found. It behaves as the composition of idOffset() and
-// offsetLocation().
-func (s *sourceImpl) idLocation(exprID int64) (Location, bool) {
-	if offset, found := s.idOffset(exprID); found {
-		if location, found := s.OffsetLocation(offset); found {
-			return location, true
-		}
-	}
-	return NewLocation(1, 0), false
 }

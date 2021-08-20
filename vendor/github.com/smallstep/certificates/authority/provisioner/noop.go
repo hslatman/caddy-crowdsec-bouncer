@@ -14,7 +14,11 @@ func (p *noop) GetID() string {
 	return "noop"
 }
 
-func (p *noop) GetTokenID(token string) (string, error) {
+func (p *noop) GetIDForToken() string {
+	return "noop"
+}
+
+func (p *noop) GetTokenID(string) (string, error) {
 	return "", nil
 }
 
@@ -25,38 +29,39 @@ func (p *noop) GetType() Type {
 	return noopType
 }
 
-func (p *noop) GetEncryptedKey() (kid string, key string, ok bool) {
+func (p *noop) GetEncryptedKey() (kid, key string, ok bool) {
 	return "", "", false
 }
 
-func (p *noop) Init(config Config) error {
+func (p *noop) Init(Config) error {
 	return nil
 }
 
-func (p *noop) AuthorizeSign(ctx context.Context, token string) ([]SignOption, error) {
-	return []SignOption{}, nil
+func (p *noop) AuthorizeSign(context.Context, string) ([]SignOption, error) {
+	return []SignOption{p}, nil
 }
 
-func (p *noop) AuthorizeRenew(ctx context.Context, cert *x509.Certificate) error {
+func (p *noop) AuthorizeRenew(context.Context, *x509.Certificate) error {
 	return nil
 }
 
-func (p *noop) AuthorizeRevoke(ctx context.Context, token string) error {
+func (p *noop) AuthorizeRevoke(context.Context, string) error {
 	return nil
 }
 
-func (p *noop) AuthorizeSSHSign(ctx context.Context, token string) ([]SignOption, error) {
-	return []SignOption{}, nil
+func (p *noop) AuthorizeSSHSign(context.Context, string) ([]SignOption, error) {
+	return []SignOption{p}, nil
 }
 
-func (p *noop) AuthorizeSSHRenew(ctx context.Context, token string) (*ssh.Certificate, error) {
+func (p *noop) AuthorizeSSHRenew(context.Context, string) (*ssh.Certificate, error) {
+	//nolint:nilnil // fine for noop
 	return nil, nil
 }
 
-func (p *noop) AuthorizeSSHRevoke(ctx context.Context, token string) error {
+func (p *noop) AuthorizeSSHRevoke(context.Context, string) error {
 	return nil
 }
 
-func (p *noop) AuthorizeSSHRekey(ctx context.Context, token string) (*ssh.Certificate, []SignOption, error) {
+func (p *noop) AuthorizeSSHRekey(context.Context, string) (*ssh.Certificate, []SignOption, error) {
 	return nil, []SignOption{}, nil
 }

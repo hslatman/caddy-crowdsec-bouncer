@@ -3,32 +3,120 @@ package acme
 import (
 	"context"
 	"crypto/x509"
-	"net/url"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/smallstep/certificates/authority"
 	"github.com/smallstep/certificates/authority/provisioner"
-	"go.step.sm/crypto/jose"
-	"go.step.sm/crypto/randutil"
 )
+
+// Clock that returns time in UTC rounded to seconds.
+type Clock struct{}
+
+// Now returns the UTC time rounded to seconds.
+func (c *Clock) Now() time.Time {
+	return time.Now().UTC().Truncate(time.Second)
+}
+
+var clock Clock
+
+// CertificateAuthority is the interface implemented by a CA authority.
+type CertificateAuthority interface {
+	Sign(cr *x509.CertificateRequest, opts provisioner.SignOptions, signOpts ...provisioner.SignOption) ([]*x509.Certificate, error)
+	AreSANsAllowed(ctx context.Context, sans []string) error
+	IsRevoked(sn string) (bool, error)
+	Revoke(context.Context, *authority.RevokeOptions) error
+	LoadProvisionerByName(string) (provisioner.Interface, error)
+}
+
+// NewContext adds the given acme components to the context.
+func NewContext(ctx context.Context, db DB, client Client, linker Linker, fn PrerequisitesChecker) context.Context {
+	ctx = NewDatabaseContext(ctx, db)
+	ctx = NewClientContext(ctx, client)
+	ctx = NewLinkerContext(ctx, linker)
+	// Prerequisite checker is optional.
+	if fn != nil {
+		ctx = NewPrerequisitesCheckerContext(ctx, fn)
+	}
+	return ctx
+}
+
+// PrerequisitesChecker is a function that checks if all prerequisites for
+// serving ACME are met by the CA configuration.
+type PrerequisitesChecker func(ctx context.Context) (bool, error)
+
+// DefaultPrerequisitesChecker is the default PrerequisiteChecker and returns
+// always true.
+func DefaultPrerequisitesChecker(context.Context) (bool, error) {
+	return true, nil
+}
+
+type prerequisitesKey struct{}
+
+// NewPrerequisitesCheckerContext adds the given PrerequisitesChecker to the
+// context.
+func NewPrerequisitesCheckerContext(ctx context.Context, fn PrerequisitesChecker) context.Context {
+	return context.WithValue(ctx, prerequisitesKey{}, fn)
+}
+
+// PrerequisitesCheckerFromContext returns the PrerequisitesChecker in the
+// context.
+func PrerequisitesCheckerFromContext(ctx context.Context) (PrerequisitesChecker, bool) {
+	fn, ok := ctx.Value(prerequisitesKey{}).(PrerequisitesChecker)
+	return fn, ok && fn != nil
+}
 
 // Provisioner is an interface that implements a subset of the provisioner.Interface --
 // only those methods required by the ACME api/authority.
 type Provisioner interface {
+	AuthorizeOrderIdentifier(ctx context.Context, identifier provisioner.ACMEIdentifier) error
 	AuthorizeSign(ctx context.Context, token string) ([]provisioner.SignOption, error)
+	AuthorizeRevoke(ctx context.Context, token string) error
+	IsChallengeEnabled(ctx context.Context, challenge provisioner.ACMEChallenge) bool
+	IsAttestationFormatEnabled(ctx context.Context, format provisioner.ACMEAttestationFormat) bool
+	GetAttestationRoots() (*x509.CertPool, bool)
+	GetID() string
 	GetName() string
 	DefaultTLSCertDuration() time.Duration
 	GetOptions() *provisioner.Options
 }
 
+type provisionerKey struct{}
+
+// NewProvisionerContext adds the given provisioner to the context.
+func NewProvisionerContext(ctx context.Context, v Provisioner) context.Context {
+	return context.WithValue(ctx, provisionerKey{}, v)
+}
+
+// ProvisionerFromContext returns the current provisioner from the given context.
+func ProvisionerFromContext(ctx context.Context) (v Provisioner, ok bool) {
+	v, ok = ctx.Value(provisionerKey{}).(Provisioner)
+	return
+}
+
+// MustLinkerFromContext returns the current provisioner from the given context.
+// It will panic if it's not in the context.
+func MustProvisionerFromContext(ctx context.Context) Provisioner {
+	if v, ok := ProvisionerFromContext(ctx); !ok {
+		panic("acme provisioner is not the context")
+	} else {
+		return v
+	}
+}
+
 // MockProvisioner for testing
 type MockProvisioner struct {
-	Mret1                   interface{}
-	Merr                    error
-	MgetName                func() string
-	MauthorizeSign          func(ctx context.Context, ott string) ([]provisioner.SignOption, error)
-	MdefaultTLSCertDuration func() time.Duration
-	MgetOptions             func() *provisioner.Options
+	Mret1                     interface{}
+	Merr                      error
+	MgetID                    func() string
+	MgetName                  func() string
+	MauthorizeOrderIdentifier func(ctx context.Context, identifier provisioner.ACMEIdentifier) error
+	MauthorizeSign            func(ctx context.Context, ott string) ([]provisioner.SignOption, error)
+	MauthorizeRevoke          func(ctx context.Context, token string) error
+	MisChallengeEnabled       func(ctx context.Context, challenge provisioner.ACMEChallenge) bool
+	MisAttFormatEnabled       func(ctx context.Context, format provisioner.ACMEAttestationFormat) bool
+	MgetAttestationRoots      func() (*x509.CertPool, bool)
+	MdefaultTLSCertDuration   func() time.Duration
+	MgetOptions               func() *provisioner.Options
 }
 
 // GetName mock
@@ -39,12 +127,51 @@ func (m *MockProvisioner) GetName() string {
 	return m.Mret1.(string)
 }
 
+// AuthorizeOrderIdentifiers mock
+func (m *MockProvisioner) AuthorizeOrderIdentifier(ctx context.Context, identifier provisioner.ACMEIdentifier) error {
+	if m.MauthorizeOrderIdentifier != nil {
+		return m.MauthorizeOrderIdentifier(ctx, identifier)
+	}
+	return m.Merr
+}
+
 // AuthorizeSign mock
 func (m *MockProvisioner) AuthorizeSign(ctx context.Context, ott string) ([]provisioner.SignOption, error) {
 	if m.MauthorizeSign != nil {
 		return m.MauthorizeSign(ctx, ott)
 	}
 	return m.Mret1.([]provisioner.SignOption), m.Merr
+}
+
+// AuthorizeRevoke mock
+func (m *MockProvisioner) AuthorizeRevoke(ctx context.Context, token string) error {
+	if m.MauthorizeRevoke != nil {
+		return m.MauthorizeRevoke(ctx, token)
+	}
+	return m.Merr
+}
+
+// IsChallengeEnabled mock
+func (m *MockProvisioner) IsChallengeEnabled(ctx context.Context, challenge provisioner.ACMEChallenge) bool {
+	if m.MisChallengeEnabled != nil {
+		return m.MisChallengeEnabled(ctx, challenge)
+	}
+	return m.Merr == nil
+}
+
+// IsAttestationFormatEnabled mock
+func (m *MockProvisioner) IsAttestationFormatEnabled(ctx context.Context, format provisioner.ACMEAttestationFormat) bool {
+	if m.MisAttFormatEnabled != nil {
+		return m.MisAttFormatEnabled(ctx, format)
+	}
+	return m.Merr == nil
+}
+
+func (m *MockProvisioner) GetAttestationRoots() (*x509.CertPool, bool) {
+	if m.MgetAttestationRoots != nil {
+		return m.MgetAttestationRoots()
+	}
+	return m.Mret1.(*x509.CertPool), m.Mret1 != nil
 }
 
 // DefaultTLSCertDuration mock
@@ -55,6 +182,7 @@ func (m *MockProvisioner) DefaultTLSCertDuration() time.Duration {
 	return m.Mret1.(time.Duration)
 }
 
+// GetOptions mock
 func (m *MockProvisioner) GetOptions() *provisioner.Options {
 	if m.MgetOptions != nil {
 		return m.MgetOptions()
@@ -62,120 +190,10 @@ func (m *MockProvisioner) GetOptions() *provisioner.Options {
 	return m.Mret1.(*provisioner.Options)
 }
 
-// ContextKey is the key type for storing and searching for ACME request
-// essentials in the context of a request.
-type ContextKey string
-
-const (
-	// AccContextKey account key
-	AccContextKey = ContextKey("acc")
-	// BaseURLContextKey baseURL key
-	BaseURLContextKey = ContextKey("baseURL")
-	// JwsContextKey jws key
-	JwsContextKey = ContextKey("jws")
-	// JwkContextKey jwk key
-	JwkContextKey = ContextKey("jwk")
-	// PayloadContextKey payload key
-	PayloadContextKey = ContextKey("payload")
-	// ProvisionerContextKey provisioner key
-	ProvisionerContextKey = ContextKey("provisioner")
-)
-
-// AccountFromContext searches the context for an ACME account. Returns the
-// account or an error.
-func AccountFromContext(ctx context.Context) (*Account, error) {
-	val, ok := ctx.Value(AccContextKey).(*Account)
-	if !ok || val == nil {
-		return nil, AccountDoesNotExistErr(nil)
+// GetID mock
+func (m *MockProvisioner) GetID() string {
+	if m.MgetID != nil {
+		return m.MgetID()
 	}
-	return val, nil
+	return m.Mret1.(string)
 }
-
-// BaseURLFromContext returns the baseURL if one is stored in the context.
-func BaseURLFromContext(ctx context.Context) *url.URL {
-	val, ok := ctx.Value(BaseURLContextKey).(*url.URL)
-	if !ok || val == nil {
-		return nil
-	}
-	return val
-}
-
-// JwkFromContext searches the context for a JWK. Returns the JWK or an error.
-func JwkFromContext(ctx context.Context) (*jose.JSONWebKey, error) {
-	val, ok := ctx.Value(JwkContextKey).(*jose.JSONWebKey)
-	if !ok || val == nil {
-		return nil, ServerInternalErr(errors.Errorf("jwk expected in request context"))
-	}
-	return val, nil
-}
-
-// JwsFromContext searches the context for a JWS. Returns the JWS or an error.
-func JwsFromContext(ctx context.Context) (*jose.JSONWebSignature, error) {
-	val, ok := ctx.Value(JwsContextKey).(*jose.JSONWebSignature)
-	if !ok || val == nil {
-		return nil, ServerInternalErr(errors.Errorf("jws expected in request context"))
-	}
-	return val, nil
-}
-
-// ProvisionerFromContext searches the context for a provisioner. Returns the
-// provisioner or an error.
-func ProvisionerFromContext(ctx context.Context) (Provisioner, error) {
-	val := ctx.Value(ProvisionerContextKey)
-	if val == nil {
-		return nil, ServerInternalErr(errors.Errorf("provisioner expected in request context"))
-	}
-	pval, ok := val.(Provisioner)
-	if !ok || pval == nil {
-		return nil, ServerInternalErr(errors.Errorf("provisioner in context is not an ACME provisioner"))
-	}
-	return pval, nil
-}
-
-// SignAuthority is the interface implemented by a CA authority.
-type SignAuthority interface {
-	Sign(cr *x509.CertificateRequest, opts provisioner.SignOptions, signOpts ...provisioner.SignOption) ([]*x509.Certificate, error)
-	LoadProvisionerByID(string) (provisioner.Interface, error)
-}
-
-// Identifier encodes the type that an order pertains to.
-type Identifier struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
-}
-
-var (
-	// StatusValid -- valid
-	StatusValid = "valid"
-	// StatusInvalid -- invalid
-	StatusInvalid = "invalid"
-	// StatusPending -- pending; e.g. an Order that is not ready to be finalized.
-	StatusPending = "pending"
-	// StatusDeactivated -- deactivated; e.g. for an Account that is not longer valid.
-	StatusDeactivated = "deactivated"
-	// StatusReady -- ready; e.g. for an Order that is ready to be finalized.
-	StatusReady = "ready"
-	//statusExpired     = "expired"
-	//statusActive      = "active"
-	//statusProcessing  = "processing"
-)
-
-var idLen = 32
-
-func randID() (val string, err error) {
-	val, err = randutil.Alphanumeric(idLen)
-	if err != nil {
-		return "", ServerInternalErr(errors.Wrap(err, "error generating random alphanumeric ID"))
-	}
-	return val, nil
-}
-
-// Clock that returns time in UTC rounded to seconds.
-type Clock int
-
-// Now returns the UTC time rounded to seconds.
-func (c *Clock) Now() time.Time {
-	return time.Now().UTC().Round(time.Second)
-}
-
-var clock = new(Clock)

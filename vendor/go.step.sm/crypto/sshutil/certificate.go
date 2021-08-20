@@ -74,6 +74,10 @@ func (c *Certificate) GetCertificate() *ssh.Certificate {
 
 // CreateCertificate signs the given certificate with the given signer. If the
 // certificate does not have a nonce or a serial, it will create random ones.
+//
+// If the signer is an RSA key, it will use rsa-sha2-256 instead of the default
+// ssh-rsa (SHA-1), this method is currently deprecated and rsa-sha2-256/512 are
+// supported since OpenSSH 7.2 (2016).
 func CreateCertificate(cert *ssh.Certificate, signer ssh.Signer) (*ssh.Certificate, error) {
 	if len(cert.Nonce) == 0 {
 		nonce, err := randutil.ASCII(32)
@@ -96,7 +100,22 @@ func CreateCertificate(cert *ssh.Certificate, signer ssh.Signer) (*ssh.Certifica
 	data := cert.Marshal()
 	data = data[:len(data)-4]
 
-	// Sign the certificate.
+	// Sign certificate.
+	//
+	// crypto/ssh signer defaults to SHA-1 with RSA signers, we will default to
+	// SHA256.
+	if cert.SignatureKey.Type() == "ssh-rsa" {
+		if algSigner, ok := signer.(ssh.AlgorithmSigner); ok {
+			sig, err := algSigner.SignWithAlgorithm(rand.Reader, data, ssh.KeyAlgoRSASHA256)
+			if err != nil {
+				return nil, errors.Wrap(err, "error signing certificate")
+			}
+			cert.Signature = sig
+			return cert, nil
+		}
+	}
+
+	// Rest of the keys
 	sig, err := signer.Sign(rand.Reader, data)
 	if err != nil {
 		return nil, errors.Wrap(err, "error signing certificate")

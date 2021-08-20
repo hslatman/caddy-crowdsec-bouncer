@@ -17,38 +17,12 @@ var (
 
 // IsErrNotFound returns true if the cause of the given error is ErrNotFound.
 func IsErrNotFound(err error) bool {
-	return err == ErrNotFound || cause(err) == ErrNotFound
+	return errors.Is(err, ErrNotFound)
 }
 
 // IsErrOpNotSupported returns true if the cause of the given error is ErrOpNotSupported.
 func IsErrOpNotSupported(err error) bool {
-	return err == ErrOpNotSupported || cause(err) == ErrNotFound
-}
-
-// cause (from github.com/pkg/errors) returns the underlying cause of the
-// error, if possible. An error value has a cause if it implements the
-// following interface:
-//
-//     type causer interface {
-//            Cause() error
-//     }
-//
-// If the error does not implement Cause, the original error will
-// be returned. If the error is nil, nil will be returned without further
-// investigation.
-func cause(err error) error {
-	type causer interface {
-		Cause() error
-	}
-
-	for err != nil {
-		cause, ok := err.(causer)
-		if !ok {
-			break
-		}
-		err = cause.Cause()
-	}
-	return err
+	return errors.Is(err, ErrOpNotSupported)
 }
 
 // Options are configuration options for the database.

@@ -72,5 +72,5 @@ func wrapError(err error, msg string) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%s: %s", msg, err)
+	return fmt.Errorf("%s: %w", msg, err)
 }

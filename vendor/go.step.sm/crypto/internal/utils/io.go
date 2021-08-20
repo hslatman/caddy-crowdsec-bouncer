@@ -2,7 +2,6 @@ package utils
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"unicode"
 
@@ -18,9 +17,9 @@ func maybeUnwrap(err error) error {
 
 // ReadFile reads the file named by filename and returns the contents.
 //
-// It wraps ioutil.ReadFile wrapping the errors.
+// It wraps os.ReadFile wrapping the errors.
 func ReadFile(filename string) ([]byte, error) {
-	b, err := ioutil.ReadFile(filename)
+	b, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, errors.Wrapf(maybeUnwrap(err), "error reading %s", filename)
 	}
@@ -42,9 +41,9 @@ func ReadPasswordFromFile(filename string) ([]byte, error) {
 // If the file does not exist, WriteFile creates it with permissions perm
 // (before umask); otherwise WriteFile truncates it before writing.
 //
-// It wraps ioutil.WriteFile wrapping the errors.
+// It wraps os.WriteFile wrapping the errors.
 func WriteFile(filename string, data []byte, perm os.FileMode) error {
-	if err := ioutil.WriteFile(filename, data, perm); err != nil {
+	if err := os.WriteFile(filename, data, perm); err != nil {
 		return errors.Wrapf(maybeUnwrap(err), "error writing %s", filename)
 	}
 	return nil

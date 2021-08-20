@@ -17,38 +17,76 @@
 package pb
 
 import (
-	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io/ioutil"
 
-	"github.com/golang/protobuf/descriptor"
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
-	descpb "github.com/golang/protobuf/protoc-gen-go/descriptor"
-	anypb "github.com/golang/protobuf/ptypes/any"
-	durpb "github.com/golang/protobuf/ptypes/duration"
-	structpb "github.com/golang/protobuf/ptypes/struct"
-	tspb "github.com/golang/protobuf/ptypes/timestamp"
-	wrapperspb "github.com/golang/protobuf/ptypes/wrappers"
+	anypb "google.golang.org/protobuf/types/known/anypb"
+	durpb "google.golang.org/protobuf/types/known/durationpb"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
+	tspb "google.golang.org/protobuf/types/known/timestamppb"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // Db maps from file / message / enum name to file description.
+//
+// Each Db is isolated from each other, and while information about protobuf descriptors may be
+// fetched from the global protobuf registry, no descriptors are added to this registry, else
+// the isolation guarantees of the Db object would be violated.
 type Db struct {
 	revFileDescriptorMap map[string]*FileDescription
+	// files contains the deduped set of FileDescriptions whose types are contained in the pb.Db.
+	files []*FileDescription
+	// extensions contains the mapping between a given type name, extension name and its FieldDescription
+	extensions map[string]map[string]*FieldDescription
 }
+
+// extensionsMap is a type alias to a map[typeName]map[extensionName]*FieldDescription
+type extensionMap = map[string]map[string]*FieldDescription
 
 var (
 	// DefaultDb used at evaluation time or unless overridden at check time.
 	DefaultDb = &Db{
 		revFileDescriptorMap: make(map[string]*FileDescription),
+		files:                []*FileDescription{},
+		extensions:           make(extensionMap),
 	}
 )
+
+// Merge will copy the source proto message into the destination, or error if the merge cannot be completed.
+//
+// Unlike the proto.Merge, this method will fallback to proto.Marshal/Unmarshal of the two proto messages do not
+// share the same instance of their type descriptor.
+func Merge(dstPB, srcPB proto.Message) error {
+	src, dst := srcPB.ProtoReflect(), dstPB.ProtoReflect()
+	if src.Descriptor() == dst.Descriptor() {
+		proto.Merge(dstPB, srcPB)
+		return nil
+	}
+	if src.Descriptor().FullName() != dst.Descriptor().FullName() {
+		return fmt.Errorf("pb.Merge() arguments must be the same type. got: %v, %v",
+			dst.Descriptor().FullName(), src.Descriptor().FullName())
+	}
+	bytes, err := proto.Marshal(srcPB)
+	if err != nil {
+		return fmt.Errorf("pb.Merge(dstPB, srcPB) failed to marshal source proto: %v", err)
+	}
+	err = proto.Unmarshal(bytes, dstPB)
+	if err != nil {
+		return fmt.Errorf("pb.Merge(dstPB, srcPB) failed to unmarshal to dest proto: %v", err)
+	}
+	return nil
+}
 
 // NewDb creates a new `pb.Db` with an empty type name to file description map.
 func NewDb() *Db {
 	pbdb := &Db{
 		revFileDescriptorMap: make(map[string]*FileDescription),
+		files:                []*FileDescription{},
+		extensions:           make(extensionMap),
 	}
 	// The FileDescription objects in the default db contain lazily initialized TypeDescription
 	// values which may point to the state contained in the DefaultDb irrespective of this shallow
@@ -58,131 +96,150 @@ func NewDb() *Db {
 	for k, v := range DefaultDb.revFileDescriptorMap {
 		pbdb.revFileDescriptorMap[k] = v
 	}
+	pbdb.files = append(pbdb.files, DefaultDb.files...)
 	return pbdb
 }
 
 // Copy creates a copy of the current database with its own internal descriptor mapping.
 func (pbdb *Db) Copy() *Db {
 	copy := NewDb()
-	for k, v := range pbdb.revFileDescriptorMap {
-		copy.revFileDescriptorMap[k] = v
+	for _, fd := range pbdb.files {
+		hasFile := false
+		for _, fd2 := range copy.files {
+			if fd2 == fd {
+				hasFile = true
+			}
+		}
+		if !hasFile {
+			fd = fd.Copy(copy)
+			copy.files = append(copy.files, fd)
+		}
+		for _, enumValName := range fd.GetEnumNames() {
+			copy.revFileDescriptorMap[enumValName] = fd
+		}
+		for _, msgTypeName := range fd.GetTypeNames() {
+			copy.revFileDescriptorMap[msgTypeName] = fd
+		}
+		copy.revFileDescriptorMap[fd.GetName()] = fd
+	}
+	for typeName, extFieldMap := range pbdb.extensions {
+		copyExtFieldMap, found := copy.extensions[typeName]
+		if !found {
+			copyExtFieldMap = make(map[string]*FieldDescription, len(extFieldMap))
+		}
+		for extFieldName, fd := range extFieldMap {
+			copyExtFieldMap[extFieldName] = fd
+		}
+		copy.extensions[typeName] = copyExtFieldMap
 	}
 	return copy
 }
 
-// RegisterDescriptor produces a `FileDescription` from a `FileDescriptorProto` and registers the
+// FileDescriptions returns the set of file descriptions associated with this db.
+func (pbdb *Db) FileDescriptions() []*FileDescription {
+	return pbdb.files
+}
+
+// RegisterDescriptor produces a `FileDescription` from a `FileDescriptor` and registers the
 // message and enum types into the `pb.Db`.
-func (pbdb *Db) RegisterDescriptor(fileDesc *descpb.FileDescriptorProto) (*FileDescription, error) {
-	fd, found := pbdb.revFileDescriptorMap[fileDesc.GetName()]
+func (pbdb *Db) RegisterDescriptor(fileDesc protoreflect.FileDescriptor) (*FileDescription, error) {
+	fd, found := pbdb.revFileDescriptorMap[fileDesc.Path()]
 	if found {
 		return fd, nil
 	}
-	fd = NewFileDescription(fileDesc, pbdb)
+	// Make sure to search the global registry to see if a protoreflect.FileDescriptor for
+	// the file specified has been linked into the binary. If so, use the copy of the descriptor
+	// from the global cache.
+	//
+	// Note: Proto reflection relies on descriptor values being object equal rather than object
+	// equivalence. This choice means that a FieldDescriptor generated from a FileDescriptorProto
+	// will be incompatible with the FieldDescriptor in the global registry and any message created
+	// from that global registry.
+	globalFD, err := protoregistry.GlobalFiles.FindFileByPath(fileDesc.Path())
+	if err == nil {
+		fileDesc = globalFD
+	}
+	var fileExtMap extensionMap
+	fd, fileExtMap = newFileDescription(fileDesc, pbdb)
 	for _, enumValName := range fd.GetEnumNames() {
 		pbdb.revFileDescriptorMap[enumValName] = fd
 	}
 	for _, msgTypeName := range fd.GetTypeNames() {
 		pbdb.revFileDescriptorMap[msgTypeName] = fd
 	}
-	pbdb.revFileDescriptorMap[fileDesc.GetName()] = fd
+	pbdb.revFileDescriptorMap[fd.GetName()] = fd
 
 	// Return the specific file descriptor registered.
+	pbdb.files = append(pbdb.files, fd)
+
+	// Index the protobuf message extensions from the file into the pbdb
+	for typeName, extMap := range fileExtMap {
+		typeExtMap, found := pbdb.extensions[typeName]
+		if !found {
+			pbdb.extensions[typeName] = extMap
+			continue
+		}
+		for extName, field := range extMap {
+			typeExtMap[extName] = field
+		}
+	}
 	return fd, nil
 }
 
 // RegisterMessage produces a `FileDescription` from a `message` and registers the message and all
 // other definitions within the message file into the `pb.Db`.
 func (pbdb *Db) RegisterMessage(message proto.Message) (*FileDescription, error) {
-	typeName := sanitizeProtoName(proto.MessageName(message))
+	msgDesc := message.ProtoReflect().Descriptor()
+	msgName := msgDesc.FullName()
+	typeName := sanitizeProtoName(string(msgName))
 	if fd, found := pbdb.revFileDescriptorMap[typeName]; found {
 		return fd, nil
 	}
-	fileDesc, _ := descriptor.ForMessage(message.(descriptor.Message))
-	return pbdb.RegisterDescriptor(fileDesc)
-}
-
-// DescribeFile gets the `FileDescription` for the `message` type if it exists in the `pb.Db`.
-func (pbdb *Db) DescribeFile(message proto.Message) (*FileDescription, error) {
-	typeName := sanitizeProtoName(proto.MessageName(message))
-	if fd, found := pbdb.revFileDescriptorMap[typeName]; found {
-		return fd, nil
-	}
-	return nil, fmt.Errorf("unrecognized proto type name '%s'", typeName)
+	return pbdb.RegisterDescriptor(msgDesc.ParentFile())
 }
 
 // DescribeEnum takes a qualified enum name and returns an `EnumDescription` if it exists in the
 // `pb.Db`.
-func (pbdb *Db) DescribeEnum(enumName string) (*EnumValueDescription, error) {
+func (pbdb *Db) DescribeEnum(enumName string) (*EnumValueDescription, bool) {
 	enumName = sanitizeProtoName(enumName)
 	if fd, found := pbdb.revFileDescriptorMap[enumName]; found {
 		return fd.GetEnumDescription(enumName)
 	}
-	return nil, fmt.Errorf("unrecognized enum '%s'", enumName)
+	return nil, false
 }
 
 // DescribeType returns a `TypeDescription` for the `typeName` if it exists in the `pb.Db`.
-func (pbdb *Db) DescribeType(typeName string) (*TypeDescription, error) {
+func (pbdb *Db) DescribeType(typeName string) (*TypeDescription, bool) {
 	typeName = sanitizeProtoName(typeName)
 	if fd, found := pbdb.revFileDescriptorMap[typeName]; found {
 		return fd.GetTypeDescription(typeName)
 	}
-	return nil, fmt.Errorf("unrecognized type '%s'", typeName)
+	return nil, false
 }
 
 // CollectFileDescriptorSet builds a file descriptor set associated with the file where the input
 // message is declared.
-func CollectFileDescriptorSet(message proto.Message) (*descpb.FileDescriptorSet, error) {
-	fdMap := map[string]*descpb.FileDescriptorProto{}
-	fd, _ := descriptor.ForMessage(message.(descriptor.Message))
-	fdMap[fd.GetName()] = fd
+func CollectFileDescriptorSet(message proto.Message) map[string]protoreflect.FileDescriptor {
+	fdMap := map[string]protoreflect.FileDescriptor{}
+	parentFile := message.ProtoReflect().Descriptor().ParentFile()
+	fdMap[parentFile.Path()] = parentFile
 	// Initialize list of dependencies
-	fileDeps := fd.GetDependency()
-	deps := make([]string, len(fileDeps))
-	copy(deps, fileDeps)
+	deps := make([]protoreflect.FileImport, parentFile.Imports().Len())
+	for i := 0; i < parentFile.Imports().Len(); i++ {
+		deps[i] = parentFile.Imports().Get(i)
+	}
 	// Expand list for new dependencies
 	for i := 0; i < len(deps); i++ {
 		dep := deps[i]
-		if _, found := fdMap[dep]; found {
+		if _, found := fdMap[dep.Path()]; found {
 			continue
 		}
-		depDesc, err := readFileDescriptor(dep)
-		if err != nil {
-			return nil, err
+		fdMap[dep.Path()] = dep.FileDescriptor
+		for j := 0; j < dep.FileDescriptor.Imports().Len(); j++ {
+			deps = append(deps, dep.FileDescriptor.Imports().Get(j))
 		}
-		fdMap[dep] = depDesc
-		deps = append(deps, depDesc.GetDependency()...)
 	}
-
-	fds := make([]*descpb.FileDescriptorProto, len(fdMap), len(fdMap))
-	i := 0
-	for _, fd = range fdMap {
-		fds[i] = fd
-		i++
-	}
-	return &descpb.FileDescriptorSet{
-		File: fds,
-	}, nil
-}
-
-// readFileDescriptor will read the gzipped file descriptor for a given proto file and return the
-// hydrated FileDescriptorProto.
-//
-// If the file name is not found or there is an error during deserialization an error is returned.
-func readFileDescriptor(protoFileName string) (*descpb.FileDescriptorProto, error) {
-	gzipped := proto.FileDescriptor(protoFileName)
-	r, err := gzip.NewReader(bytes.NewReader(gzipped))
-	if err != nil {
-		return nil, fmt.Errorf("bad gzipped descriptor: %v", err)
-	}
-	unzipped, err := ioutil.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("bad gzipped descriptor: %v", err)
-	}
-	fd := &descpb.FileDescriptorProto{}
-	if err := proto.Unmarshal(unzipped, fd); err != nil {
-		return nil, fmt.Errorf("bad gzipped descriptor: %v", err)
-	}
-	return fd, nil
+	return fdMap
 }
 
 func init() {
@@ -194,6 +251,7 @@ func init() {
 	// where the message is declared.
 	DefaultDb.RegisterMessage(&anypb.Any{})
 	DefaultDb.RegisterMessage(&durpb.Duration{})
+	DefaultDb.RegisterMessage(&emptypb.Empty{})
 	DefaultDb.RegisterMessage(&tspb.Timestamp{})
 	DefaultDb.RegisterMessage(&structpb.Value{})
 	DefaultDb.RegisterMessage(&wrapperspb.BoolValue{})

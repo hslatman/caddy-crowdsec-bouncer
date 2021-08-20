@@ -11,6 +11,7 @@ import (
 	"github.com/pkg/errors"
 	"go.step.sm/crypto/keyutil"
 	"go.step.sm/crypto/pemutil"
+	"go.step.sm/crypto/x25519"
 )
 
 const (
@@ -34,11 +35,25 @@ var (
 // Thumbprint computes the JWK Thumbprint of a key using SHA256 as the hash
 // algorithm. It returns the hash encoded in the Base64 raw url encoding.
 func Thumbprint(jwk *JSONWebKey) (string, error) {
-	hash, err := jwk.Thumbprint(crypto.SHA256)
+	var sum []byte
+	var err error
+	switch key := jwk.Key.(type) {
+	case x25519.PublicKey:
+		sum, err = x25519Thumbprint(key, crypto.SHA256)
+	case x25519.PrivateKey:
+		var pub x25519.PublicKey
+		if pub, err = key.PublicKey(); err == nil {
+			sum, err = x25519Thumbprint(pub, crypto.SHA256)
+		}
+	case OpaqueSigner:
+		sum, err = key.Public().Thumbprint(crypto.SHA256)
+	default:
+		sum, err = jwk.Thumbprint(crypto.SHA256)
+	}
 	if err != nil {
 		return "", errors.Wrap(err, "error generating JWK thumbprint")
 	}
-	return base64.RawURLEncoding.EncodeToString(hash), nil
+	return base64.RawURLEncoding.EncodeToString(sum), nil
 }
 
 // GenerateDefaultKeyPair generates an asymmetric public/private key pair.

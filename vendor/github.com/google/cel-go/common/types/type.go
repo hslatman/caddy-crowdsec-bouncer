@@ -53,7 +53,7 @@ func NewObjectTypeValue(name string) *TypeValue {
 }
 
 // ConvertToNative implements ref.Val.ConvertToNative.
-func (t *TypeValue) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
+func (t *TypeValue) ConvertToNative(typeDesc reflect.Type) (any, error) {
 	// TODO: replace the internal type representation with a proto-value.
 	return nil, fmt.Errorf("type conversion not supported for 'type'")
 }
@@ -71,10 +71,8 @@ func (t *TypeValue) ConvertToType(typeVal ref.Type) ref.Val {
 
 // Equal implements ref.Val.Equal.
 func (t *TypeValue) Equal(other ref.Val) ref.Val {
-	if TypeType != other.Type() {
-		return ValOrErr(other, "no such overload")
-	}
-	return Bool(t.TypeName() == other.(ref.Type).TypeName())
+	otherType, ok := other.(ref.Type)
+	return Bool(ok && t.TypeName() == otherType.TypeName())
 }
 
 // HasTrait indicates whether the type supports the given trait.
@@ -99,6 +97,6 @@ func (t *TypeValue) TypeName() string {
 }
 
 // Value implements ref.Val.Value.
-func (t *TypeValue) Value() interface{} {
+func (t *TypeValue) Value() any {
 	return t.name
 }

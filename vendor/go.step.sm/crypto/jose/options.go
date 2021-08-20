@@ -12,6 +12,7 @@ type context struct {
 	password         []byte
 	passwordPrompt   string
 	passwordPrompter PasswordPrompter
+	contentType      string
 }
 
 // apply the options to the context and returns an error if one of the options
@@ -21,9 +22,6 @@ func (ctx *context) apply(opts ...Option) (*context, error) {
 		if err := opt(ctx); err != nil {
 			return nil, err
 		}
-	}
-	if ctx.filename == "" {
-		ctx.filename = "key"
 	}
 	return ctx, nil
 }
@@ -114,6 +112,14 @@ func WithPasswordPrompter(prompt string, fn PasswordPrompter) Option {
 	return func(ctx *context) error {
 		ctx.passwordPrompt = prompt
 		ctx.passwordPrompter = fn
+		return nil
+	}
+}
+
+// WithContentType adds the content type when encrypting data.
+func WithContentType(cty string) Option {
+	return func(ctx *context) error {
+		ctx.contentType = cty
 		return nil
 	}
 }

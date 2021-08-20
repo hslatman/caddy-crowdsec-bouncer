@@ -43,6 +43,32 @@ func (r1 *AFSDB) isDuplicate(_r2 RR) bool {
 	return true
 }
 
+func (r1 *AMTRELAY) isDuplicate(_r2 RR) bool {
+	r2, ok := _r2.(*AMTRELAY)
+	if !ok {
+		return false
+	}
+	_ = r2
+	if r1.Precedence != r2.Precedence {
+		return false
+	}
+	if r1.GatewayType != r2.GatewayType {
+		return false
+	}
+	switch r1.GatewayType {
+	case IPSECGatewayIPv4, IPSECGatewayIPv6:
+		if !r1.GatewayAddr.Equal(r2.GatewayAddr) {
+			return false
+		}
+	case IPSECGatewayHost:
+		if !isDuplicateName(r1.GatewayHost, r2.GatewayHost) {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (r1 *ANY) isDuplicate(_r2 RR) bool {
 	r2, ok := _r2.(*ANY)
 	if !ok {
@@ -398,6 +424,59 @@ func (r1 *HIP) isDuplicate(_r2 RR) bool {
 		if !isDuplicateName(r1.RendezvousServers[i], r2.RendezvousServers[i]) {
 			return false
 		}
+	}
+	return true
+}
+
+func (r1 *HTTPS) isDuplicate(_r2 RR) bool {
+	r2, ok := _r2.(*HTTPS)
+	if !ok {
+		return false
+	}
+	_ = r2
+	if r1.Priority != r2.Priority {
+		return false
+	}
+	if !isDuplicateName(r1.Target, r2.Target) {
+		return false
+	}
+	if len(r1.Value) != len(r2.Value) {
+		return false
+	}
+	if !areSVCBPairArraysEqual(r1.Value, r2.Value) {
+		return false
+	}
+	return true
+}
+
+func (r1 *IPSECKEY) isDuplicate(_r2 RR) bool {
+	r2, ok := _r2.(*IPSECKEY)
+	if !ok {
+		return false
+	}
+	_ = r2
+	if r1.Precedence != r2.Precedence {
+		return false
+	}
+	if r1.GatewayType != r2.GatewayType {
+		return false
+	}
+	if r1.Algorithm != r2.Algorithm {
+		return false
+	}
+	switch r1.GatewayType {
+	case IPSECGatewayIPv4, IPSECGatewayIPv6:
+		if !r1.GatewayAddr.Equal(r2.GatewayAddr) {
+			return false
+		}
+	case IPSECGatewayHost:
+		if !isDuplicateName(r1.GatewayHost, r2.GatewayHost) {
+			return false
+		}
+	}
+
+	if r1.PublicKey != r2.PublicKey {
+		return false
 	}
 	return true
 }
@@ -1076,6 +1155,27 @@ func (r1 *SSHFP) isDuplicate(_r2 RR) bool {
 	return true
 }
 
+func (r1 *SVCB) isDuplicate(_r2 RR) bool {
+	r2, ok := _r2.(*SVCB)
+	if !ok {
+		return false
+	}
+	_ = r2
+	if r1.Priority != r2.Priority {
+		return false
+	}
+	if !isDuplicateName(r1.Target, r2.Target) {
+		return false
+	}
+	if len(r1.Value) != len(r2.Value) {
+		return false
+	}
+	if !areSVCBPairArraysEqual(r1.Value, r2.Value) {
+		return false
+	}
+	return true
+}
+
 func (r1 *TA) isDuplicate(_r2 RR) bool {
 	r2, ok := _r2.(*TA)
 	if !ok {
@@ -1271,6 +1371,27 @@ func (r1 *X25) isDuplicate(_r2 RR) bool {
 	}
 	_ = r2
 	if r1.PSDNAddress != r2.PSDNAddress {
+		return false
+	}
+	return true
+}
+
+func (r1 *ZONEMD) isDuplicate(_r2 RR) bool {
+	r2, ok := _r2.(*ZONEMD)
+	if !ok {
+		return false
+	}
+	_ = r2
+	if r1.Serial != r2.Serial {
+		return false
+	}
+	if r1.Scheme != r2.Scheme {
+		return false
+	}
+	if r1.Hash != r2.Hash {
+		return false
+	}
+	if r1.Digest != r2.Digest {
 		return false
 	}
 	return true

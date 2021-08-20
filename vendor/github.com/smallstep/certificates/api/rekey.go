@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 
+	"github.com/smallstep/certificates/api/read"
+	"github.com/smallstep/certificates/api/render"
 	"github.com/smallstep/certificates/errs"
 )
 
@@ -18,34 +20,34 @@ func (s *RekeyRequest) Validate() error {
 		return errs.BadRequest("missing csr")
 	}
 	if err := s.CsrPEM.CertificateRequest.CheckSignature(); err != nil {
-		return errs.Wrap(http.StatusBadRequest, err, "invalid csr")
+		return errs.BadRequestErr(err, "invalid csr")
 	}
 
 	return nil
 }
 
 // Rekey is similar to renew except that the certificate will be renewed with new key from csr.
-func (h *caHandler) Rekey(w http.ResponseWriter, r *http.Request) {
-
+func Rekey(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		WriteError(w, errs.BadRequest("missing peer certificate"))
+		render.Error(w, errs.BadRequest("missing client certificate"))
 		return
 	}
 
 	var body RekeyRequest
-	if err := ReadJSON(r.Body, &body); err != nil {
-		WriteError(w, errs.Wrap(http.StatusBadRequest, err, "error reading request body"))
+	if err := read.JSON(r.Body, &body); err != nil {
+		render.Error(w, errs.BadRequestErr(err, "error reading request body"))
 		return
 	}
 
 	if err := body.Validate(); err != nil {
-		WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
 
-	certChain, err := h.Authority.Rekey(r.TLS.PeerCertificates[0], body.CsrPEM.CertificateRequest.PublicKey)
+	a := mustAuthority(r.Context())
+	certChain, err := a.Rekey(r.TLS.PeerCertificates[0], body.CsrPEM.CertificateRequest.PublicKey)
 	if err != nil {
-		WriteError(w, errs.Wrap(http.StatusInternalServerError, err, "cahandler.Rekey"))
+		render.Error(w, errs.Wrap(http.StatusInternalServerError, err, "cahandler.Rekey"))
 		return
 	}
 	certChainPEM := certChainToPEM(certChain)
@@ -55,10 +57,10 @@ func (h *caHandler) Rekey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	LogCertificate(w, certChain[0])
-	JSONStatus(w, &SignResponse{
+	render.JSONStatus(w, &SignResponse{
 		ServerPEM:    certChainPEM[0],
 		CaPEM:        caPEM,
 		CertChainPEM: certChainPEM,
-		TLSOptions:   h.Authority.GetTLSOptions(),
+		TLSOptions:   a.GetTLSOptions(),
 	}, http.StatusCreated)
 }

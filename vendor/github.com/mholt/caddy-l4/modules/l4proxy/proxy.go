@@ -22,11 +22,13 @@ import (
 	"log"
 	"net"
 	"runtime/debug"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/mastercactapus/proxyprotocol"
 	"github.com/mholt/caddy-l4/layer4"
+	"github.com/mholt/caddy-l4/modules/l4proxyprotocol"
 	"github.com/mholt/caddy-l4/modules/l4tls"
 	"go.uber.org/zap"
 )
@@ -46,6 +48,10 @@ type Handler struct {
 
 	// Load balancing distributes load/connections between backends.
 	LoadBalancing *LoadBalancing `json:"load_balancing,omitempty"`
+
+	// Specifies the version of the Proxy Protocol header to add, either "v1" or "v2".
+	// Ref: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
+	ProxyProtocol string `json:"proxy_protocol,omitempty"`
 
 	ctx    caddy.Context
 	logger *zap.Logger
@@ -71,6 +77,10 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("loading load balancing selection policy: %s", err)
 		}
 		h.LoadBalancing.SelectionPolicy = mod.(Selector)
+	}
+
+	if h.ProxyProtocol != "" && h.ProxyProtocol != "v1" && h.ProxyProtocol != "v2" {
+		return fmt.Errorf("proxy_protocol: \"%s\" should be empty, or one of \"v1\" \"v2\"", h.ProxyProtocol)
 	}
 
 	// prepare upstreams
@@ -192,12 +202,32 @@ func (h *Handler) dialPeers(upstream *Upstream, repl *caddy.Replacer, down *laye
 			tlsCfg := upstream.tlsConfig
 			if tlsCfg == nil {
 				tlsCfg = new(tls.Config)
-				if chi, ok := down.GetVar("tls_client_hello").(l4tls.ClientHelloInfo); ok {
-					chi.FillTLSClientConfig(tlsCfg)
+				if hellos := l4tls.GetClientHelloInfos(down); len(hellos) > 0 {
+					hellos[0].FillTLSClientConfig(tlsCfg)
 				}
 			}
 			up, err = tls.Dial(p.address.Network, hostPort, tlsCfg)
 		}
+		h.logger.Debug("dial upstream",
+			zap.String("remote", down.RemoteAddr().String()),
+			zap.String("upstream", hostPort),
+			zap.Error(err))
+
+		// Send the PROXY protocol header.
+		if err == nil {
+			downConn := l4proxyprotocol.GetConn(down)
+			switch h.ProxyProtocol {
+			case "v1":
+				var h proxyprotocol.HeaderV1
+				h.FromConn(downConn, false)
+				_, err = h.WriteTo(up)
+			case "v2":
+				var h proxyprotocol.HeaderV2
+				h.FromConn(downConn, false)
+				_, err = h.WriteTo(up)
+			}
+		}
+
 		if err != nil {
 			h.countFailure(p)
 			for _, conn := range upConns {
@@ -217,19 +247,20 @@ func (h *Handler) proxy(down *layer4.Connection, upConns []net.Conn) {
 	// every time we read from downstream, we write
 	// the same to each upstream; this is half of
 	// the proxy duplex
-	var downTee io.Reader = down.Conn
+	var downTee io.Reader = down
 	for _, up := range upConns {
 		downTee = io.TeeReader(downTee, up)
 	}
 
-	// when we are done and have closed connections, set this
-	// flag to 1 so that we don't report errors unnecessarily
-	var done int32
+	var wg sync.WaitGroup
 
 	for _, up := range upConns {
+		wg.Add(1)
+
 		go func(up net.Conn) {
-			_, err := io.Copy(down.Conn, up)
-			if err != nil && atomic.LoadInt32(&done) == 0 {
+			defer wg.Done()
+
+			if _, err := io.Copy(down, up); err != nil {
 				h.logger.Error("upstream connection",
 					zap.String("local_address", up.LocalAddr().String()),
 					zap.String("remote_address", up.RemoteAddr().String()),
@@ -239,10 +270,34 @@ func (h *Handler) proxy(down *layer4.Connection, upConns []net.Conn) {
 		}(up)
 	}
 
-	// read from downstream until connection is closed;
-	// TODO: this pumps the reader, but writing into discard is a weird way to do it; could be avoided if we used io.Pipe - see _gitignore/oldtee.go.txt
-	io.Copy(ioutil.Discard, downTee)
-	atomic.StoreInt32(&done, 1)
+	downConnClosedCh := make(chan struct{}, 1)
+
+	go func() {
+		// read from downstream until connection is closed;
+		// TODO: this pumps the reader, but writing into discard is a weird way to do it; could be avoided if we used io.Pipe - see _gitignore/oldtee.go.txt
+		io.Copy(ioutil.Discard, downTee)
+		downConnClosedCh <- struct{}{}
+
+		// Shut down the writing side of all upstream connections, in case
+		// that the downstream connection is half closed. (issue #40)
+		for _, up := range upConns {
+			if conn, ok := up.(closeWriter); ok {
+				_ = conn.CloseWrite()
+			}
+		}
+	}()
+
+	// wait for reading from all upstream connections
+	wg.Wait()
+
+	// Shut down the writing side of the downstream connection, in case that
+	// the upstream connections are all half closed.
+	if downConn, ok := down.Conn.(closeWriter); ok {
+		_ = downConn.CloseWrite()
+	}
+
+	// Wait for reading from the downstream connection, if possible.
+	<-downConnClosedCh
 }
 
 // countFailure is used with passive health checks. It
@@ -308,4 +363,18 @@ var (
 	_ layer4.NextHandler = (*Handler)(nil)
 	_ caddy.Provisioner  = (*Handler)(nil)
 	_ caddy.CleanerUpper = (*Handler)(nil)
+)
+
+// Used to properly shutdown half-closed connections (see PR #73).
+// Implemented by net.TCPConn, net.UnixConn, tls.Conn, qtls.Conn.
+type closeWriter interface {
+	// CloseWrite shuts down the writing side of the connection.
+	CloseWrite() error
+}
+
+// Ensure we notice if CloseWrite changes for these important connections
+var (
+	_ closeWriter = (*net.TCPConn)(nil)
+	_ closeWriter = (*net.UnixConn)(nil)
+	_ closeWriter = (*tls.Conn)(nil)
 )

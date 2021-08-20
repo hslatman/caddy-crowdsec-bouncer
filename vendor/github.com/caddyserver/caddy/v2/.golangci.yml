@@ -1,13 +1,12 @@
 linters-settings:
   errcheck:
-    ignore: fmt:.*,io/ioutil:^Read.*,go.uber.org/zap/zapcore:^Add.*
+    ignore: fmt:.*,go.uber.org/zap/zapcore:^Add.*
     ignoretests: true
 
 linters:
   disable-all: true
   enable:
     - bodyclose
-    - deadcode
     - errcheck
     - gofmt
     - goimports
@@ -18,11 +17,9 @@ linters:
     - misspell
     - prealloc
     - staticcheck
-    - structcheck
     - typecheck
     - unconvert
     - unused
-    - varcheck
   # these are implicitly disabled:
   # - asciicheck
   # - depguard
@@ -93,6 +90,10 @@ issues:
         - gosec
     # the choice of weakrand is deliberate, hence the named import "weakrand"
     - path: modules/caddyhttp/reverseproxy/selectionpolicies.go
+      text: "G404" # G404: Insecure random number source (rand)
+      linters:
+        - gosec
+    - path: modules/caddyhttp/reverseproxy/streaming.go
       text: "G404" # G404: Insecure random number source (rand)
       linters:
         - gosec

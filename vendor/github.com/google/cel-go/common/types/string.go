@@ -22,14 +22,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/protobuf/ptypes"
-
 	"github.com/google/cel-go/common/overloads"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 
-	structpb "github.com/golang/protobuf/ptypes/struct"
-	wrapperspb "github.com/golang/protobuf/ptypes/wrappers"
+	anypb "google.golang.org/protobuf/types/known/anypb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
+	wrapperspb "google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // String type implementation which supports addition, comparison, matching,
@@ -58,7 +57,7 @@ var (
 func (s String) Add(other ref.Val) ref.Val {
 	otherString, ok := other.(String)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
 	return s + otherString
 }
@@ -67,35 +66,40 @@ func (s String) Add(other ref.Val) ref.Val {
 func (s String) Compare(other ref.Val) ref.Val {
 	otherString, ok := other.(String)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
 	return Int(strings.Compare(s.Value().(string), otherString.Value().(string)))
 }
 
 // ConvertToNative implements ref.Val.ConvertToNative.
-func (s String) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
+func (s String) ConvertToNative(typeDesc reflect.Type) (any, error) {
 	switch typeDesc.Kind() {
 	case reflect.String:
+		if reflect.TypeOf(s).AssignableTo(typeDesc) {
+			return s, nil
+		}
 		return s.Value(), nil
 	case reflect.Ptr:
 		switch typeDesc {
 		case anyValueType:
 			// Primitives must be wrapped before being set on an Any field.
-			return ptypes.MarshalAny(&wrapperspb.StringValue{Value: string(s)})
+			return anypb.New(wrapperspb.String(string(s)))
 		case jsonValueType:
 			// Convert to a protobuf representation of a JSON String.
-			return &structpb.Value{
-				Kind: &structpb.Value_StringValue{StringValue: string(s)},
-			}, nil
+			return structpb.NewStringValue(string(s)), nil
 		case stringWrapperType:
-			// Convert to a protobuf.StringValue.
-			return &wrapperspb.StringValue{Value: string(s)}, nil
+			// Convert to a wrapperspb.StringValue.
+			return wrapperspb.String(string(s)), nil
 		}
 		if typeDesc.Elem().Kind() == reflect.String {
 			p := s.Value().(string)
 			return &p, nil
 		}
 	case reflect.Interface:
+		sv := s.Value()
+		if reflect.TypeOf(sv).Implements(typeDesc) {
+			return sv, nil
+		}
 		if reflect.TypeOf(s).Implements(typeDesc) {
 			return s, nil
 		}
@@ -127,13 +131,14 @@ func (s String) ConvertToType(typeVal ref.Type) ref.Val {
 		return Bytes(s)
 	case DurationType:
 		if d, err := time.ParseDuration(s.Value().(string)); err == nil {
-			return Duration{ptypes.DurationProto(d)}
+			return durationOf(d)
 		}
 	case TimestampType:
 		if t, err := time.Parse(time.RFC3339, s.Value().(string)); err == nil {
-			if ts, err := ptypes.TimestampProto(t); err == nil {
-				return Timestamp{ts}
+			if t.Unix() < minUnixTime || t.Unix() > maxUnixTime {
+				return celErrTimestampOverflow
 			}
+			return timestampOf(t)
 		}
 	case StringType:
 		return s
@@ -146,17 +151,19 @@ func (s String) ConvertToType(typeVal ref.Type) ref.Val {
 // Equal implements ref.Val.Equal.
 func (s String) Equal(other ref.Val) ref.Val {
 	otherString, ok := other.(String)
-	if !ok {
-		return ValOrErr(other, "no such overload")
-	}
-	return Bool(s == otherString)
+	return Bool(ok && s == otherString)
+}
+
+// IsZeroValue returns true if the string is empty.
+func (s String) IsZeroValue() bool {
+	return len(s) == 0
 }
 
 // Match implements traits.Matcher.Match.
 func (s String) Match(pattern ref.Val) ref.Val {
 	pat, ok := pattern.(String)
 	if !ok {
-		return ValOrErr(pattern, "no such overload")
+		return MaybeNoSuchOverloadErr(pattern)
 	}
 	matched, err := regexp.MatchString(pat.Value().(string), s.Value().(string))
 	if err != nil {
@@ -165,7 +172,7 @@ func (s String) Match(pattern ref.Val) ref.Val {
 	return Bool(matched)
 }
 
-// Receive implements traits.Reciever.Receive.
+// Receive implements traits.Receiver.Receive.
 func (s String) Receive(function string, overload string, args []ref.Val) ref.Val {
 	switch len(args) {
 	case 1:
@@ -173,7 +180,7 @@ func (s String) Receive(function string, overload string, args []ref.Val) ref.Va
 			return f(s, args[0])
 		}
 	}
-	return NewErr("no such overload")
+	return NoSuchOverloadErr()
 }
 
 // Size implements traits.Sizer.Size.
@@ -187,14 +194,14 @@ func (s String) Type() ref.Type {
 }
 
 // Value implements ref.Val.Value.
-func (s String) Value() interface{} {
+func (s String) Value() any {
 	return string(s)
 }
 
 func stringContains(s String, sub ref.Val) ref.Val {
 	subStr, ok := sub.(String)
 	if !ok {
-		return ValOrErr(sub, "no such overload")
+		return MaybeNoSuchOverloadErr(sub)
 	}
 	return Bool(strings.Contains(string(s), string(subStr)))
 }
@@ -202,7 +209,7 @@ func stringContains(s String, sub ref.Val) ref.Val {
 func stringEndsWith(s String, suf ref.Val) ref.Val {
 	sufStr, ok := suf.(String)
 	if !ok {
-		return ValOrErr(suf, "no such overload")
+		return MaybeNoSuchOverloadErr(suf)
 	}
 	return Bool(strings.HasSuffix(string(s), string(sufStr)))
 }
@@ -210,7 +217,7 @@ func stringEndsWith(s String, suf ref.Val) ref.Val {
 func stringStartsWith(s String, pre ref.Val) ref.Val {
 	preStr, ok := pre.(String)
 	if !ok {
-		return ValOrErr(pre, "no such overload")
+		return MaybeNoSuchOverloadErr(pre)
 	}
 	return Bool(strings.HasPrefix(string(s), string(preStr)))
 }

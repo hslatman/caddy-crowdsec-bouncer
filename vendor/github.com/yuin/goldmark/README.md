@@ -1,14 +1,14 @@
 goldmark
 ==========================================
 
-[![http://godoc.org/github.com/yuin/goldmark](https://godoc.org/github.com/yuin/goldmark?status.svg)](http://godoc.org/github.com/yuin/goldmark)
+[![https://pkg.go.dev/github.com/yuin/goldmark](https://pkg.go.dev/badge/github.com/yuin/goldmark.svg)](https://pkg.go.dev/github.com/yuin/goldmark)
 [![https://github.com/yuin/goldmark/actions?query=workflow:test](https://github.com/yuin/goldmark/workflows/test/badge.svg?branch=master&event=push)](https://github.com/yuin/goldmark/actions?query=workflow:test)
 [![https://coveralls.io/github/yuin/goldmark](https://coveralls.io/repos/github/yuin/goldmark/badge.svg?branch=master)](https://coveralls.io/github/yuin/goldmark)
 [![https://goreportcard.com/report/github.com/yuin/goldmark](https://goreportcard.com/badge/github.com/yuin/goldmark)](https://goreportcard.com/report/github.com/yuin/goldmark)
 
 > A Markdown parser written in Go. Easy to extend, standards-compliant, well-structured.
 
-goldmark is compliant with CommonMark 0.29.
+goldmark is compliant with CommonMark 0.30.
 
 Motivation
 ----------------------
@@ -46,7 +46,7 @@ Features
   renderers.
 - **Performance.**  goldmark's performance is on par with that of cmark,
   the CommonMark reference implementation written in C.
-- **Robust.**  goldmark is tested with [go-fuzz](https://github.com/dvyukov/go-fuzz), a fuzz testing tool.
+- **Robust.**  goldmark is tested with `go test --fuzz`.
 - **Built-in extensions.**  goldmark ships with common extensions like tables, strikethrough,
   task lists, and definition lists.
 - **Depends only on standard libraries.**
@@ -173,12 +173,15 @@ Parser and Renderer options
     - This extension enables Table, Strikethrough, Linkify and TaskList.
     - This extension does not filter tags defined in [6.11: Disallowed Raw HTML (extension)](https://github.github.com/gfm/#disallowed-raw-html-extension-).
     If you need to filter HTML tags, see [Security](#security).
+    - If you need to parse github emojis, you can use [goldmark-emoji](https://github.com/yuin/goldmark-emoji) extension.
 - `extension.DefinitionList`
     - [PHP Markdown Extra: Definition lists](https://michelf.ca/projects/php-markdown/extra/#def-list)
 - `extension.Footnote`
     - [PHP Markdown Extra: Footnotes](https://michelf.ca/projects/php-markdown/extra/#footnotes)
 - `extension.Typographer`
     - This extension substitutes punctuations with typographic entities like [smartypants](https://daringfireball.net/projects/smartypants/).
+- `extension.CJK`
+    - This extension is a shortcut for CJK related functionalities.
 
 ### Attributes
 The `parser.WithAttribute` option allows you to define attributes on some elements.
@@ -279,13 +282,107 @@ markdown := goldmark.New(
                 []byte("https:"),
             }),
             extension.WithLinkifyURLRegexp(
-                xurls.Strict(),
+                xurls.Strict,
             ),
         ),
     ),
 )
 ```
 
+### Footnotes extension
+
+The Footnote extension implements [PHP Markdown Extra: Footnotes](https://michelf.ca/projects/php-markdown/extra/#footnotes).
+
+This extension has some options:
+
+| Functional option | Type | Description |
+| ----------------- | ---- | ----------- |
+| `extension.WithFootnoteIDPrefix` | `[]byte` |  a prefix for the id attributes.|
+| `extension.WithFootnoteIDPrefixFunction` | `func(gast.Node) []byte` |  a function that determines the id attribute for given Node.|
+| `extension.WithFootnoteLinkTitle` | `[]byte` |  an optional title attribute for footnote links.|
+| `extension.WithFootnoteBacklinkTitle` | `[]byte` |  an optional title attribute for footnote backlinks. |
+| `extension.WithFootnoteLinkClass` | `[]byte` |  a class for footnote links. This defaults to `footnote-ref`. |
+| `extension.WithFootnoteBacklinkClass` | `[]byte` |  a class for footnote backlinks. This defaults to `footnote-backref`. |
+| `extension.WithFootnoteBacklinkHTML` | `[]byte` |  a class for footnote backlinks. This defaults to `&#x21a9;&#xfe0e;`. |
+
+Some options can have special substitutions. Occurrences of “^^” in the string will be replaced by the corresponding footnote number in the HTML output. Occurrences of “%%” will be replaced by a number for the reference (footnotes can have multiple references).
+
+`extension.WithFootnoteIDPrefix` and `extension.WithFootnoteIDPrefixFunction` are useful if you have multiple Markdown documents displayed inside one HTML document to avoid footnote ids to clash each other.
+
+`extension.WithFootnoteIDPrefix` sets fixed id prefix, so you may write codes like the following:
+
+```go
+for _, path := range files {
+    source := readAll(path)
+    prefix := getPrefix(path)
+
+    markdown := goldmark.New(
+        goldmark.WithExtensions(
+            NewFootnote(
+                WithFootnoteIDPrefix([]byte(path)),
+            ),
+        ),
+    )
+    var b bytes.Buffer
+    err := markdown.Convert(source, &b)
+    if err != nil {
+        t.Error(err.Error())
+    }
+}
+```
+
+`extension.WithFootnoteIDPrefixFunction` determines an id prefix by calling given function, so you may write codes like the following:
+
+```go
+markdown := goldmark.New(
+    goldmark.WithExtensions(
+        NewFootnote(
+                WithFootnoteIDPrefixFunction(func(n gast.Node) []byte {
+                    v, ok := n.OwnerDocument().Meta()["footnote-prefix"]
+                    if ok {
+                        return util.StringToReadOnlyBytes(v.(string))
+                    }
+                    return nil
+                }),
+        ),
+    ),
+)
+
+for _, path := range files {
+    source := readAll(path)
+    var b bytes.Buffer
+
+    doc := markdown.Parser().Parse(text.NewReader(source))
+    doc.Meta()["footnote-prefix"] = getPrefix(path)
+    err := markdown.Renderer().Render(&b, source, doc)
+}
+```
+
+You can use [goldmark-meta](https://github.com/yuin/goldmark-meta) to define a id prefix in the markdown document:
+
+
+```markdown
+---
+title: document title
+slug: article1
+footnote-prefix: article1
+---
+
+# My article
+
+```
+
+### CJK extension
+CommonMark gives compatibilities a high priority and original markdown was designed by westerners. So CommonMark lacks considerations for languages like CJK.
+
+This extension provides additional options for CJK users.
+
+| Functional option | Type | Description |
+| ----------------- | ---- | ----------- |
+| `extension.WithEastAsianLineBreaks` | `-` | Soft line breaks are rendered as a newline. Some asian users will see it as an unnecessary space. With this option, soft line breaks between east asian wide characters will be ignored. |
+| `extension.WithEscapedSpace` | `-` | Without spaces around an emphasis started with east asian punctuations, it is not interpreted as an emphasis(as defined in CommonMark spec). With this option, you can avoid this inconvenient behavior by putting 'not rendered' spaces around an emphasis like `太郎は\ **「こんにちわ」**\ といった`. |
+
+ 
 Security
 --------------------
 By default, goldmark does not render raw HTML or potentially-dangerous URLs.
@@ -303,28 +400,29 @@ blackfriday v2 seems to be the fastest, but as it is not CommonMark compliant, i
 goldmark, meanwhile, builds a clean, extensible AST structure, achieves full compliance with
 CommonMark, and consumes less memory, all while being reasonably fast.
 
+- MBP 2019 13″(i5, 16GB), Go1.17
+
 ```
-goos: darwin
-goarch: amd64
-BenchmarkMarkdown/Blackfriday-v2-12                  326           3465240 ns/op         3298861 B/op      20047 allocs/op
-BenchmarkMarkdown/GoldMark-12                        303           3927494 ns/op         2574809 B/op      13853 allocs/op
-BenchmarkMarkdown/CommonMark-12                      244           4900853 ns/op         2753851 B/op      20527 allocs/op
-BenchmarkMarkdown/Lute-12                            130           9195245 ns/op         9175030 B/op     123534 allocs/op
-BenchmarkMarkdown/GoMarkdown-12                        9         113541994 ns/op         2187472 B/op      22173 allocs/op
+BenchmarkMarkdown/Blackfriday-v2-8                   302           3743747 ns/op         3290445 B/op      20050 allocs/op
+BenchmarkMarkdown/GoldMark-8                         280           4200974 ns/op         2559738 B/op      13435 allocs/op
+BenchmarkMarkdown/CommonMark-8                       226           5283686 ns/op         2702490 B/op      20792 allocs/op
+BenchmarkMarkdown/Lute-8                              12          92652857 ns/op        10602649 B/op      40555 allocs/op
+BenchmarkMarkdown/GoMarkdown-8                        13          81380167 ns/op         2245002 B/op      22889 allocs/op
 ```
 
 ### against cmark (CommonMark reference implementation written in C)
+
+- MBP 2019 13″(i5, 16GB), Go1.17
 
 ```
 ----------- cmark -----------
 file: _data.md
 iteration: 50
-average: 0.0037760639 sec
-go run ./goldmark_benchmark.go
+average: 0.0044073057 sec
 ------- goldmark -------
 file: _data.md
 iteration: 50
-average: 0.0040964230 sec
+average: 0.0041611990 sec
 ```
 
 As you can see, goldmark's performance is on par with cmark's.
@@ -336,7 +434,21 @@ Extensions
   extension for the goldmark Markdown parser.
 - [goldmark-highlighting](https://github.com/yuin/goldmark-highlighting): A syntax-highlighting extension
   for the goldmark markdown parser.
+- [goldmark-emoji](https://github.com/yuin/goldmark-emoji): An emoji
+  extension for the goldmark Markdown parser.
 - [goldmark-mathjax](https://github.com/litao91/goldmark-mathjax): Mathjax support for the goldmark markdown parser
+- [goldmark-pdf](https://github.com/stephenafamo/goldmark-pdf): A PDF renderer that can be passed to `goldmark.WithRenderer()`.
+- [goldmark-hashtag](https://github.com/abhinav/goldmark-hashtag): Adds support for `#hashtag`-based tagging to goldmark.
+- [goldmark-wikilink](https://github.com/abhinav/goldmark-wikilink): Adds support for `[[wiki]]`-style links to goldmark.
+- [goldmark-toc](https://github.com/abhinav/goldmark-toc): Adds support for generating tables-of-contents for goldmark documents.
+- [goldmark-mermaid](https://github.com/abhinav/goldmark-mermaid): Adds support for rendering [Mermaid](https://mermaid-js.github.io/mermaid/) diagrams in goldmark documents.
+- [goldmark-pikchr](https://github.com/jchenry/goldmark-pikchr): Adds support for rendering [Pikchr](https://pikchr.org/home/doc/trunk/homepage.md) diagrams in goldmark documents.
+- [goldmark-embed](https://github.com/13rac1/goldmark-embed): Adds support for rendering embeds from YouTube links.
+- [goldmark-latex](https://github.com/soypat/goldmark-latex): A $\LaTeX$ renderer that can be passed to `goldmark.WithRenderer()`.
+- [goldmark-fences](https://github.com/stefanfritsch/goldmark-fences): Support for pandoc-style [fenced divs](https://pandoc.org/MANUAL.html#divs-and-spans) in goldmark.
+- [goldmark-d2](https://github.com/FurqanSoftware/goldmark-d2): Adds support for [D2](https://d2lang.com/) diagrams.
+- [goldmark-katex](https://github.com/FurqanSoftware/goldmark-katex): Adds support for [KaTeX](https://katex.org/) math and equations.
+
 
 goldmark internal(for extension developers)
 ----------------------------------------------

@@ -56,13 +56,13 @@ type zapLogger struct {
 	zl *zap.Logger
 }
 
-func (l *zapLogger) Println(v ...interface{}) {
+func (l *zapLogger) Println(v ...any) {
 	l.zl.Sugar().Error(v...)
 }
 
 // Provision sets up m.
 func (m *Metrics) Provision(ctx caddy.Context) error {
-	log := ctx.Logger(m)
+	log := ctx.Logger()
 	m.metricsHandler = createMetricsHandler(&zapLogger{log}, !m.DisableOpenMetrics)
 	return nil
 }
@@ -75,10 +75,9 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 
 // UnmarshalCaddyfile sets up the handler from Caddyfile tokens. Syntax:
 //
-//     metrics [<matcher>] {
-//         disable_openmetrics
-//     }
-//
+//	metrics [<matcher>] {
+//	    disable_openmetrics
+//	}
 func (m *Metrics) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		args := d.RemainingArgs()

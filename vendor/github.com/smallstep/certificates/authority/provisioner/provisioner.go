@@ -4,19 +4,21 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	stderrors "errors"
+	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/smallstep/certificates/db"
-	"github.com/smallstep/certificates/errs"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/smallstep/certificates/errs"
 )
 
 // Interface is the interface that all provisioner types must implement.
 type Interface interface {
 	GetID() string
+	GetIDForToken() string
 	GetTokenID(token string) (string, error)
 	GetName() string
 	GetType() Type
@@ -31,9 +33,21 @@ type Interface interface {
 	AuthorizeSSHRekey(ctx context.Context, token string) (*ssh.Certificate, []SignOption, error)
 }
 
+// ErrAllowTokenReuse is an error that is returned by provisioners that allows
+// the reuse of tokens.
+//
+// This is, for example, returned by the Azure provisioner when
+// DisableTrustOnFirstUse is set to true. Azure caches tokens for up to 24hr and
+// has no mechanism for getting a different token - this can be an issue when
+// rebooting a VM. In contrast, AWS and GCP have facilities for requesting a new
+// token. Therefore, for the Azure provisioner we are enabling token reuse, with
+// the understanding that we are not following security best practices
+var ErrAllowTokenReuse = stderrors.New("allow token reuse")
+
 // Audiences stores all supported audiences by request type.
 type Audiences struct {
 	Sign      []string
+	Renew     []string
 	Revoke    []string
 	SSHSign   []string
 	SSHRevoke []string
@@ -44,6 +58,7 @@ type Audiences struct {
 // All returns all supported audiences across all request types in one list.
 func (a Audiences) All() (auds []string) {
 	auds = a.Sign
+	auds = append(auds, a.Renew...)
 	auds = append(auds, a.Revoke...)
 	auds = append(auds, a.SSHSign...)
 	auds = append(auds, a.SSHRevoke...)
@@ -57,6 +72,7 @@ func (a Audiences) All() (auds []string) {
 func (a Audiences) WithFragment(fragment string) Audiences {
 	ret := Audiences{
 		Sign:      make([]string, len(a.Sign)),
+		Renew:     make([]string, len(a.Renew)),
 		Revoke:    make([]string, len(a.Revoke)),
 		SSHSign:   make([]string, len(a.SSHSign)),
 		SSHRevoke: make([]string, len(a.SSHRevoke)),
@@ -68,6 +84,13 @@ func (a Audiences) WithFragment(fragment string) Audiences {
 			ret.Sign[i] = u.ResolveReference(&url.URL{Fragment: fragment}).String()
 		} else {
 			ret.Sign[i] = s
+		}
+	}
+	for i, s := range a.Renew {
+		if u, err := url.Parse(s); err == nil {
+			ret.Renew[i] = u.ResolveReference(&url.URL{Fragment: fragment}).String()
+		} else {
+			ret.Renew[i] = s
 		}
 	}
 	for i, s := range a.Revoke {
@@ -110,7 +133,7 @@ func (a Audiences) WithFragment(fragment string) Audiences {
 
 // generateSignAudience generates a sign audience with the format
 // https://<host>/1.0/sign#provisionerID
-func generateSignAudience(caURL string, provisionerID string) (string, error) {
+func generateSignAudience(caURL, provisionerID string) (string, error) {
 	u, err := url.Parse(caURL)
 	if err != nil {
 		return "", errors.Wrapf(err, "error parsing %s", caURL)
@@ -141,6 +164,10 @@ const (
 	TypeK8sSA Type = 8
 	// TypeSSHPOP is used to indicate the SSHPOP provisioners.
 	TypeSSHPOP Type = 9
+	// TypeSCEP is used to indicate the SCEP provisioners
+	TypeSCEP Type = 10
+	// TypeNebula is used to indicate the Nebula provisioners
+	TypeNebula Type = 11
 )
 
 // String returns the string representation of the type.
@@ -164,6 +191,10 @@ func (t Type) String() string {
 		return "K8sSA"
 	case TypeSSHPOP:
 		return "SSHPOP"
+	case TypeSCEP:
+		return "SCEP"
+	case TypeNebula:
+		return "Nebula"
 	default:
 		return ""
 	}
@@ -182,13 +213,19 @@ type Config struct {
 	Claims Claims
 	// Audiences are the audiences used in the default provisioner, (JWK).
 	Audiences Audiences
-	// DB is the interface to the authority DB client.
-	DB db.AuthDB
 	// SSHKeys are the root SSH public keys
 	SSHKeys *SSHKeys
 	// GetIdentityFunc is a function that returns an identity that will be
 	// used by the provisioner to populate certificate attributes.
 	GetIdentityFunc GetIdentityFunc
+	// AuthorizeRenewFunc is a function that returns nil if a given X.509
+	// certificate can be renewed.
+	AuthorizeRenewFunc AuthorizeRenewFunc
+	// AuthorizeSSHRenewFunc is a function that returns nil if a given SSH
+	// certificate can be renewed.
+	AuthorizeSSHRenewFunc AuthorizeSSHRenewFunc
+	// WebhookClient is an http client to use in webhook request
+	WebhookClient *http.Client
 }
 
 type provisioner struct {
@@ -232,6 +269,10 @@ func (l *List) UnmarshalJSON(data []byte) error {
 			p = &K8sSA{}
 		case "sshpop":
 			p = &SSHPOP{}
+		case "scep":
+			p = &SCEP{}
+		case "nebula":
+			p = &Nebula{}
 		default:
 			// Skip unsupported provisioners. A client using this method may be
 			// compiled with a version of smallstep/certificates that does not
@@ -253,81 +294,48 @@ func (l *List) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-var sshUserRegex = regexp.MustCompile("^[a-z][-a-z0-9_]*$")
-
-// SanitizeSSHUserPrincipal grabs an email or a string with the format
-// local@domain and returns a sanitized version of the local, valid to be used
-// as a user name. If the email starts with a letter between a and z, the
-// resulting string will match the regular expression `^[a-z][-a-z0-9_]*$`.
-func SanitizeSSHUserPrincipal(email string) string {
-	if i := strings.LastIndex(email, "@"); i >= 0 {
-		email = email[:i]
-	}
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
-			return r
-		case r >= '0' && r <= '9':
-			return r
-		case r == '-':
-			return '-'
-		case r == '.': // drop dots
-			return -1
-		default:
-			return '_'
-		}
-	}, strings.ToLower(email))
-}
-
 type base struct{}
 
 // AuthorizeSign returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for signing x509 Certificates.
-func (b *base) AuthorizeSign(ctx context.Context, token string) ([]SignOption, error) {
+func (b *base) AuthorizeSign(context.Context, string) ([]SignOption, error) {
 	return nil, errs.Unauthorized("provisioner.AuthorizeSign not implemented")
 }
 
 // AuthorizeRevoke returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for revoking x509 Certificates.
-func (b *base) AuthorizeRevoke(ctx context.Context, token string) error {
+func (b *base) AuthorizeRevoke(context.Context, string) error {
 	return errs.Unauthorized("provisioner.AuthorizeRevoke not implemented")
 }
 
 // AuthorizeRenew returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for renewing x509 Certificates.
-func (b *base) AuthorizeRenew(ctx context.Context, cert *x509.Certificate) error {
+func (b *base) AuthorizeRenew(context.Context, *x509.Certificate) error {
 	return errs.Unauthorized("provisioner.AuthorizeRenew not implemented")
 }
 
 // AuthorizeSSHSign returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for signing SSH Certificates.
-func (b *base) AuthorizeSSHSign(ctx context.Context, token string) ([]SignOption, error) {
+func (b *base) AuthorizeSSHSign(context.Context, string) ([]SignOption, error) {
 	return nil, errs.Unauthorized("provisioner.AuthorizeSSHSign not implemented")
 }
 
 // AuthorizeRevoke returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for revoking SSH Certificates.
-func (b *base) AuthorizeSSHRevoke(ctx context.Context, token string) error {
+func (b *base) AuthorizeSSHRevoke(context.Context, string) error {
 	return errs.Unauthorized("provisioner.AuthorizeSSHRevoke not implemented")
 }
 
 // AuthorizeSSHRenew returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for renewing SSH Certificates.
-func (b *base) AuthorizeSSHRenew(ctx context.Context, token string) (*ssh.Certificate, error) {
+func (b *base) AuthorizeSSHRenew(context.Context, string) (*ssh.Certificate, error) {
 	return nil, errs.Unauthorized("provisioner.AuthorizeSSHRenew not implemented")
 }
 
 // AuthorizeSSHRekey returns an unimplemented error. Provisioners should overwrite
 // this method if they will support authorizing tokens for rekeying SSH Certificates.
-func (b *base) AuthorizeSSHRekey(ctx context.Context, token string) (*ssh.Certificate, []SignOption, error) {
+func (b *base) AuthorizeSSHRekey(context.Context, string) (*ssh.Certificate, []SignOption, error) {
 	return nil, nil, errs.Unauthorized("provisioner.AuthorizeSSHRekey not implemented")
-}
-
-// Identity is the type representing an externally supplied identity that is used
-// by provisioners to populate certificate fields.
-type Identity struct {
-	Usernames   []string `json:"usernames"`
-	Permissions `json:"permissions"`
 }
 
 // Permissions defines extra extensions and critical options to grant to an SSH certificate.
@@ -336,34 +344,25 @@ type Permissions struct {
 	CriticalOptions map[string]string `json:"criticalOptions"`
 }
 
-// GetIdentityFunc is a function that returns an identity.
-type GetIdentityFunc func(ctx context.Context, p Interface, email string) (*Identity, error)
+// RAInfo is the information about a provisioner present in RA tokens generated
+// by StepCAS.
+type RAInfo struct {
+	AuthorityID     string `json:"authorityId,omitempty"`
+	EndpointID      string `json:"endpointId,omitempty"`
+	ProvisionerID   string `json:"provisionerId,omitempty"`
+	ProvisionerType string `json:"provisionerType,omitempty"`
+	ProvisionerName string `json:"provisionerName,omitempty"`
+}
 
-// DefaultIdentityFunc return a default identity depending on the provisioner type.
-func DefaultIdentityFunc(ctx context.Context, p Interface, email string) (*Identity, error) {
-	switch k := p.(type) {
-	case *OIDC:
-		// OIDC principals would be:
-		// 1. Sanitized local.
-		// 2. Raw local (if different).
-		// 3. Email address.
-		name := SanitizeSSHUserPrincipal(email)
-		if !sshUserRegex.MatchString(name) {
-			return nil, errors.Errorf("invalid principal '%s' from email '%s'", name, email)
-		}
-		usernames := []string{name}
-		if i := strings.LastIndex(email, "@"); i >= 0 {
-			if local := email[:i]; !strings.EqualFold(local, name) {
-				usernames = append(usernames, local)
-			}
-		}
-		usernames = append(usernames, email)
-		return &Identity{
-			Usernames: usernames,
-		}, nil
-	default:
-		return nil, errors.Errorf("provisioner type '%T' not supported by identity function", k)
-	}
+// raProvisioner wraps a provisioner with RA data.
+type raProvisioner struct {
+	Interface
+	raInfo *RAInfo
+}
+
+// RAInfo returns the RAInfo in the wrapped provisioner.
+func (p *raProvisioner) RAInfo() *RAInfo {
+	return p.raInfo
 }
 
 // MockProvisioner for testing
@@ -371,6 +370,7 @@ type MockProvisioner struct {
 	Mret1, Mret2, Mret3 interface{}
 	Merr                error
 	MgetID              func() string
+	MgetIDForToken      func() string
 	MgetTokenID         func(string) (string, error)
 	MgetName            func() string
 	MgetType            func() Type
@@ -389,6 +389,14 @@ type MockProvisioner struct {
 func (m *MockProvisioner) GetID() string {
 	if m.MgetID != nil {
 		return m.MgetID()
+	}
+	return m.Mret1.(string)
+}
+
+// GetIDForToken mock
+func (m *MockProvisioner) GetIDForToken() string {
+	if m.MgetIDForToken != nil {
+		return m.MgetIDForToken()
 	}
 	return m.Mret1.(string)
 }

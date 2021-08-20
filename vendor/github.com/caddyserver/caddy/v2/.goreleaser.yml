@@ -4,15 +4,26 @@ before:
     # This is so we can run goreleaser on tag without Git complaining of being dirty. The main.go in cmd/caddy directory 
     # cannot be built within that directory due to changes necessary for the build causing Git to be dirty, which
     # subsequently causes gorleaser to refuse running.
+    - rm -rf caddy-build caddy-dist vendor
+    # vendor Caddy deps
+    - go mod vendor
     - mkdir -p caddy-build
     - cp cmd/caddy/main.go caddy-build/main.go
-    - cp ./go.mod caddy-build/go.mod
-    - sed -i.bkp 's|github.com/caddyserver/caddy/v2|caddy|g' ./caddy-build/go.mod
+    - /bin/sh -c 'cd ./caddy-build && go mod init caddy'
     # GoReleaser doesn't seem to offer {{.Tag}} at this stage, so we have to embed it into the env
     # so we run: TAG=$(git describe --abbrev=0) goreleaser release --rm-dist --skip-publish --skip-validate
     - go mod edit -require=github.com/caddyserver/caddy/v2@{{.Env.TAG}} ./caddy-build/go.mod
+    # as of Go 1.16, `go` commands no longer automatically change go.{mod,sum}. We now have to explicitly
+    # run `go mod tidy`. The `/bin/sh -c '...'` is because goreleaser can't find cd in PATH without shell invocation.
+    - /bin/sh -c 'cd ./caddy-build && go mod tidy'
+    # vendor the deps of the prepared to-build module
+    - /bin/sh -c 'cd ./caddy-build && go mod vendor'
     - git clone --depth 1 https://github.com/caddyserver/dist caddy-dist
+    - mkdir -p caddy-dist/man
     - go mod download
+    - go run cmd/caddy/main.go manpage --directory ./caddy-dist/man
+    - gzip -r ./caddy-dist/man/
+    - /bin/sh -c 'go run cmd/caddy/main.go completion bash > ./caddy-dist/scripts/bash-completion'
 
 builds:
 - env:
@@ -33,9 +44,9 @@ builds:
   - s390x
   - ppc64le
   goarm:
-  - 5
-  - 6
-  - 7
+  - "5"
+  - "6"
+  - "7"
   ignore:
     - goos: darwin
       goarch: arm
@@ -53,18 +64,84 @@ builds:
       goarch: s390x
     - goos: freebsd
       goarch: arm
-      goarm: 5
+      goarm: "5"
   flags:
   - -trimpath
+  - -mod=readonly
   ldflags:
   - -s -w
 
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: '{{ trimsuffix (trimsuffix .Env.artifact ".zip") ".tar.gz" }}.pem'
+    args: ["sign-blob", "--yes", "--output-signature=${signature}", "--output-certificate", "${certificate}", "${artifact}"]
+    artifacts: all
+
+sboms:
+  - artifacts: binary
+    documents:
+      - >-
+        {{ .ProjectName }}_
+        {{- .Version }}_
+        {{- if eq .Os "darwin" }}mac{{ else }}{{ .Os }}{{ end }}_
+        {{- .Arch }}
+        {{- with .Arm }}v{{ . }}{{ end }}
+        {{- with .Mips }}_{{ . }}{{ end }}
+        {{- if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}.sbom
+    cmd: syft
+    args: ["$artifact", "--file", "${document}", "--output", "cyclonedx-json"]
+
 archives:
-  - format_overrides:
+  - id: default
+    format_overrides:
       - goos: windows
         format: zip
-    replacements:
-      darwin: mac
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- if eq .Os "darwin" }}mac{{ else }}{{ .Os }}{{ end }}_
+      {{- .Arch }}
+      {{- with .Arm }}v{{ . }}{{ end }}
+      {{- with .Mips }}_{{ . }}{{ end }}
+      {{- if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
+  
+  # packge the 'caddy-build' directory into a tarball,
+  # allowing users to build the exact same set of files as ours.
+  - id: source
+    meta: true
+    rlcp: true
+    name_template: "{{ .ProjectName }}_{{ .Version }}_buildable-artifact"
+    files:
+      - src: LICENSE
+        dst: ./LICENSE
+      - src: README.md
+        dst: ./README.md
+      - src: AUTHORS
+        dst: ./AUTHORS
+      - src: ./caddy-build
+        dst: ./
+
+source:
+  enabled: true
+  name_template: '{{ .ProjectName }}_{{ .Version }}_src'
+  format: 'tar.gz'
+
+  # This will make the destination paths be relative to the longest common
+  # path prefix between all the files matched and the source glob.
+  # Enabling this essentially mimic the behavior of nfpm's contents section.
+  # It will be the default by June 2023.
+  #
+  # Default: false
+  rlcp: true
+
+  # Additional files/template/globs you want to add to the source archive.
+  #
+  # Default: empty.
+  files:
+    - vendor
+
+
 checksum:
   algorithm: sha512
 
@@ -72,11 +149,11 @@ nfpms:
   - id: default
     package_name: caddy
 
-    vendor: Light Code Labs
+    vendor: Dyanim
     homepage: https://caddyserver.com
     maintainer: Matthew Holt <mholt@users.noreply.github.com>
     description: |
-      Powerful, enterprise-ready, open source web server with automatic HTTPS written in Go
+      Caddy - Powerful, enterprise-ready, open source web server with automatic HTTPS written in Go
     license: Apache 2.0
 
     formats:
@@ -94,18 +171,20 @@ nfpms:
       - src: ./caddy-dist/welcome/index.html
         dst: /usr/share/caddy/index.html
       
-      - src: ./caddy-dist/scripts/completions/bash-completion
+      - src: ./caddy-dist/scripts/bash-completion
         dst: /etc/bash_completion.d/caddy
     
       - src: ./caddy-dist/config/Caddyfile
         dst: /etc/caddy/Caddyfile
         type: config
 
+      - src: ./caddy-dist/man/*
+        dst: /usr/share/man/man8/
+
     scripts:
       postinstall: ./caddy-dist/scripts/postinstall.sh
       preremove: ./caddy-dist/scripts/preremove.sh
       postremove: ./caddy-dist/scripts/postremove.sh
-
 
 release:
   github:

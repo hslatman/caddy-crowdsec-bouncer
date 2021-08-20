@@ -40,6 +40,7 @@ type Handler struct {
 	Source string `json:"source,omitempty"`
 
 	// Destinations are the names of placeholders in which to store the outputs.
+	// Destination values should be wrapped in braces, for example, {my_placeholder}.
 	Destinations []string `json:"destinations,omitempty"`
 
 	// Mappings from source values (inputs) to destination values (outputs).
@@ -48,7 +49,7 @@ type Handler struct {
 
 	// If no mappings match or if the mapped output is null/nil, the associated
 	// default output will be applied (optional).
-	Defaults []string
+	Defaults []string `json:"defaults,omitempty"`
 }
 
 // CaddyModule returns the Caddy module information.
@@ -62,6 +63,9 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision sets up h.
 func (h *Handler) Provision(_ caddy.Context) error {
 	for j, dest := range h.Destinations {
+		if strings.Count(dest, "{") != 1 || !strings.HasPrefix(dest, "{") {
+			return fmt.Errorf("destination must be a placeholder and only a placeholder")
+		}
 		h.Destinations[j] = strings.Trim(dest, "{}")
 	}
 
@@ -112,6 +116,7 @@ func (h *Handler) Validate() error {
 			return fmt.Errorf("mapping %d has %d outputs but there are %d destinations defined", i, nOut, nDest)
 		}
 	}
+
 	return nil
 }
 
@@ -119,7 +124,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
 
 	// defer work until a variable is actually evaluated by using replacer's Map callback
-	repl.Map(func(key string) (interface{}, bool) {
+	repl.Map(func(key string) (any, bool) {
 		// return early if the variable is not even a configured destination
 		destIdx := h.destinationIndex(key)
 		if destIdx < 0 {
@@ -131,28 +136,32 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// find the first mapping matching the input and return
 		// the requested destination/output value
 		for _, m := range h.Mappings {
-			if m.re != nil {
-				if m.re.MatchString(input) {
-					if output := m.Outputs[destIdx]; output == nil {
-						continue
-					} else {
-						return output, true
-					}
-				}
+			output := m.Outputs[destIdx]
+			if output == nil {
 				continue
 			}
-			if input == m.Input {
-				if output := m.Outputs[destIdx]; output == nil {
+			outputStr := caddy.ToString(output)
+
+			// evaluate regular expression if configured
+			if m.re != nil {
+				var result []byte
+				matches := m.re.FindStringSubmatchIndex(input)
+				if matches == nil {
 					continue
-				} else {
-					return output, true
 				}
+				result = m.re.ExpandString(result, outputStr, input, matches)
+				return string(result), true
+			}
+
+			// otherwise simple string comparison
+			if input == m.Input {
+				return repl.ReplaceAll(outputStr, ""), true
 			}
 		}
 
 		// fall back to default if no match or if matched nil value
 		if len(h.Defaults) > destIdx {
-			return h.Defaults[destIdx], true
+			return repl.ReplaceAll(h.Defaults[destIdx], ""), true
 		}
 
 		return nil, true
@@ -184,7 +193,7 @@ type Mapping struct {
 	// Upon a match with the input, each output is positionally correlated
 	// with each destination of the parent handler. An output that is null
 	// (nil) will be treated as if it was not mapped at all.
-	Outputs []interface{} `json:"outputs,omitempty"`
+	Outputs []any `json:"outputs,omitempty"`
 
 	re *regexp.Regexp
 }

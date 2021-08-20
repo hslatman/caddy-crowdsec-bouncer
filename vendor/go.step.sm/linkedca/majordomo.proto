@@ -1,0 +1,248 @@
+syntax = "proto3";
+
+package linkedca;
+
+option go_package = "go.step.sm/linkedca";
+
+import "admin.proto";
+import "provisioners.proto";
+
+// Majordomo is the public service used to sync configurations to CA's and post
+// certificates.
+service Majordomo {
+	// Login creates signs a given CSR and returns the certificate that will be
+	// used for authentication.
+	rpc Login(LoginRequest) returns (LoginResponse);
+	// GetRootCertificate returns the root certificate for a given fingerprint.
+	rpc GetRootCertificate(GetRootCertificateRequest) returns (GetRootCertificateResponse);
+
+	// GetConfiguration returns the full configuration of an authority.
+	rpc GetConfiguration(ConfigurationRequest) returns (ConfigurationResponse);
+
+	// CreateProvisioner adds a new provisioner to the majordomo authority and
+	// returns the proto representation.
+	rpc CreateProvisioner(CreateProvisionerRequest) returns (linkedca.Provisioner);
+	// GetProvisioner returns a provisioner by its id.
+	rpc GetProvisioner(GetProvisionerRequest) returns (linkedca.Provisioner);
+	// UpdateProvisioners updates a previously created provisioner.
+	rpc UpdateProvisioner(UpdateProvisionerRequest) returns (linkedca.Provisioner);
+	// DeleteProvisioner deletes a previously created provisioner.
+	rpc DeleteProvisioner(DeleteProvisionerRequest) returns (linkedca.Provisioner);
+
+	// CreateAdmin adds a new admin user to the majordomo authority. Admin users
+	// can add or delete provisioners.
+	rpc CreateAdmin(CreateAdminRequest) returns (linkedca.Admin);
+	// GetAdmin returns an admin by its id.
+	rpc GetAdmin(GetAdminRequest) returns (linkedca.Admin);
+	// UpdateAdmin updates a previously created admin.
+	rpc UpdateAdmin(UpdateAdminRequest) returns (linkedca.Admin);
+	// DeleteAdmin deletes a previously created admin user
+	rpc DeleteAdmin(DeleteAdminRequest) returns (linkedca.Admin);
+
+	// PostCertificate sends a signed X.509 certificate to majordomo.
+	rpc PostCertificate(CertificateRequest) returns (CertificateResponse);
+	// PostSSHCertificate sends a signed SSH certificate to majordomo.
+	rpc PostSSHCertificate(SSHCertificateRequest) returns (SSHCertificateResponse);
+	// RevokeCertificate marks an X.509 certificate as revoked.
+	rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
+	// RevokeSSHCertificate marks an SSH certificate as revoked.
+	rpc RevokeSSHCertificate(RevokeSSHCertificateRequest) returns (RevokeSSHCertificateResponse);
+	// GetCertificate returns the X.509 certificate by serial.
+	rpc GetCertificate(GetCertificateRequest) returns (GetCertificateResponse);
+	// GetCertificateStatus returns the status of an X.509 certificate by serial.
+	rpc GetCertificateStatus(GetCertificateStatusRequest) returns (GetCertificateStatusResponse);
+	// GetSSHCertificateStatus returns the status of an SSH certificate by serial.
+	rpc GetSSHCertificateStatus(GetSSHCertificateStatusRequest) returns (GetSSHCertificateStatusResponse);
+}
+
+message LoginRequest {
+	string authority_id = 1;
+	string token = 2;
+	string pem_certificate_request = 3;
+}
+
+message LoginResponse {
+	string pem_certificate = 1;
+	string pem_certificate_chain = 2;
+}
+
+message GetRootCertificateRequest {
+	string fingerprint = 1;
+}
+
+message GetRootCertificateResponse {
+	string pem_certificate = 1;
+}
+
+message ConfigurationRequest {
+	string authority_id = 1;
+}
+
+message ConfigurationResponse {
+	repeated linkedca.Provisioner provisioners = 1;
+	repeated linkedca.Admin admins = 2;
+	RegistrationAuthorityConfig ra_config = 3;
+	ServerConfiguration server_config = 4;
+}
+
+message ServerConfiguration {
+	string address = 1;
+	repeated string dns_names = 2;
+}
+
+message RegistrationAuthorityConfig {
+	string ca_url = 1;
+	string fingerprint = 2;
+	linkedca.ProvisionerIdentity provisioner = 3;
+}
+
+message RegistrationAuthorityProvisioner {
+	string authority_id = 1;
+	linkedca.ProvisionerIdentity provisioner = 2;
+}
+
+message CreateProvisionerRequest {
+	linkedca.Provisioner.Type type = 1;
+	string name = 2;
+	linkedca.ProvisionerDetails details = 3;
+	linkedca.Claims claims = 4;
+	linkedca.Template x509_template = 5;
+	linkedca.Template ssh_template = 6;
+}
+
+message GetProvisionerRequest {
+	string id = 1;
+}
+
+message UpdateProvisionerRequest {
+	string id = 1;
+	string name = 2;
+	linkedca.ProvisionerDetails details = 3;
+	linkedca.Claims claims = 4;
+	linkedca.Template x509_template = 5;
+	linkedca.Template ssh_template = 6;
+}
+
+message DeleteProvisionerRequest {
+	string id = 1;
+}
+
+message CreateAdminRequest {
+	string subject = 1;
+	string provisioner_id = 2;
+	linkedca.Admin.Type type = 3;
+}
+
+message GetAdminRequest {
+	string id = 1;
+}
+
+message UpdateAdminRequest {
+	string id = 1;
+	linkedca.Admin.Type type = 2;
+}
+
+message DeleteAdminRequest {
+	string id = 1;
+}
+
+message CertificateRequest {
+	string pem_certificate = 1;
+	string pem_certificate_chain = 2;
+	string pem_parent_certificate = 3;
+	linkedca.ProvisionerIdentity provisioner = 4;
+	RegistrationAuthorityProvisioner ra_provisioner = 5;
+	string endpoint_id = 6;
+	AttestationData attestation_data = 7;
+}
+
+// AttestationData holds the information available at certificate sign time.
+// Currently only the permanent identifier (UDID or SerialNumber, not both) is
+// available.
+message AttestationData {
+	string permanent_identifier = 1;
+}
+
+message CertificateResponse {
+	string id = 1;
+}
+
+message SSHCertificateRequest {
+	string certificate = 1;
+	string parent_certificate = 2;
+	linkedca.ProvisionerIdentity provisioner = 3;
+}
+
+message SSHCertificateResponse {
+	string id = 1;
+}
+
+enum RevocationStatus {
+	UNKNOWN = 0;
+	ACTIVE = 1;
+	REVOKED = 2;
+	HOLD = 3;
+}
+
+enum RevocationReasonCode {
+	UNSPECIFIED = 0;
+	KEY_COMPROMISE = 1;
+	CA_COMPROMISE = 2;
+	AFFILIATION_CHANGED = 3;
+	SUPERSEDED = 4;
+	CESSATION_OF_OPERATION = 5;
+	CERTIFICATE_HOLD = 6;
+	REMOVE_FROM_CRL = 8;
+	PRIVILEGE_WITHDRAWN = 9;
+	AA_COMPROMISE = 10;
+}
+
+message RevokeCertificateRequest {
+	string serial = 1;
+	string pem_certificate = 2;
+	string reason = 3;
+	RevocationReasonCode reason_code = 4;
+	bool passive = 5;
+}
+
+message RevokeCertificateResponse {
+	RevocationStatus status = 1;
+}
+
+message RevokeSSHCertificateRequest {
+	string serial = 1;
+	string certificate = 2;
+	string reason = 3;
+	RevocationReasonCode reason_code = 4;
+	bool passive = 5;
+}
+
+message RevokeSSHCertificateResponse {
+	RevocationStatus status = 1;
+}
+
+message GetCertificateRequest {
+	string serial = 1;
+}
+
+message GetCertificateResponse {
+	string pem_certificate = 1;
+	linkedca.ProvisionerIdentity provisioner = 2;
+	RegistrationAuthorityProvisioner ra_provisioner = 3;
+}
+
+message GetCertificateStatusRequest {
+	string serial = 1;
+}
+
+message GetCertificateStatusResponse {
+	RevocationStatus status = 1;
+}
+
+message GetSSHCertificateStatusRequest {
+	string serial = 1;
+}
+
+message GetSSHCertificateStatusResponse {
+	RevocationStatus status = 1;
+}

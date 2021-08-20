@@ -27,11 +27,24 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/modules/caddypki"
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
+	"go.uber.org/zap"
 )
 
 func init() {
 	caddyconfig.RegisterAdapter("caddyfile", caddyfile.Adapter{ServerType: ServerType{}})
+}
+
+// App represents the configuration for a non-standard
+// Caddy app module (e.g. third-party plugin) which was
+// parsed from a global options block.
+type App struct {
+	// The JSON key for the app being configured
+	Name string
+
+	// The raw app config as JSON
+	Value json.RawMessage
 }
 
 // ServerType can set up a config from an HTTP Caddyfile.
@@ -39,28 +52,21 @@ type ServerType struct {
 }
 
 // Setup makes a config from the tokens.
-func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
-	options map[string]interface{}) (*caddy.Config, []caddyconfig.Warning, error) {
+func (st ServerType) Setup(
+	inputServerBlocks []caddyfile.ServerBlock,
+	options map[string]any,
+) (*caddy.Config, []caddyconfig.Warning, error) {
 	var warnings []caddyconfig.Warning
 	gc := counter{new(int)}
-	state := make(map[string]interface{})
+	state := make(map[string]any)
 
-	// load all the server blocks and associate them with a "pile"
-	// of config values; also prohibit duplicate keys because they
-	// can make a config confusing if more than one server block is
-	// chosen to handle a request - we actually will make each
-	// server block's route terminal so that only one will run
-	sbKeys := make(map[string]struct{})
+	// load all the server blocks and associate them with a "pile" of config values
 	originalServerBlocks := make([]serverBlock, 0, len(inputServerBlocks))
-	for i, sblock := range inputServerBlocks {
+	for _, sblock := range inputServerBlocks {
 		for j, k := range sblock.Keys {
 			if j == 0 && strings.HasPrefix(k, "@") {
 				return nil, warnings, fmt.Errorf("cannot define a matcher outside of a site block: '%s'", k)
 			}
-			if _, ok := sbKeys[k]; ok {
-				return nil, warnings, fmt.Errorf("duplicate site address not allowed: '%s' in %v (site block %d, key %d)", k, sblock.Keys, i, j)
-			}
-			sbKeys[k] = struct{}{}
 		}
 		originalServerBlocks = append(originalServerBlocks, serverBlock{
 			block: sblock,
@@ -75,32 +81,15 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 		return nil, warnings, err
 	}
 
-	// replace shorthand placeholders (which are
-	// convenient when writing a Caddyfile) with
-	// their actual placeholder identifiers or
-	// variable names
-	replacer := strings.NewReplacer(
-		"{dir}", "{http.request.uri.path.dir}",
-		"{file}", "{http.request.uri.path.file}",
-		"{host}", "{http.request.host}",
-		"{hostport}", "{http.request.hostport}",
-		"{port}", "{http.request.port}",
-		"{method}", "{http.request.method}",
-		"{path}", "{http.request.uri.path}",
-		"{query}", "{http.request.uri.query}",
-		"{remote}", "{http.request.remote}",
-		"{remote_host}", "{http.request.remote.host}",
-		"{remote_port}", "{http.request.remote.port}",
-		"{scheme}", "{http.request.scheme}",
-		"{uri}", "{http.request.uri}",
-		"{tls_cipher}", "{http.request.tls.cipher_suite}",
-		"{tls_version}", "{http.request.tls.version}",
-		"{tls_client_fingerprint}", "{http.request.tls.client.fingerprint}",
-		"{tls_client_issuer}", "{http.request.tls.client.issuer}",
-		"{tls_client_serial}", "{http.request.tls.client.serial}",
-		"{tls_client_subject}", "{http.request.tls.client.subject}",
-		"{tls_client_certificate_pem}", "{http.request.tls.client.certificate_pem}",
-	)
+	originalServerBlocks, err = st.extractNamedRoutes(originalServerBlocks, options, &warnings)
+	if err != nil {
+		return nil, warnings, err
+	}
+
+	// replace shorthand placeholders (which are convenient
+	// when writing a Caddyfile) with their actual placeholder
+	// identifiers or variable names
+	replacer := strings.NewReplacer(placeholderShorthands()...)
 
 	// these are placeholders that allow a user-defined final
 	// parameters, but we still want to provide a shorthand
@@ -109,11 +98,17 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 		search  *regexp.Regexp
 		replace string
 	}{
-		{regexp.MustCompile(`{query\.([\w-]*)}`), "{http.request.uri.query.$1}"},
-		{regexp.MustCompile(`{labels\.([\w-]*)}`), "{http.request.host.labels.$1}"},
 		{regexp.MustCompile(`{header\.([\w-]*)}`), "{http.request.header.$1}"},
+		{regexp.MustCompile(`{cookie\.([\w-]*)}`), "{http.request.cookie.$1}"},
+		{regexp.MustCompile(`{labels\.([\w-]*)}`), "{http.request.host.labels.$1}"},
 		{regexp.MustCompile(`{path\.([\w-]*)}`), "{http.request.uri.path.$1}"},
+		{regexp.MustCompile(`{file\.([\w-]*)}`), "{http.request.uri.path.file.$1}"},
+		{regexp.MustCompile(`{query\.([\w-]*)}`), "{http.request.uri.query.$1}"},
 		{regexp.MustCompile(`{re\.([\w-]*)\.([\w-]*)}`), "{http.regexp.$1.$2}"},
+		{regexp.MustCompile(`{vars\.([\w-]*)}`), "{http.vars.$1}"},
+		{regexp.MustCompile(`{rp\.([\w-\.]*)}`), "{http.reverse_proxy.$1}"},
+		{regexp.MustCompile(`{err\.([\w-\.]*)}`), "{http.error.$1}"},
+		{regexp.MustCompile(`{file_match\.([\w-]*)}`), "{http.matchers.file.$1}"},
 	}
 
 	for _, sb := range originalServerBlocks {
@@ -156,7 +151,11 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 			dirFunc, ok := registeredDirectives[dir]
 			if !ok {
 				tkn := segment[0]
-				return nil, warnings, fmt.Errorf("%s:%d: unrecognized directive: %s", tkn.File, tkn.Line, dir)
+				message := "%s:%d: unrecognized directive: %s"
+				if !sb.block.HasBraces {
+					message += "\nDid you mean to define a second site? If so, you must use curly braces around each site to separate their configurations."
+				}
+				return nil, warnings, fmt.Errorf(message, tkn.File, tkn.Line, dir)
 			}
 
 			h := Helper{
@@ -174,17 +173,23 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 				return nil, warnings, fmt.Errorf("parsing caddyfile tokens for '%s': %v", dir, err)
 			}
 
-			// As a special case, we want "handle_path" to be sorted
-			// at the same level as "handle", so we force them to use
-			// the same directive name after their parsing is complete.
-			// See https://github.com/caddyserver/caddy/issues/3675#issuecomment-678042377
-			if dir == "handle_path" {
-				dir = "handle"
-			}
+			dir = normalizeDirectiveName(dir)
 
 			for _, result := range results {
 				result.directive = dir
 				sb.pile[result.Class] = append(sb.pile[result.Class], result)
+			}
+
+			// specially handle named routes that were pulled out from
+			// the invoke directive, which could be nested anywhere within
+			// some subroutes in this directive; we add them to the pile
+			// for this server block
+			if state[namedRouteKey] != nil {
+				for name := range state[namedRouteKey].(map[string]struct{}) {
+					result := ConfigValue{Class: namedRouteKey, Value: name}
+					sb.pile[result.Class] = append(sb.pile[result.Class], result)
+				}
+				state[namedRouteKey] = nil
 			}
 		}
 	}
@@ -207,9 +212,11 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 
 	// now that each server is configured, make the HTTP app
 	httpApp := caddyhttp.App{
-		HTTPPort:  tryInt(options["http_port"], &warnings),
-		HTTPSPort: tryInt(options["https_port"], &warnings),
-		Servers:   servers,
+		HTTPPort:      tryInt(options["http_port"], &warnings),
+		HTTPSPort:     tryInt(options["https_port"], &warnings),
+		GracePeriod:   tryDuration(options["grace_period"], &warnings),
+		ShutdownDelay: tryDuration(options["shutdown_delay"], &warnings),
+		Servers:       servers,
 	}
 
 	// then make the TLS app
@@ -218,24 +225,32 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 		return nil, warnings, err
 	}
 
+	// then make the PKI app
+	pkiApp, warnings, err := st.buildPKIApp(pairings, options, warnings)
+	if err != nil {
+		return nil, warnings, err
+	}
+
 	// extract any custom logs, and enforce configured levels
 	var customLogs []namedCustomLog
 	var hasDefaultLog bool
-	for _, p := range pairings {
-		for _, sb := range p.serverBlocks {
-			for _, clVal := range sb.pile["custom_log"] {
-				ncl := clVal.Value.(namedCustomLog)
-				if ncl.name == "" {
-					continue
-				}
-				if ncl.name == "default" {
-					hasDefaultLog = true
-				}
-				if _, ok := options["debug"]; ok && ncl.log.Level == "" {
-					ncl.log.Level = "DEBUG"
-				}
-				customLogs = append(customLogs, ncl)
-			}
+	addCustomLog := func(ncl namedCustomLog) {
+		if ncl.name == "" {
+			return
+		}
+		if ncl.name == caddy.DefaultLoggerName {
+			hasDefaultLog = true
+		}
+		if _, ok := options["debug"]; ok && ncl.log.Level == "" {
+			ncl.log.Level = zap.DebugLevel.CapitalString()
+		}
+		customLogs = append(customLogs, ncl)
+	}
+
+	// Apply global log options, when set
+	if options["log"] != nil {
+		for _, logValue := range options["log"].([]ConfigValue) {
+			addCustomLog(logValue.Value.(namedCustomLog))
 		}
 	}
 
@@ -244,19 +259,44 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 		// configure it with any applicable options
 		if _, ok := options["debug"]; ok {
 			customLogs = append(customLogs, namedCustomLog{
-				name: "default",
-				log:  &caddy.CustomLog{Level: "DEBUG"},
+				name: caddy.DefaultLoggerName,
+				log: &caddy.CustomLog{
+					BaseLog: caddy.BaseLog{Level: zap.DebugLevel.CapitalString()},
+				},
 			})
+		}
+	}
+
+	// Apply server-specific log options
+	for _, p := range pairings {
+		for _, sb := range p.serverBlocks {
+			for _, clVal := range sb.pile["custom_log"] {
+				addCustomLog(clVal.Value.(namedCustomLog))
+			}
 		}
 	}
 
 	// annnd the top-level config, then we're done!
 	cfg := &caddy.Config{AppsRaw: make(caddy.ModuleMap)}
+
+	// loop through the configured options, and if any of
+	// them are an httpcaddyfile App, then we insert them
+	// into the config as raw Caddy apps
+	for _, opt := range options {
+		if app, ok := opt.(App); ok {
+			cfg.AppsRaw[app.Name] = app.Value
+		}
+	}
+
+	// insert the standard Caddy apps into the config
 	if len(httpApp.Servers) > 0 {
 		cfg.AppsRaw["http"] = caddyconfig.JSON(httpApp, &warnings)
 	}
 	if !reflect.DeepEqual(tlsApp, &caddytls.TLS{CertificatesRaw: make(caddy.ModuleMap)}) {
 		cfg.AppsRaw["tls"] = caddyconfig.JSON(tlsApp, &warnings)
+	}
+	if !reflect.DeepEqual(pkiApp, &caddypki.PKI{CAs: make(map[string]*caddypki.CA)}) {
+		cfg.AppsRaw["pki"] = caddyconfig.JSON(pkiApp, &warnings)
 	}
 	if storageCvtr, ok := options["storage"].(caddy.StorageConverter); ok {
 		cfg.StorageRaw = caddyconfig.JSONModuleObject(storageCvtr,
@@ -267,6 +307,17 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 	if adminConfig, ok := options["admin"].(*caddy.AdminConfig); ok && adminConfig != nil {
 		cfg.Admin = adminConfig
 	}
+
+	if pc, ok := options["persist_config"].(string); ok && pc == "off" {
+		if cfg.Admin == nil {
+			cfg.Admin = new(caddy.AdminConfig)
+		}
+		if cfg.Admin.Config == nil {
+			cfg.Admin.Config = new(caddy.ConfigSettings)
+		}
+		cfg.Admin.Config.Persist = new(bool)
+	}
+
 	if len(customLogs) > 0 {
 		if cfg.Logging == nil {
 			cfg.Logging = &caddy.Logging{
@@ -280,11 +331,11 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 			// most users seem to prefer not writing access logs
 			// to the default log when they are directed to a
 			// file or have any other special customization
-			if len(ncl.log.Include) > 0 {
-				defaultLog, ok := cfg.Logging.Logs["default"]
+			if ncl.name != caddy.DefaultLoggerName && len(ncl.log.Include) > 0 {
+				defaultLog, ok := cfg.Logging.Logs[caddy.DefaultLoggerName]
 				if !ok {
 					defaultLog = new(caddy.CustomLog)
-					cfg.Logging.Logs["default"] = defaultLog
+					cfg.Logging.Logs[caddy.DefaultLoggerName] = defaultLog
 				}
 				defaultLog.Exclude = append(defaultLog.Exclude, ncl.log.Include...)
 			}
@@ -298,14 +349,14 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 // which is expected to be the first server block if it has zero
 // keys. It returns the updated list of server blocks with the
 // global options block removed, and updates options accordingly.
-func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options map[string]interface{}) ([]serverBlock, error) {
+func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options map[string]any) ([]serverBlock, error) {
 	if len(serverBlocks) == 0 || len(serverBlocks[0].block.Keys) > 0 {
 		return serverBlocks, nil
 	}
 
 	for _, segment := range serverBlocks[0].block.Segments {
 		opt := segment.Directive()
-		var val interface{}
+		var val any
 		var err error
 		disp := caddyfile.NewDispenser(segment)
 
@@ -315,7 +366,7 @@ func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options
 			return nil, fmt.Errorf("%s:%d: unrecognized global option: %s", tkn.File, tkn.Line, opt)
 		}
 
-		val, err = optFunc(disp)
+		val, err = optFunc(disp, options[opt])
 		if err != nil {
 			return nil, fmt.Errorf("parsing caddyfile tokens for '%s': %v", opt, err)
 		}
@@ -329,9 +380,23 @@ func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options
 			}
 			serverOpts, ok := val.(serverOptions)
 			if !ok {
-				return nil, fmt.Errorf("unexpected type from 'servers' global options")
+				return nil, fmt.Errorf("unexpected type from 'servers' global options: %T", val)
 			}
 			options[opt] = append(existingOpts, serverOpts)
+			continue
+		}
+		// Additionally, fold multiple "log" options together into an
+		// array so that multiple loggers can be configured.
+		if opt == "log" {
+			existingOpts, ok := options[opt].([]ConfigValue)
+			if !ok {
+				existingOpts = []ConfigValue{}
+			}
+			logOpts, ok := val.([]ConfigValue)
+			if !ok {
+				return nil, fmt.Errorf("unexpected type from 'log' global options: %T", val)
+			}
+			options[opt] = append(existingOpts, logOpts...)
 			continue
 		}
 
@@ -357,16 +422,88 @@ func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options
 	return serverBlocks[1:], nil
 }
 
+// extractNamedRoutes pulls out any named route server blocks
+// so they don't get parsed as sites, and stores them in options
+// for later.
+func (ServerType) extractNamedRoutes(
+	serverBlocks []serverBlock,
+	options map[string]any,
+	warnings *[]caddyconfig.Warning,
+) ([]serverBlock, error) {
+	namedRoutes := map[string]*caddyhttp.Route{}
+
+	gc := counter{new(int)}
+	state := make(map[string]any)
+
+	// copy the server blocks so we can
+	// splice out the named route ones
+	filtered := append([]serverBlock{}, serverBlocks...)
+	index := -1
+
+	for _, sb := range serverBlocks {
+		index++
+		if !sb.block.IsNamedRoute {
+			continue
+		}
+
+		// splice out this block, because we know it's not a real server
+		filtered = append(filtered[:index], filtered[index+1:]...)
+		index--
+
+		if len(sb.block.Segments) == 0 {
+			continue
+		}
+
+		// zip up all the segments since ParseSegmentAsSubroute
+		// was designed to take a directive+
+		wholeSegment := caddyfile.Segment{}
+		for _, segment := range sb.block.Segments {
+			wholeSegment = append(wholeSegment, segment...)
+		}
+
+		h := Helper{
+			Dispenser:    caddyfile.NewDispenser(wholeSegment),
+			options:      options,
+			warnings:     warnings,
+			matcherDefs:  nil,
+			parentBlock:  sb.block,
+			groupCounter: gc,
+			State:        state,
+		}
+
+		handler, err := ParseSegmentAsSubroute(h)
+		if err != nil {
+			return nil, err
+		}
+		subroute := handler.(*caddyhttp.Subroute)
+		route := caddyhttp.Route{}
+
+		if len(subroute.Routes) == 1 && len(subroute.Routes[0].MatcherSetsRaw) == 0 {
+			// if there's only one route with no matcher, then we can simplify
+			route.HandlersRaw = append(route.HandlersRaw, subroute.Routes[0].HandlersRaw[0])
+		} else {
+			// otherwise we need the whole subroute
+			route.HandlersRaw = []json.RawMessage{caddyconfig.JSONModuleObject(handler, "handler", subroute.CaddyModule().ID.Name(), h.warnings)}
+		}
+
+		namedRoutes[sb.block.Keys[0]] = &route
+	}
+	options["named_routes"] = namedRoutes
+
+	return filtered, nil
+}
+
 // serversFromPairings creates the servers for each pairing of addresses
 // to server blocks. Each pairing is essentially a server definition.
 func (st *ServerType) serversFromPairings(
 	pairings []sbAddrAssociation,
-	options map[string]interface{},
+	options map[string]any,
 	warnings *[]caddyconfig.Warning,
 	groupCounter counter,
 ) (map[string]*caddyhttp.Server, error) {
 	servers := make(map[string]*caddyhttp.Server)
 	defaultSNI := tryString(options["default_sni"], warnings)
+	fallbackSNI := tryString(options["fallback_sni"], warnings)
 
 	httpPort := strconv.Itoa(caddyhttp.DefaultHTTPPort)
 	if hp, ok := options["http_port"].(int); ok {
@@ -382,6 +519,23 @@ func (st *ServerType) serversFromPairings(
 	}
 
 	for i, p := range pairings {
+		// detect ambiguous site definitions: server blocks which
+		// have the same host bound to the same interface (listener
+		// address), otherwise their routes will improperly be added
+		// to the same server (see issue #4635)
+		for j, sblock1 := range p.serverBlocks {
+			for _, key := range sblock1.block.Keys {
+				for k, sblock2 := range p.serverBlocks {
+					if k == j {
+						continue
+					}
+					if sliceContains(sblock2.block.Keys, key) {
+						return nil, fmt.Errorf("ambiguous site definition: %s", key)
+					}
+				}
+			}
+		}
+
 		srv := &caddyhttp.Server{
 			Listen: p.addresses,
 		}
@@ -389,11 +543,26 @@ func (st *ServerType) serversFromPairings(
 		// handle the auto_https global option
 		if autoHTTPS != "on" {
 			srv.AutoHTTPS = new(caddyhttp.AutoHTTPSConfig)
-			if autoHTTPS == "off" {
+			switch autoHTTPS {
+			case "off":
 				srv.AutoHTTPS.Disabled = true
-			}
-			if autoHTTPS == "disable_redirects" {
+			case "disable_redirects":
 				srv.AutoHTTPS.DisableRedir = true
+			case "disable_certs":
+				srv.AutoHTTPS.DisableCerts = true
+			case "ignore_loaded_certs":
+				srv.AutoHTTPS.IgnoreLoadedCerts = true
+			}
+		}
+
+		// Using paths in site addresses is deprecated
+		// See ParseAddress() where parsing should later reject paths
+		// See https://github.com/caddyserver/caddy/pull/4728 for a full explanation
+		for _, sblock := range p.serverBlocks {
+			for _, addr := range sblock.keys {
+				if addr.Path != "" {
+					caddy.Log().Named("caddyfile").Warn("Using a path in a site address is deprecated; please use the 'handle' directive instead", zap.String("address", addr.String()))
+				}
 			}
 		}
 
@@ -409,7 +578,7 @@ func (st *ServerType) serversFromPairings(
 			var iLongestHost, jLongestHost string
 			var iWildcardHost, jWildcardHost bool
 			for _, addr := range p.serverBlocks[i].keys {
-				if strings.Contains(addr.Host, "*.") {
+				if strings.Contains(addr.Host, "*") || addr.Host == "" {
 					iWildcardHost = true
 				}
 				if specificity(addr.Host) > specificity(iLongestHost) {
@@ -420,7 +589,7 @@ func (st *ServerType) serversFromPairings(
 				}
 			}
 			for _, addr := range p.serverBlocks[j].keys {
-				if strings.Contains(addr.Host, "*.") {
+				if strings.Contains(addr.Host, "*") || addr.Host == "" {
 					jWildcardHost = true
 				}
 				if specificity(addr.Host) > specificity(jLongestHost) {
@@ -430,9 +599,12 @@ func (st *ServerType) serversFromPairings(
 					jLongestPath = addr.Path
 				}
 			}
+			// catch-all blocks (blocks with no hostname) should always go
+			// last, even after blocks with wildcard hosts
+			if specificity(iLongestHost) == 0 {
+				return false
+			}
 			if specificity(jLongestHost) == 0 {
-				// catch-all blocks (blocks with no hostname) should always go
-				// last, even after blocks with wildcard hosts
 				return true
 			}
 			if iWildcardHost != jWildcardHost {
@@ -450,12 +622,31 @@ func (st *ServerType) serversFromPairings(
 		var hasCatchAllTLSConnPolicy, addressQualifiesForTLS bool
 		autoHTTPSWillAddConnPolicy := autoHTTPS != "off"
 
-		// if a catch-all server block (one which accepts all hostnames) exists in this pairing,
-		// we need to know that so that we can configure logs properly (see #3878)
-		var catchAllSblockExists bool
+		// if needed, the ServerLogConfig is initialized beforehand so
+		// that all server blocks can populate it with data, even when not
+		// coming with a log directive
 		for _, sblock := range p.serverBlocks {
-			if len(sblock.hostsFromKeys(false)) == 0 {
-				catchAllSblockExists = true
+			if len(sblock.pile["custom_log"]) != 0 {
+				srv.Logs = new(caddyhttp.ServerLogConfig)
+				break
+			}
+		}
+
+		// add named routes to the server if 'invoke' was used inside of it
+		configuredNamedRoutes := options["named_routes"].(map[string]*caddyhttp.Route)
+		for _, sblock := range p.serverBlocks {
+			if len(sblock.pile[namedRouteKey]) == 0 {
+				continue
+			}
+			for _, value := range sblock.pile[namedRouteKey] {
+				if srv.NamedRoutes == nil {
+					srv.NamedRoutes = map[string]*caddyhttp.Route{}
+				}
+				name := value.Value.(string)
+				if configuredNamedRoutes[name] == nil {
+					return nil, fmt.Errorf("cannot invoke named route '%s', which was not defined", name)
+				}
+				srv.NamedRoutes[name] = configuredNamedRoutes[name]
 			}
 		}
 
@@ -467,6 +658,13 @@ func (st *ServerType) serversFromPairings(
 			}
 
 			hosts := sblock.hostsFromKeys(false)
+
+			// emit warnings if user put unspecified IP addresses; they probably want the bind directive
+			for _, h := range hosts {
+				if h == "0.0.0.0" || h == "::" {
+					caddy.Log().Named("caddyfile").Warn("Site block has an unspecified IP address which only matches requests having that Host header; you probably want the 'bind' directive to configure the socket", zap.String("address", h))
+				}
+			}
 
 			// tls: connection policies
 			if cpVals, ok := sblock.pile["tls.connection_policy"]; ok {
@@ -481,6 +679,11 @@ func (st *ServerType) serversFromPairings(
 							cp.DefaultSNI = defaultSNI
 							break
 						}
+						if h == fallbackSNI {
+							hosts = append(hosts, "")
+							cp.FallbackSNI = fallbackSNI
+							break
+						}
 					}
 
 					if len(hosts) > 0 {
@@ -489,6 +692,7 @@ func (st *ServerType) serversFromPairings(
 						}
 					} else {
 						cp.DefaultSNI = defaultSNI
+						cp.FallbackSNI = fallbackSNI
 					}
 
 					// only append this policy if it actually changes something
@@ -500,16 +704,20 @@ func (st *ServerType) serversFromPairings(
 			}
 
 			for _, addr := range sblock.keys {
-				// exclude any hosts that were defined explicitly with "http://"
-				// in the key from automated cert management (issue #2998)
-				if addr.Scheme == "http" && addr.Host != "" {
-					if srv.AutoHTTPS == nil {
-						srv.AutoHTTPS = new(caddyhttp.AutoHTTPSConfig)
-					}
-					if !sliceContains(srv.AutoHTTPS.Skip, addr.Host) {
-						srv.AutoHTTPS.Skip = append(srv.AutoHTTPS.Skip, addr.Host)
+				// if server only uses HTTP port, auto-HTTPS will not apply
+				if listenersUseAnyPortOtherThan(srv.Listen, httpPort) {
+					// exclude any hosts that were defined explicitly with "http://"
+					// in the key from automated cert management (issue #2998)
+					if addr.Scheme == "http" && addr.Host != "" {
+						if srv.AutoHTTPS == nil {
+							srv.AutoHTTPS = new(caddyhttp.AutoHTTPSConfig)
+						}
+						if !sliceContains(srv.AutoHTTPS.Skip, addr.Host) {
+							srv.AutoHTTPS.Skip = append(srv.AutoHTTPS.Skip, addr.Host)
+						}
 					}
 				}
+
 				// we'll need to remember if the address qualifies for auto-HTTPS, so we
 				// can add a TLS conn policy if necessary
 				if addr.Scheme == "https" ||
@@ -538,7 +746,7 @@ func (st *ServerType) serversFromPairings(
 
 			// set up each handler directive, making sure to honor directive order
 			dirRoutes := sblock.pile["route"]
-			siteSubroute, err := buildSubroute(dirRoutes, groupCounter)
+			siteSubroute, err := buildSubroute(dirRoutes, groupCounter, true)
 			if err != nil {
 				return nil, err
 			}
@@ -562,9 +770,6 @@ func (st *ServerType) serversFromPairings(
 			sblockLogHosts := sblock.hostsFromKeys(true)
 			for _, cval := range sblock.pile["custom_log"] {
 				ncl := cval.Value.(namedCustomLog)
-				if srv.Logs == nil {
-					srv.Logs = new(caddyhttp.ServerLogConfig)
-				}
 				if sblock.hasHostCatchAllKey() {
 					// all requests for hosts not able to be listed should use
 					// this log because it's a catch-all-hosts server block
@@ -572,18 +777,10 @@ func (st *ServerType) serversFromPairings(
 				} else {
 					// map each host to the user's desired logger name
 					for _, h := range sblockLogHosts {
-						// if the custom logger name is non-empty, add it to the map;
-						// otherwise, only map to an empty logger name if this or
-						// another site block on this server has a catch-all host (in
-						// which case only requests with mapped hostnames will be
-						// access-logged, so it'll be necessary to add them to the
-						// map even if they use default logger)
-						if ncl.name != "" || catchAllSblockExists {
-							if srv.Logs.LoggerNames == nil {
-								srv.Logs.LoggerNames = make(map[string]string)
-							}
-							srv.Logs.LoggerNames[h] = ncl.name
+						if srv.Logs.LoggerNames == nil {
+							srv.Logs.LoggerNames = make(map[string]string)
 						}
+						srv.Logs.LoggerNames[h] = ncl.name
 					}
 				}
 			}
@@ -621,8 +818,8 @@ func (st *ServerType) serversFromPairings(
 		// policy missing for any HTTPS-enabled hosts, if so, add it... maybe?
 		if addressQualifiesForTLS &&
 			!hasCatchAllTLSConnPolicy &&
-			(len(srv.TLSConnPolicies) > 0 || !autoHTTPSWillAddConnPolicy || defaultSNI != "") {
-			srv.TLSConnPolicies = append(srv.TLSConnPolicies, &caddytls.ConnectionPolicy{DefaultSNI: defaultSNI})
+			(len(srv.TLSConnPolicies) > 0 || !autoHTTPSWillAddConnPolicy || defaultSNI != "" || fallbackSNI != "") {
+			srv.TLSConnPolicies = append(srv.TLSConnPolicies, &caddytls.ConnectionPolicy{DefaultSNI: defaultSNI, FallbackSNI: fallbackSNI})
 		}
 
 		// tidy things up a bit
@@ -637,13 +834,13 @@ func (st *ServerType) serversFromPairings(
 
 	err := applyServerOptions(servers, options, warnings)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("applying global server options: %v", err)
 	}
 
 	return servers, nil
 }
 
-func detectConflictingSchemes(srv *caddyhttp.Server, serverBlocks []serverBlock, options map[string]interface{}) error {
+func detectConflictingSchemes(srv *caddyhttp.Server, serverBlocks []serverBlock, options map[string]any) error {
 	httpPort := strconv.Itoa(caddyhttp.DefaultHTTPPort)
 	if hp, ok := options["http_port"].(int); ok {
 		httpPort = strconv.Itoa(hp)
@@ -838,11 +1035,32 @@ func appendSubrouteToRouteList(routeList caddyhttp.RouteList,
 		return routeList
 	}
 
+	// No need to wrap the handlers in a subroute if this is the only server block
+	// and there is no matcher for it (doing so would produce unnecessarily nested
+	// JSON), *unless* there is a host matcher within this site block; if so, then
+	// we still need to wrap in a subroute because otherwise the host matcher from
+	// the inside of the site block would be a top-level host matcher, which is
+	// subject to auto-HTTPS (cert management), and using a host matcher within
+	// a site block is a valid, common pattern for excluding domains from cert
+	// management, leading to unexpected behavior; see issue #5124.
+	wrapInSubroute := true
 	if len(matcherSetsEnc) == 0 && len(p.serverBlocks) == 1 {
-		// no need to wrap the handlers in a subroute if this is
-		// the only server block and there is no matcher for it
-		routeList = append(routeList, subroute.Routes...)
-	} else {
+		var hasHostMatcher bool
+	outer:
+		for _, route := range subroute.Routes {
+			for _, ms := range route.MatcherSetsRaw {
+				for matcherName := range ms {
+					if matcherName == "host" {
+						hasHostMatcher = true
+						break outer
+					}
+				}
+			}
+		}
+		wrapInSubroute = hasHostMatcher
+	}
+
+	if wrapInSubroute {
 		route := caddyhttp.Route{
 			// the semantics of a site block in the Caddyfile dictate
 			// that only the first matching one is evaluated, since
@@ -860,20 +1078,25 @@ func appendSubrouteToRouteList(routeList caddyhttp.RouteList,
 		if len(route.MatcherSetsRaw) > 0 || len(route.HandlersRaw) > 0 {
 			routeList = append(routeList, route)
 		}
+	} else {
+		routeList = append(routeList, subroute.Routes...)
 	}
+
 	return routeList
 }
 
 // buildSubroute turns the config values, which are expected to be routes
 // into a clean and orderly subroute that has all the routes within it.
-func buildSubroute(routes []ConfigValue, groupCounter counter) (*caddyhttp.Subroute, error) {
-	for _, val := range routes {
-		if !directiveIsOrdered(val.directive) {
-			return nil, fmt.Errorf("directive '%s' is not ordered, so it cannot be used here", val.directive)
+func buildSubroute(routes []ConfigValue, groupCounter counter, needsSorting bool) (*caddyhttp.Subroute, error) {
+	if needsSorting {
+		for _, val := range routes {
+			if !directiveIsOrdered(val.directive) {
+				return nil, fmt.Errorf("directive '%s' is not an ordered HTTP handler, so it cannot be used here - try placing within a route block or using the order global option", val.directive)
+			}
 		}
-	}
 
-	sortRoutes(routes)
+		sortRoutes(routes)
+	}
 
 	subroute := new(caddyhttp.Subroute)
 
@@ -972,6 +1195,19 @@ func buildSubroute(routes []ConfigValue, groupCounter counter) (*caddyhttp.Subro
 	subroute.Routes = consolidateRoutes(subroute.Routes)
 
 	return subroute, nil
+}
+
+// normalizeDirectiveName ensures directives that should be sorted
+// at the same level are named the same before sorting happens.
+func normalizeDirectiveName(directive string) string {
+	// As a special case, we want "handle_path" to be sorted
+	// at the same level as "handle", so we force them to use
+	// the same directive name after their parsing is complete.
+	// See https://github.com/caddyserver/caddy/issues/3675#issuecomment-678042377
+	if directive == "handle_path" {
+		directive = "handle"
+	}
+	return directive
 }
 
 // consolidateRoutes combines routes with the same properties
@@ -1104,6 +1340,7 @@ func (st *ServerType) compileEncodedMatcherSets(sblock serverBlock) ([]caddy.Mod
 
 func parseMatcherDefinitions(d *caddyfile.Dispenser, matchers map[string]caddy.ModuleMap) error {
 	for d.Next() {
+		// this is the "name" for "named matchers"
 		definitionName := d.Val()
 
 		if _, ok := matchers[definitionName]; ok {
@@ -1111,16 +1348,9 @@ func parseMatcherDefinitions(d *caddyfile.Dispenser, matchers map[string]caddy.M
 		}
 		matchers[definitionName] = make(caddy.ModuleMap)
 
-		// in case there are multiple instances of the same matcher, concatenate
-		// their tokens (we expect that UnmarshalCaddyfile should be able to
-		// handle more than one segment); otherwise, we'd overwrite other
-		// instances of the matcher in this set
-		tokensByMatcherName := make(map[string][]caddyfile.Token)
-		for nesting := d.Nesting(); d.NextArg() || d.NextBlock(nesting); {
-			matcherName := d.Val()
-			tokensByMatcherName[matcherName] = append(tokensByMatcherName[matcherName], d.NextSegment()...)
-		}
-		for matcherName, tokens := range tokensByMatcherName {
+		// given a matcher name and the tokens following it, parse
+		// the tokens as a matcher module and record it
+		makeMatcher := func(matcherName string, tokens []caddyfile.Token) error {
 			mod, err := caddy.GetModule("http.matchers." + matcherName)
 			if err != nil {
 				return fmt.Errorf("getting matcher module '%s': %v", matcherName, err)
@@ -1138,6 +1368,39 @@ func parseMatcherDefinitions(d *caddyfile.Dispenser, matchers map[string]caddy.M
 				return fmt.Errorf("matcher module '%s' is not a request matcher", matcherName)
 			}
 			matchers[definitionName][matcherName] = caddyconfig.JSON(rm, nil)
+			return nil
+		}
+
+		// if the next token is quoted, we can assume it's not a matcher name
+		// and that it's probably an 'expression' matcher
+		if d.NextArg() {
+			if d.Token().Quoted() {
+				err := makeMatcher("expression", []caddyfile.Token{d.Token()})
+				if err != nil {
+					return err
+				}
+				continue
+			}
+
+			// if it wasn't quoted, then we need to rewind after calling
+			// d.NextArg() so the below properly grabs the matcher name
+			d.Prev()
+		}
+
+		// in case there are multiple instances of the same matcher, concatenate
+		// their tokens (we expect that UnmarshalCaddyfile should be able to
+		// handle more than one segment); otherwise, we'd overwrite other
+		// instances of the matcher in this set
+		tokensByMatcherName := make(map[string][]caddyfile.Token)
+		for nesting := d.Nesting(); d.NextArg() || d.NextBlock(nesting); {
+			matcherName := d.Val()
+			tokensByMatcherName[matcherName] = append(tokensByMatcherName[matcherName], d.NextSegment()...)
+		}
+		for matcherName, tokens := range tokensByMatcherName {
+			err := makeMatcher(matcherName, tokens)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1155,9 +1418,62 @@ func encodeMatcherSet(matchers map[string]caddyhttp.RequestMatcher) (caddy.Modul
 	return msEncoded, nil
 }
 
+// placeholderShorthands returns a slice of old-new string pairs,
+// where the left of the pair is a placeholder shorthand that may
+// be used in the Caddyfile, and the right is the replacement.
+func placeholderShorthands() []string {
+	return []string{
+		"{dir}", "{http.request.uri.path.dir}",
+		"{file}", "{http.request.uri.path.file}",
+		"{host}", "{http.request.host}",
+		"{hostport}", "{http.request.hostport}",
+		"{port}", "{http.request.port}",
+		"{method}", "{http.request.method}",
+		"{path}", "{http.request.uri.path}",
+		"{query}", "{http.request.uri.query}",
+		"{remote}", "{http.request.remote}",
+		"{remote_host}", "{http.request.remote.host}",
+		"{remote_port}", "{http.request.remote.port}",
+		"{scheme}", "{http.request.scheme}",
+		"{uri}", "{http.request.uri}",
+		"{tls_cipher}", "{http.request.tls.cipher_suite}",
+		"{tls_version}", "{http.request.tls.version}",
+		"{tls_client_fingerprint}", "{http.request.tls.client.fingerprint}",
+		"{tls_client_issuer}", "{http.request.tls.client.issuer}",
+		"{tls_client_serial}", "{http.request.tls.client.serial}",
+		"{tls_client_subject}", "{http.request.tls.client.subject}",
+		"{tls_client_certificate_pem}", "{http.request.tls.client.certificate_pem}",
+		"{tls_client_certificate_der_base64}", "{http.request.tls.client.certificate_der_base64}",
+		"{upstream_hostport}", "{http.reverse_proxy.upstream.hostport}",
+		"{client_ip}", "{http.vars.client_ip}",
+	}
+}
+
+// WasReplacedPlaceholderShorthand checks if a token string was
+// likely a replaced shorthand of the known Caddyfile placeholder
+// replacement outputs. Useful to prevent some user-defined map
+// output destinations from overlapping with one of the
+// predefined shorthands.
+func WasReplacedPlaceholderShorthand(token string) string {
+	prev := ""
+	for i, item := range placeholderShorthands() {
+		// only look at every 2nd item, which is the replacement
+		if i%2 == 0 {
+			prev = item
+			continue
+		}
+		if strings.Trim(token, "{}") == strings.Trim(item, "{}") {
+			// we return the original shorthand so it
+			// can be used for an error message
+			return prev
+		}
+	}
+	return ""
+}
+
 // tryInt tries to convert val to an integer. If it fails,
 // it downgrades the error to a warning and returns 0.
-func tryInt(val interface{}, warnings *[]caddyconfig.Warning) int {
+func tryInt(val any, warnings *[]caddyconfig.Warning) int {
 	intVal, ok := val.(int)
 	if val != nil && !ok && warnings != nil {
 		*warnings = append(*warnings, caddyconfig.Warning{Message: "not an integer type"})
@@ -1165,7 +1481,7 @@ func tryInt(val interface{}, warnings *[]caddyconfig.Warning) int {
 	return intVal
 }
 
-func tryString(val interface{}, warnings *[]caddyconfig.Warning) string {
+func tryString(val any, warnings *[]caddyconfig.Warning) string {
 	stringVal, ok := val.(string)
 	if val != nil && !ok && warnings != nil {
 		*warnings = append(*warnings, caddyconfig.Warning{Message: "not a string type"})
@@ -1173,10 +1489,38 @@ func tryString(val interface{}, warnings *[]caddyconfig.Warning) string {
 	return stringVal
 }
 
+func tryDuration(val any, warnings *[]caddyconfig.Warning) caddy.Duration {
+	durationVal, ok := val.(caddy.Duration)
+	if val != nil && !ok && warnings != nil {
+		*warnings = append(*warnings, caddyconfig.Warning{Message: "not a duration type"})
+	}
+	return durationVal
+}
+
 // sliceContains returns true if needle is in haystack.
 func sliceContains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// listenersUseAnyPortOtherThan returns true if there are any
+// listeners in addresses that use a port which is not otherPort.
+// Mostly borrowed from unexported method in caddyhttp package.
+func listenersUseAnyPortOtherThan(addresses []string, otherPort string) bool {
+	otherPortInt, err := strconv.Atoi(otherPort)
+	if err != nil {
+		return false
+	}
+	for _, lnAddr := range addresses {
+		laddrs, err := caddy.ParseNetworkAddress(lnAddr)
+		if err != nil {
+			continue
+		}
+		if uint(otherPortInt) > laddrs.EndPort || uint(otherPortInt) < laddrs.StartPort {
 			return true
 		}
 	}
@@ -1233,6 +1577,7 @@ type sbAddrAssociation struct {
 }
 
 const matcherPrefix = "@"
+const namedRouteKey = "named_route"
 
 // Interface guard
 var _ caddyfile.ServerType = (*ServerType)(nil)

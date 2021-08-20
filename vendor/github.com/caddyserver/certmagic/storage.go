@@ -16,62 +16,76 @@ package certmagic
 
 import (
 	"context"
-	"log"
 	"path"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Storage is a type that implements a key-value store.
 // Keys are prefix-based, with forward slash '/' as separators
 // and without a leading slash.
 //
-// Processes running in a cluster will wish to use the
-// same Storage value (its implementation and configuration)
-// in order to share certificates and other TLS resources
-// with the cluster.
+// Processes running in a cluster should use the same Storage
+// value (with the same configuration) in order to share
+// certificates and other TLS resources with the cluster.
 //
 // The Load, Delete, List, and Stat methods should return
-// ErrNotExist if the key does not exist.
+// fs.ErrNotExist if the key does not exist.
 //
-// Implementations of Storage must be safe for concurrent use.
+// Implementations of Storage must be safe for concurrent use
+// and honor context cancellations. Methods should block until
+// their operation is complete; that is, Load() should always
+// return the value from the last call to Store() for a given
+// key, and concurrent calls to Store() should not corrupt a
+// file.
+//
+// For simplicity, this is not a streaming API and is not
+// suitable for very large files.
 type Storage interface {
 	// Locker provides atomic synchronization
 	// operations, making Storage safe to share.
+	// The use of Locker is not expected around
+	// every other method (Store, Load, etc.)
+	// as those should already be thread-safe;
+	// Locker is intended for custom jobs or
+	// transactions that need synchronization.
 	Locker
 
 	// Store puts value at key.
-	Store(key string, value []byte) error
+	Store(ctx context.Context, key string, value []byte) error
 
 	// Load retrieves the value at key.
-	Load(key string) ([]byte, error)
+	Load(ctx context.Context, key string) ([]byte, error)
 
 	// Delete deletes key. An error should be
 	// returned only if the key still exists
 	// when the method returns.
-	Delete(key string) error
+	Delete(ctx context.Context, key string) error
 
 	// Exists returns true if the key exists
 	// and there was no error checking.
-	Exists(key string) bool
+	Exists(ctx context.Context, key string) bool
 
 	// List returns all keys that match prefix.
 	// If recursive is true, non-terminal keys
 	// will be enumerated (i.e. "directories"
 	// should be walked); otherwise, only keys
 	// prefixed exactly by prefix will be listed.
-	List(prefix string, recursive bool) ([]string, error)
+	List(ctx context.Context, prefix string, recursive bool) ([]string, error)
 
 	// Stat returns information about key.
-	Stat(key string) (KeyInfo, error)
+	Stat(ctx context.Context, key string) (KeyInfo, error)
 }
 
-// Locker facilitates synchronization of certificate tasks across
-// machines and networks.
+// Locker facilitates synchronization across machines and networks.
+// It essentially provides a distributed named-mutex service so
+// that multiple consumers can coordinate tasks and share resources.
 type Locker interface {
-	// Lock acquires the lock for key, blocking until the lock
+	// Lock acquires the lock for name, blocking until the lock
 	// can be obtained or an error is returned. Note that, even
 	// after acquiring a lock, an idempotent operation may have
 	// already been performed by another process that acquired
@@ -84,20 +98,25 @@ type Locker interface {
 	// same time always results in only one caller receiving the
 	// lock at any given time.
 	//
-	// To prevent deadlocks, all implementations (where this concern
-	// is relevant) should put a reasonable expiration on the lock in
-	// case Unlock is unable to be called due to some sort of network
-	// failure or system crash. Additionally, implementations should
-	// honor context cancellation as much as possible (in case the
-	// caller wishes to give up and free resources before the lock
-	// can be obtained).
-	Lock(ctx context.Context, key string) error
+	// To prevent deadlocks, all implementations should put a
+	// reasonable expiration on the lock in case Unlock is unable
+	// to be called due to some sort of network failure or system
+	// crash. Additionally, implementations should honor context
+	// cancellation as much as possible (in case the caller wishes
+	// to give up and free resources before the lock can be obtained).
+	//
+	// Additionally, implementations may wish to support fencing
+	// tokens (https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html)
+	// in order to be robust against long process pauses, extremely
+	// high network latency (or other factors that get in the way of
+	// renewing lock leases).
+	Lock(ctx context.Context, name string) error
 
-	// Unlock releases the lock for key. This method must ONLY be
+	// Unlock releases the lock for name. This method must ONLY be
 	// called after a successful call to Lock, and only after the
 	// critical section is finished, even if it errored or timed
 	// out. Unlock cleans up any resources allocated during Lock.
-	Unlock(key string) error
+	Unlock(ctx context.Context, name string) error
 }
 
 // KeyInfo holds information about a key in storage.
@@ -115,12 +134,12 @@ type KeyInfo struct {
 }
 
 // storeTx stores all the values or none at all.
-func storeTx(s Storage, all []keyValue) error {
+func storeTx(ctx context.Context, s Storage, all []keyValue) error {
 	for i, kv := range all {
-		err := s.Store(kv.key, kv.value)
+		err := s.Store(ctx, kv.key, kv.value)
 		if err != nil {
 			for j := i - 1; j >= 0; j-- {
-				s.Delete(all[j].key)
+				s.Delete(ctx, all[j].key)
 			}
 			return err
 		}
@@ -213,17 +232,19 @@ func (keys KeyBuilder) Safe(str string) string {
 // this does not cancel the operations that
 // the locks are synchronizing, this should be
 // called only immediately before process exit.
-func CleanUpOwnLocks() {
+// Errors are only reported if a logger is given.
+func CleanUpOwnLocks(ctx context.Context, logger *zap.Logger) {
 	locksMu.Lock()
 	defer locksMu.Unlock()
 	for lockKey, storage := range locks {
-		err := storage.Unlock(lockKey)
-		if err == nil {
-			delete(locks, lockKey)
-		} else {
-			log.Printf("[ERROR] Unable to clean up lock: %v (lock=%s storage=%s)",
-				err, lockKey, storage)
+		if err := storage.Unlock(ctx, lockKey); err != nil {
+			logger.Error("unable to clean up lock in storage backend",
+				zap.Any("storage", storage),
+				zap.String("lock_key", lockKey),
+				zap.Error(err))
+			continue
 		}
+		delete(locks, lockKey)
 	}
 }
 
@@ -237,8 +258,8 @@ func acquireLock(ctx context.Context, storage Storage, lockKey string) error {
 	return err
 }
 
-func releaseLock(storage Storage, lockKey string) error {
-	err := storage.Unlock(lockKey)
+func releaseLock(ctx context.Context, storage Storage, lockKey string) error {
+	err := storage.Unlock(ctx, lockKey)
 	if err == nil {
 		locksMu.Lock()
 		delete(locks, lockKey)
@@ -268,13 +289,6 @@ const (
 // safeKeyRE matches any undesirable characters in storage keys.
 // Note that this allows dots, so you'll have to strip ".." manually.
 var safeKeyRE = regexp.MustCompile(`[^\w@.-]`)
-
-// ErrNotExist is returned by Storage implementations when
-// a resource is not found. It is similar to os.IsNotExist
-// except this is a type, not a variable.
-type ErrNotExist interface {
-	error
-}
 
 // defaultFileStorage is a convenient, default storage
 // implementation using the local file system.

@@ -16,6 +16,7 @@ package caddy
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,10 +28,22 @@ import (
 // NewReplacer returns a new Replacer.
 func NewReplacer() *Replacer {
 	rep := &Replacer{
-		static: make(map[string]interface{}),
+		static: make(map[string]any),
 	}
 	rep.providers = []ReplacerFunc{
 		globalDefaultReplacements,
+		rep.fromStatic,
+	}
+	return rep
+}
+
+// NewEmptyReplacer returns a new Replacer,
+// without the global default replacements.
+func NewEmptyReplacer() *Replacer {
+	rep := &Replacer{
+		static: make(map[string]any),
+	}
+	rep.providers = []ReplacerFunc{
 		rep.fromStatic,
 	}
 	return rep
@@ -41,7 +54,7 @@ func NewReplacer() *Replacer {
 // use NewReplacer to make one.
 type Replacer struct {
 	providers []ReplacerFunc
-	static    map[string]interface{}
+	static    map[string]any
 }
 
 // Map adds mapFunc to the list of value providers.
@@ -51,13 +64,13 @@ func (r *Replacer) Map(mapFunc ReplacerFunc) {
 }
 
 // Set sets a custom variable to a static value.
-func (r *Replacer) Set(variable string, value interface{}) {
+func (r *Replacer) Set(variable string, value any) {
 	r.static[variable] = value
 }
 
 // Get gets a value from the replacer. It returns
 // the value and whether the variable was known.
-func (r *Replacer) Get(variable string) (interface{}, bool) {
+func (r *Replacer) Get(variable string) (any, bool) {
 	for _, mapFunc := range r.providers {
 		if val, ok := mapFunc(variable); ok {
 			return val, true
@@ -66,11 +79,11 @@ func (r *Replacer) Get(variable string) (interface{}, bool) {
 	return nil, false
 }
 
-// GetString  is the same as Get, but coerces the value to a
-// string representation.
+// GetString is the same as Get, but coerces the value to a
+// string representation as efficiently as possible.
 func (r *Replacer) GetString(variable string) (string, bool) {
 	s, found := r.Get(variable)
-	return toString(s), found
+	return ToString(s), found
 }
 
 // Delete removes a variable with a static value
@@ -80,7 +93,7 @@ func (r *Replacer) Delete(variable string) {
 }
 
 // fromStatic provides values from r.static.
-func (r *Replacer) fromStatic(key string) (interface{}, bool) {
+func (r *Replacer) fromStatic(key string) (any, bool) {
 	val, ok := r.static[key]
 	return val, ok
 }
@@ -132,9 +145,11 @@ func (r *Replacer) replace(input, empty string,
 	// iterate the input to find each placeholder
 	var lastWriteCursor int
 
+	// fail fast if too many placeholders are unclosed
+	var unclosedCount int
+
 scan:
 	for i := 0; i < len(input); i++ {
-
 		// check for escaped braces
 		if i > 0 && input[i-1] == phEscape && (input[i] == phClose || input[i] == phOpen) {
 			sb.WriteString(input[lastWriteCursor : i-1])
@@ -146,9 +161,17 @@ scan:
 			continue
 		}
 
+		// our iterator is now on an unescaped open brace (start of placeholder)
+
+		// too many unclosed placeholders in absolutely ridiculous input can be extremely slow (issue #4170)
+		if unclosedCount > 100 {
+			return "", fmt.Errorf("too many unclosed placeholders")
+		}
+
 		// find the end of the placeholder
 		end := strings.Index(input[i:], string(phClose)) + i
 		if end < i {
+			unclosedCount++
 			continue
 		}
 
@@ -156,6 +179,7 @@ scan:
 		for end > 0 && end < len(input)-1 && input[end-1] == phEscape {
 			nextEnd := strings.Index(input[end+1:], string(phClose))
 			if nextEnd < 0 {
+				unclosedCount++
 				continue scan
 			}
 			end += nextEnd + 1
@@ -192,7 +216,7 @@ scan:
 		}
 
 		// convert val to a string as efficiently as possible
-		valStr := toString(val)
+		valStr := ToString(val)
 
 		// write the value; if it's empty, either return
 		// an error or write a default value
@@ -218,7 +242,9 @@ scan:
 	return sb.String(), nil
 }
 
-func toString(val interface{}) string {
+// ToString returns val as a string, as efficiently as possible.
+// EXPERIMENTAL: may be changed or removed later.
+func ToString(val any) string {
 	switch v := val.(type) {
 	case nil:
 		return ""
@@ -226,6 +252,8 @@ func toString(val interface{}) string {
 		return v
 	case fmt.Stringer:
 		return v.String()
+	case error:
+		return v.Error()
 	case byte:
 		return string(v)
 	case []byte:
@@ -263,9 +291,9 @@ func toString(val interface{}) string {
 // to service that key (even if the value is blank). If the
 // function does not recognize the key, false should be
 // returned.
-type ReplacerFunc func(key string) (interface{}, bool)
+type ReplacerFunc func(key string) (any, bool)
 
-func globalDefaultReplacements(key string) (interface{}, bool) {
+func globalDefaultReplacements(key string) (any, bool) {
 	// check environment variable
 	const envPrefix = "env."
 	if strings.HasPrefix(key, envPrefix) {
@@ -281,14 +309,24 @@ func globalDefaultReplacements(key string) (interface{}, bool) {
 		return string(filepath.Separator), true
 	case "system.os":
 		return runtime.GOOS, true
+	case "system.wd":
+		// OK if there is an error; just return empty string
+		wd, _ := os.Getwd()
+		return wd, true
 	case "system.arch":
 		return runtime.GOARCH, true
 	case "time.now":
 		return nowFunc(), true
+	case "time.now.http":
+		return nowFunc().Format(http.TimeFormat), true
 	case "time.now.common_log":
 		return nowFunc().Format("02/Jan/2006:15:04:05 -0700"), true
 	case "time.now.year":
 		return strconv.Itoa(nowFunc().Year()), true
+	case "time.now.unix":
+		return strconv.FormatInt(nowFunc().Unix(), 10), true
+	case "time.now.unix_ms":
+		return strconv.FormatInt(nowFunc().UnixNano()/int64(time.Millisecond), 10), true
 	}
 
 	return nil, false
@@ -300,7 +338,7 @@ func globalDefaultReplacements(key string) (interface{}, bool) {
 // will be the replacement, and returns the value that
 // will actually be the replacement, or an error. Note
 // that errors are sometimes ignored by replacers.
-type ReplacementFunc func(variable string, val interface{}) (interface{}, error)
+type ReplacementFunc func(variable string, val any) (any, error)
 
 // nowFunc is a variable so tests can change it
 // in order to obtain a deterministic time.

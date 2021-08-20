@@ -1,33 +1,47 @@
 package x509util
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
-	"crypto/sha1"
-	"crypto/sha256"
+	"crypto/sha1" //nolint:gosec // SubjectKeyIdentifier by RFC 5280
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/base64"
-	"encoding/hex"
 	"math/big"
 	"net"
 	"net/url"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pkg/errors"
+	"golang.org/x/net/idna"
 )
 
-// FingerprintEncoding defines the supported encodigns in certificate
-// fingerprints.
-type FingerprintEncoding int
+var emptyASN1Subject = []byte{0x30, 0}
 
-// Supported fingerprint encodings.
-const (
-	HexFingerprint FingerprintEncoding = iota
-	Base64Fingerprint
-	Base64UrlFingerprint
-)
+// SanitizeName converts the given domain to its ASCII form.
+func SanitizeName(domain string) (string, error) {
+	if domain == "" {
+		return "", errors.New("empty server name")
+	}
+
+	// Note that this conversion is necessary because some server names in the handshakes
+	// started by some clients (such as cURL) are not converted to Punycode, which will
+	// prevent us from obtaining certificates for them. In addition, we should also treat
+	// example.com and EXAMPLE.COM as equivalent and return the same certificate for them.
+	// Fortunately, this conversion also helped us deal with this kind of mixedcase problems.
+	//
+	// Due to the "σςΣ" problem (see https://unicode.org/faq/idn.html#22), we can't use
+	// idna.Punycode.ToASCII (or just idna.ToASCII) here.
+	name, err := idna.Lookup.ToASCII(domain)
+	if err != nil {
+		return "", errors.New("server name contains invalid character")
+	}
+
+	return name, nil
+}
 
 // SplitSANs splits a slice of Subject Alternative Names into slices of
 // IP Addresses and DNS Names. If an element is not an IP address, then it
@@ -38,13 +52,16 @@ func SplitSANs(sans []string) (dnsNames []string, ips []net.IP, emails []string,
 	emails = []string{}
 	uris = []*url.URL{}
 	for _, san := range sans {
-		if ip := net.ParseIP(san); ip != nil {
+		ip := net.ParseIP(san)
+		u, err := url.Parse(san)
+		switch {
+		case ip != nil:
 			ips = append(ips, ip)
-		} else if u, err := url.Parse(san); err == nil && u.Scheme != "" {
+		case err == nil && u.Scheme != "":
 			uris = append(uris, u)
-		} else if strings.Contains(san, "@") {
+		case strings.Contains(san, "@"):
 			emails = append(emails, san)
-		} else {
+		default:
 			dnsNames = append(dnsNames, san)
 		}
 	}
@@ -69,28 +86,6 @@ func CreateSANs(sans []string) []SubjectAlternativeName {
 		sanTypes = append(sanTypes, SubjectAlternativeName{Type: "uri", Value: v.String()})
 	}
 	return sanTypes
-}
-
-// Fingerprint returns the SHA-256 fingerprint of the certificate.
-func Fingerprint(cert *x509.Certificate) string {
-	return EncodedFingerprint(cert, HexFingerprint)
-}
-
-// EncodedFingerprint returns an encoded the SHA-256 fingerprint of the
-// certificate using the specified encoding. In an invalid encoding is passed,
-// the return value will be an empty string.
-func EncodedFingerprint(cert *x509.Certificate, encoding FingerprintEncoding) string {
-	sum := sha256.Sum256(cert.Raw)
-	switch encoding {
-	case HexFingerprint:
-		return strings.ToLower(hex.EncodeToString(sum[:]))
-	case Base64Fingerprint:
-		return base64.StdEncoding.EncodeToString(sum[:])
-	case Base64UrlFingerprint:
-		return base64.URLEncoding.EncodeToString(sum[:])
-	default:
-		return ""
-	}
 }
 
 // generateSerialNumber returns a random serial number.
@@ -124,6 +119,76 @@ func generateSubjectKeyID(pub crypto.PublicKey) ([]byte, error) {
 	if _, err = asn1.Unmarshal(b, &info); err != nil {
 		return nil, errors.Wrap(err, "error unmarshaling public key")
 	}
+	//nolint:gosec // SubjectKeyIdentifier by RFC 5280
 	hash := sha1.Sum(info.SubjectPublicKey.Bytes)
 	return hash[:], nil
+}
+
+// subjectIsEmpty returns whether the given pkix.Name (aka Subject) is an empty sequence
+func subjectIsEmpty(s pkix.Name) bool {
+	if asn1Subject, err := asn1.Marshal(s.ToRDNSequence()); err == nil {
+		return bytes.Equal(asn1Subject, emptyASN1Subject)
+	}
+
+	return false
+}
+
+// isUTF8String reports whether the given s is a valid utf8 string
+func isUTF8String(s string) bool {
+	return utf8.ValidString(s)
+}
+
+// isIA5String reports whether the given s is a valid ia5 string.
+func isIA5String(s string) bool {
+	for _, r := range s {
+		// Per RFC5280 "IA5String is limited to the set of ASCII characters"
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+// isNumeric reports whether the given s is a valid ASN1 NumericString.
+func isNumericString(s string) bool {
+	for _, b := range s {
+		valid := '0' <= b && b <= '9' || b == ' '
+		if !valid {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isPrintableString reports whether the given s is a valid ASN.1 PrintableString.
+// If asterisk is allowAsterisk then '*' is also allowed, reflecting existing
+// practice. If ampersand is allowAmpersand then '&' is allowed as well.
+func isPrintableString(s string, asterisk, ampersand bool) bool {
+	for _, b := range s {
+		valid := 'a' <= b && b <= 'z' ||
+			'A' <= b && b <= 'Z' ||
+			'0' <= b && b <= '9' ||
+			'\'' <= b && b <= ')' ||
+			'+' <= b && b <= '/' ||
+			b == ' ' ||
+			b == ':' ||
+			b == '=' ||
+			b == '?' ||
+			// This is technically not allowed in a PrintableString.
+			// However, x509 certificates with wildcard strings don't
+			// always use the correct string type so we permit it.
+			(asterisk && b == '*') ||
+			// This is not technically allowed either. However, not
+			// only is it relatively common, but there are also a
+			// handful of CA certificates that contain it. At least
+			// one of which will not expire until 2027.
+			(ampersand && b == '&')
+
+		if !valid {
+			return false
+		}
+	}
+
+	return true
 }

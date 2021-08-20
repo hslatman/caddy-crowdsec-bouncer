@@ -19,10 +19,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"html"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -38,18 +40,22 @@ func init() {
 	RegisterDirective("bind", parseBind)
 	RegisterDirective("tls", parseTLS)
 	RegisterHandlerDirective("root", parseRoot)
+	RegisterHandlerDirective("vars", parseVars)
 	RegisterHandlerDirective("redir", parseRedir)
 	RegisterHandlerDirective("respond", parseRespond)
+	RegisterHandlerDirective("abort", parseAbort)
+	RegisterHandlerDirective("error", parseError)
 	RegisterHandlerDirective("route", parseRoute)
 	RegisterHandlerDirective("handle", parseHandle)
 	RegisterDirective("handle_errors", parseHandleErrors)
+	RegisterHandlerDirective("invoke", parseInvoke)
 	RegisterDirective("log", parseLog)
+	RegisterHandlerDirective("skip_log", parseSkipLog)
 }
 
 // parseBind parses the bind directive. Syntax:
 //
-//     bind <addresses...>
-//
+//	bind <addresses...>
 func parseBind(h Helper) ([]ConfigValue, error) {
 	var lnHosts []string
 	for h.Next() {
@@ -60,35 +66,44 @@ func parseBind(h Helper) ([]ConfigValue, error) {
 
 // parseTLS parses the tls directive. Syntax:
 //
-//     tls [<email>|internal]|[<cert_file> <key_file>] {
-//         protocols <min> [<max>]
-//         ciphers   <cipher_suites...>
-//         curves    <curves...>
-//         client_auth {
-//             mode                   [request|require|verify_if_given|require_and_verify]
-//             trusted_ca_cert        <base64_der>
-//             trusted_ca_cert_file   <filename>
-//             trusted_leaf_cert      <base64_der>
-//             trusted_leaf_cert_file <filename>
-//         }
-//         alpn      <values...>
-//         load      <paths...>
-//         ca        <acme_ca_endpoint>
-//         ca_root   <pem_file>
-//         dns       <provider_name> [...]
-//         on_demand
-//         eab    <key_id> <mac_key>
-//         issuer <module_name> [...]
-//     }
-//
+//	tls [<email>|internal]|[<cert_file> <key_file>] {
+//	    protocols <min> [<max>]
+//	    ciphers   <cipher_suites...>
+//	    curves    <curves...>
+//	    client_auth {
+//	        mode                   [request|require|verify_if_given|require_and_verify]
+//	        trusted_ca_cert        <base64_der>
+//	        trusted_ca_cert_file   <filename>
+//	        trusted_leaf_cert      <base64_der>
+//	        trusted_leaf_cert_file <filename>
+//	    }
+//	    alpn                          <values...>
+//	    load                          <paths...>
+//	    ca                            <acme_ca_endpoint>
+//	    ca_root                       <pem_file>
+//	    key_type                      [ed25519|p256|p384|rsa2048|rsa4096]
+//	    dns                           <provider_name> [...]
+//	    propagation_delay             <duration>
+//	    propagation_timeout           <duration>
+//	    resolvers                     <dns_servers...>
+//	    dns_ttl                       <duration>
+//	    dns_challenge_override_domain <domain>
+//	    on_demand
+//	    eab                           <key_id> <mac_key>
+//	    issuer                        <module_name> [...]
+//	    get_certificate               <module_name> [...]
+//	    insecure_secrets_log          <log_file>
+//	}
 func parseTLS(h Helper) ([]ConfigValue, error) {
 	cp := new(caddytls.ConnectionPolicy)
 	var fileLoader caddytls.FileLoader
 	var folderLoader caddytls.FolderLoader
 	var certSelector caddytls.CustomCertSelectionPolicy
 	var acmeIssuer *caddytls.ACMEIssuer
+	var keyType string
 	var internalIssuer *caddytls.InternalIssuer
 	var issuers []certmagic.Issuer
+	var certManagers []certmagic.Manager
 	var onDemand bool
 
 	for h.Next() {
@@ -122,10 +137,10 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 			// must load each cert only once; otherwise, they each get a
 			// different tag... since a cert loaded twice has the same
 			// bytes, it will overwrite the first one in the cache, and
-			// only the last cert (and its tag) will survive, so a any conn
-			// policy that is looking for any tag but the last one to be
-			// loaded won't find it, and TLS handshakes will fail (see end)
-			// of issue #3004)
+			// only the last cert (and its tag) will survive, so any conn
+			// policy that is looking for any tag other than the last one
+			// to be loaded won't find it, and TLS handshakes will fail
+			// (see end of issue #3004)
 			//
 			// tlsCertTags maps certificate filenames to their tag.
 			// This is used to remember which tag is used for each
@@ -226,7 +241,7 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 							return nil, h.ArgErr()
 						}
 						filename := h.Val()
-						certDataPEM, err := ioutil.ReadFile(filename)
+						certDataPEM, err := os.ReadFile(filename)
 						if err != nil {
 							return nil, err
 						}
@@ -267,6 +282,13 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 				}
 				acmeIssuer.CA = arg[0]
 
+			case "key_type":
+				arg := h.RemainingArgs()
+				if len(arg) != 1 {
+					return nil, h.ArgErr()
+				}
+				keyType = arg[0]
+
 			case "eab":
 				arg := h.RemainingArgs()
 				if len(arg) != 2 {
@@ -285,23 +307,32 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 					return nil, h.ArgErr()
 				}
 				modName := h.Val()
-				mod, err := caddy.GetModule("tls.issuance." + modName)
-				if err != nil {
-					return nil, h.Errf("getting issuer module '%s': %v", modName, err)
-				}
-				unm, ok := mod.New().(caddyfile.Unmarshaler)
-				if !ok {
-					return nil, h.Errf("issuer module '%s' is not a Caddyfile unmarshaler", mod.ID)
-				}
-				err = unm.UnmarshalCaddyfile(h.NewFromNextSegment())
+				modID := "tls.issuance." + modName
+				unm, err := caddyfile.UnmarshalModule(h.Dispenser, modID)
 				if err != nil {
 					return nil, err
 				}
 				issuer, ok := unm.(certmagic.Issuer)
 				if !ok {
-					return nil, h.Errf("module %s is not a certmagic.Issuer", mod.ID)
+					return nil, h.Errf("module %s (%T) is not a certmagic.Issuer", modID, unm)
 				}
 				issuers = append(issuers, issuer)
+
+			case "get_certificate":
+				if !h.NextArg() {
+					return nil, h.ArgErr()
+				}
+				modName := h.Val()
+				modID := "tls.get_certificate." + modName
+				unm, err := caddyfile.UnmarshalModule(h.Dispenser, modID)
+				if err != nil {
+					return nil, err
+				}
+				certManager, ok := unm.(certmagic.Manager)
+				if !ok {
+					return nil, h.Errf("module %s (%T) is not a certmagic.CertificateManager", modID, unm)
+				}
+				certManagers = append(certManagers, certManager)
 
 			case "dns":
 				if !h.NextArg() {
@@ -313,20 +344,117 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 				}
 				if acmeIssuer.Challenges == nil {
 					acmeIssuer.Challenges = new(caddytls.ChallengesConfig)
+				}
+				if acmeIssuer.Challenges.DNS == nil {
 					acmeIssuer.Challenges.DNS = new(caddytls.DNSChallengeConfig)
 				}
-				dnsProvModule, err := caddy.GetModule("dns.providers." + provName)
+				modID := "dns.providers." + provName
+				unm, err := caddyfile.UnmarshalModule(h.Dispenser, modID)
 				if err != nil {
-					return nil, h.Errf("getting DNS provider module named '%s': %v", provName, err)
+					return nil, err
 				}
-				dnsProvModuleInstance := dnsProvModule.New()
-				if unm, ok := dnsProvModuleInstance.(caddyfile.Unmarshaler); ok {
-					err = unm.UnmarshalCaddyfile(h.NewFromNextSegment())
+				acmeIssuer.Challenges.DNS.ProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, h.warnings)
+
+			case "resolvers":
+				args := h.RemainingArgs()
+				if len(args) == 0 {
+					return nil, h.ArgErr()
+				}
+				if acmeIssuer == nil {
+					acmeIssuer = new(caddytls.ACMEIssuer)
+				}
+				if acmeIssuer.Challenges == nil {
+					acmeIssuer.Challenges = new(caddytls.ChallengesConfig)
+				}
+				if acmeIssuer.Challenges.DNS == nil {
+					acmeIssuer.Challenges.DNS = new(caddytls.DNSChallengeConfig)
+				}
+				acmeIssuer.Challenges.DNS.Resolvers = args
+
+			case "propagation_delay":
+				arg := h.RemainingArgs()
+				if len(arg) != 1 {
+					return nil, h.ArgErr()
+				}
+				delayStr := arg[0]
+				delay, err := caddy.ParseDuration(delayStr)
+				if err != nil {
+					return nil, h.Errf("invalid propagation_delay duration %s: %v", delayStr, err)
+				}
+				if acmeIssuer == nil {
+					acmeIssuer = new(caddytls.ACMEIssuer)
+				}
+				if acmeIssuer.Challenges == nil {
+					acmeIssuer.Challenges = new(caddytls.ChallengesConfig)
+				}
+				if acmeIssuer.Challenges.DNS == nil {
+					acmeIssuer.Challenges.DNS = new(caddytls.DNSChallengeConfig)
+				}
+				acmeIssuer.Challenges.DNS.PropagationDelay = caddy.Duration(delay)
+
+			case "propagation_timeout":
+				arg := h.RemainingArgs()
+				if len(arg) != 1 {
+					return nil, h.ArgErr()
+				}
+				timeoutStr := arg[0]
+				var timeout time.Duration
+				if timeoutStr == "-1" {
+					timeout = time.Duration(-1)
+				} else {
+					var err error
+					timeout, err = caddy.ParseDuration(timeoutStr)
 					if err != nil {
-						return nil, err
+						return nil, h.Errf("invalid propagation_timeout duration %s: %v", timeoutStr, err)
 					}
 				}
-				acmeIssuer.Challenges.DNS.ProviderRaw = caddyconfig.JSONModuleObject(dnsProvModuleInstance, "name", provName, h.warnings)
+				if acmeIssuer == nil {
+					acmeIssuer = new(caddytls.ACMEIssuer)
+				}
+				if acmeIssuer.Challenges == nil {
+					acmeIssuer.Challenges = new(caddytls.ChallengesConfig)
+				}
+				if acmeIssuer.Challenges.DNS == nil {
+					acmeIssuer.Challenges.DNS = new(caddytls.DNSChallengeConfig)
+				}
+				acmeIssuer.Challenges.DNS.PropagationTimeout = caddy.Duration(timeout)
+
+			case "dns_ttl":
+				arg := h.RemainingArgs()
+				if len(arg) != 1 {
+					return nil, h.ArgErr()
+				}
+				ttlStr := arg[0]
+				ttl, err := caddy.ParseDuration(ttlStr)
+				if err != nil {
+					return nil, h.Errf("invalid dns_ttl duration %s: %v", ttlStr, err)
+				}
+				if acmeIssuer == nil {
+					acmeIssuer = new(caddytls.ACMEIssuer)
+				}
+				if acmeIssuer.Challenges == nil {
+					acmeIssuer.Challenges = new(caddytls.ChallengesConfig)
+				}
+				if acmeIssuer.Challenges.DNS == nil {
+					acmeIssuer.Challenges.DNS = new(caddytls.DNSChallengeConfig)
+				}
+				acmeIssuer.Challenges.DNS.TTL = caddy.Duration(ttl)
+
+			case "dns_challenge_override_domain":
+				arg := h.RemainingArgs()
+				if len(arg) != 1 {
+					return nil, h.ArgErr()
+				}
+				if acmeIssuer == nil {
+					acmeIssuer = new(caddytls.ACMEIssuer)
+				}
+				if acmeIssuer.Challenges == nil {
+					acmeIssuer.Challenges = new(caddytls.ChallengesConfig)
+				}
+				if acmeIssuer.Challenges.DNS == nil {
+					acmeIssuer.Challenges.DNS = new(caddytls.DNSChallengeConfig)
+				}
+				acmeIssuer.Challenges.DNS.OverrideDomain = arg[0]
 
 			case "ca_root":
 				arg := h.RemainingArgs()
@@ -343,6 +471,12 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 					return nil, h.ArgErr()
 				}
 				onDemand = true
+
+			case "insecure_secrets_log":
+				if !h.NextArg() {
+					return nil, h.ArgErr()
+				}
+				cp.InsecureSecretsLog = h.Val()
 
 			default:
 				return nil, h.Errf("unknown subdirective: %s", h.Val())
@@ -372,28 +506,61 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 		})
 	}
 
+	// some tls subdirectives are shortcuts that implicitly configure issuers, and the
+	// user can also configure issuers explicitly using the issuer subdirective; the
+	// logic to support both would likely be complex, or at least unintuitive
 	if len(issuers) > 0 && (acmeIssuer != nil || internalIssuer != nil) {
-		// some tls subdirectives are shortcuts that implicitly configure issuers, and the
-		// user can also configure issuers explicitly using the issuer subdirective; the
-		// logic to support both would likely be complex, or at least unintuitive
 		return nil, h.Err("cannot mix issuer subdirective (explicit issuers) with other issuer-specific subdirectives (implicit issuers)")
 	}
-	for _, issuer := range issuers {
-		configVals = append(configVals, ConfigValue{
-			Class: "tls.cert_issuer",
-			Value: issuer,
-		})
+	if acmeIssuer != nil && internalIssuer != nil {
+		return nil, h.Err("cannot create both ACME and internal certificate issuers")
 	}
-	if acmeIssuer != nil {
-		configVals = append(configVals, ConfigValue{
-			Class: "tls.cert_issuer",
-			Value: disambiguateACMEIssuer(acmeIssuer),
-		})
-	}
-	if internalIssuer != nil {
+
+	// now we should either have: explicitly-created issuers, or an implicitly-created
+	// ACME or internal issuer, or no issuers at all
+	switch {
+	case len(issuers) > 0:
+		for _, issuer := range issuers {
+			configVals = append(configVals, ConfigValue{
+				Class: "tls.cert_issuer",
+				Value: issuer,
+			})
+		}
+
+	case acmeIssuer != nil:
+		// implicit ACME issuers (from various subdirectives) - use defaults; there might be more than one
+		defaultIssuers := caddytls.DefaultIssuers()
+
+		// if a CA endpoint was set, override multiple implicit issuers since it's a specific one
+		if acmeIssuer.CA != "" {
+			defaultIssuers = []certmagic.Issuer{acmeIssuer}
+		}
+
+		for _, issuer := range defaultIssuers {
+			switch iss := issuer.(type) {
+			case *caddytls.ACMEIssuer:
+				issuer = acmeIssuer
+			case *caddytls.ZeroSSLIssuer:
+				iss.ACMEIssuer = acmeIssuer
+			}
+			configVals = append(configVals, ConfigValue{
+				Class: "tls.cert_issuer",
+				Value: issuer,
+			})
+		}
+
+	case internalIssuer != nil:
 		configVals = append(configVals, ConfigValue{
 			Class: "tls.cert_issuer",
 			Value: internalIssuer,
+		})
+	}
+
+	// certificate key type
+	if keyType != "" {
+		configVals = append(configVals, ConfigValue{
+			Class: "tls.key_type",
+			Value: keyType,
 		})
 	}
 
@@ -402,6 +569,12 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 		configVals = append(configVals, ConfigValue{
 			Class: "tls.on_demand",
 			Value: true,
+		})
+	}
+	for _, certManager := range certManagers {
+		configVals = append(configVals, ConfigValue{
+			Class: "tls.cert_manager",
+			Value: certManager,
 		})
 	}
 
@@ -425,8 +598,7 @@ func parseTLS(h Helper) ([]ConfigValue, error) {
 
 // parseRoot parses the root directive. Syntax:
 //
-//     root [<matcher>] <path>
-//
+//	root [<matcher>] <path>
 func parseRoot(h Helper) (caddyhttp.MiddlewareHandler, error) {
 	var root string
 	for h.Next() {
@@ -441,10 +613,22 @@ func parseRoot(h Helper) (caddyhttp.MiddlewareHandler, error) {
 	return caddyhttp.VarsMiddleware{"root": root}, nil
 }
 
+// parseVars parses the vars directive. See its UnmarshalCaddyfile method for syntax.
+func parseVars(h Helper) (caddyhttp.MiddlewareHandler, error) {
+	v := new(caddyhttp.VarsMiddleware)
+	err := v.UnmarshalCaddyfile(h.Dispenser)
+	return v, err
+}
+
 // parseRedir parses the redir directive. Syntax:
 //
-//     redir [<matcher>] <to> [<code>]
+//	redir [<matcher>] <to> [<code>]
 //
+// <code> can be "permanent" for 301, "temporary" for 302 (default),
+// a placeholder, or any number in the 3xx range or 401. The special
+// code "html" can be used to redirect only browser clients (will
+// respond with HTTP 200 and no Location header; redirect is performed
+// with JS and a meta tag).
 func parseRedir(h Helper) (caddyhttp.MiddlewareHandler, error) {
 	if !h.Next() {
 		return nil, h.ArgErr()
@@ -459,14 +643,15 @@ func parseRedir(h Helper) (caddyhttp.MiddlewareHandler, error) {
 	if h.NextArg() {
 		code = h.Val()
 	}
-	if code == "permanent" {
-		code = "301"
-	}
-	if code == "temporary" || code == "" {
-		code = "302"
-	}
+
 	var body string
-	if code == "html" {
+	var hdr http.Header
+	switch code {
+	case "permanent":
+		code = "301"
+	case "temporary", "":
+		code = "302"
+	case "html":
 		// Script tag comes first since that will better imitate a redirect in the browser's
 		// history, but the meta tag is a fallback for most non-JS clients.
 		const metaRedir = `<!DOCTYPE html>
@@ -481,11 +666,37 @@ func parseRedir(h Helper) (caddyhttp.MiddlewareHandler, error) {
 `
 		safeTo := html.EscapeString(to)
 		body = fmt.Sprintf(metaRedir, safeTo, safeTo, safeTo, safeTo)
+		code = "200" // don't redirect non-browser clients
+	default:
+		// Allow placeholders for the code
+		if strings.HasPrefix(code, "{") {
+			break
+		}
+		// Try to validate as an integer otherwise
+		codeInt, err := strconv.Atoi(code)
+		if err != nil {
+			return nil, h.Errf("Not a supported redir code type or not valid integer: '%s'", code)
+		}
+		// Sometimes, a 401 with Location header is desirable because
+		// requests made with XHR will "eat" the 3xx redirect; so if
+		// the intent was to redirect to an auth page, a 3xx won't
+		// work. Responding with 401 allows JS code to read the
+		// Location header and do a window.location redirect manually.
+		// see https://stackoverflow.com/a/2573589/846934
+		// see https://github.com/oauth2-proxy/oauth2-proxy/issues/1522
+		if codeInt < 300 || (codeInt > 399 && codeInt != 401) {
+			return nil, h.Errf("Redir code not in the 3xx range or 401: '%v'", codeInt)
+		}
+	}
+
+	// don't redirect non-browser clients
+	if code != "200" {
+		hdr = http.Header{"Location": []string{to}}
 	}
 
 	return caddyhttp.StaticResponse{
 		StatusCode: caddyhttp.WeakString(code),
-		Headers:    http.Header{"Location": []string{to}},
+		Headers:    hdr,
 		Body:       body,
 	}, nil
 }
@@ -500,31 +711,41 @@ func parseRespond(h Helper) (caddyhttp.MiddlewareHandler, error) {
 	return sr, nil
 }
 
+// parseAbort parses the abort directive.
+func parseAbort(h Helper) (caddyhttp.MiddlewareHandler, error) {
+	h.Next() // consume directive
+	for h.Next() || h.NextBlock(0) {
+		return nil, h.ArgErr()
+	}
+	return &caddyhttp.StaticResponse{Abort: true}, nil
+}
+
+// parseError parses the error directive.
+func parseError(h Helper) (caddyhttp.MiddlewareHandler, error) {
+	se := new(caddyhttp.StaticError)
+	err := se.UnmarshalCaddyfile(h.Dispenser)
+	if err != nil {
+		return nil, err
+	}
+	return se, nil
+}
+
 // parseRoute parses the route directive.
 func parseRoute(h Helper) (caddyhttp.MiddlewareHandler, error) {
-	sr := new(caddyhttp.Subroute)
-
 	allResults, err := parseSegmentAsConfig(h)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, result := range allResults {
-		switch handler := result.Value.(type) {
-		case caddyhttp.Route:
-			sr.Routes = append(sr.Routes, handler)
-		case caddyhttp.Subroute:
-			// directives which return a literal subroute instead of a route
-			// means they intend to keep those handlers together without
-			// them being reordered; we're doing that anyway since we're in
-			// the route directive, so just append its handlers
-			sr.Routes = append(sr.Routes, handler.Routes...)
+		switch result.Value.(type) {
+		case caddyhttp.Route, caddyhttp.Subroute:
 		default:
 			return nil, h.Errf("%s directive returned something other than an HTTP route or subroute: %#v (only handler directives can be used in routes)", result.directive, result.Value)
 		}
 	}
 
-	return sr, nil
+	return buildSubroute(allResults, h.groupCounter, false)
 }
 
 func parseHandle(h Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -544,20 +765,79 @@ func parseHandleErrors(h Helper) ([]ConfigValue, error) {
 	}, nil
 }
 
+// parseInvoke parses the invoke directive.
+func parseInvoke(h Helper) (caddyhttp.MiddlewareHandler, error) {
+	h.Next() // consume directive
+	if !h.NextArg() {
+		return nil, h.ArgErr()
+	}
+	for h.Next() || h.NextBlock(0) {
+		return nil, h.ArgErr()
+	}
+
+	// remember that we're invoking this name
+	// to populate the server with these named routes
+	if h.State[namedRouteKey] == nil {
+		h.State[namedRouteKey] = map[string]struct{}{}
+	}
+	h.State[namedRouteKey].(map[string]struct{})[h.Val()] = struct{}{}
+
+	// return the handler
+	return &caddyhttp.Invoke{Name: h.Val()}, nil
+}
+
 // parseLog parses the log directive. Syntax:
 //
-//     log {
-//         output <writer_module> ...
-//         format <encoder_module> ...
-//         level  <level>
-//     }
-//
+//	log {
+//	    output <writer_module> ...
+//	    format <encoder_module> ...
+//	    level  <level>
+//	}
 func parseLog(h Helper) ([]ConfigValue, error) {
+	return parseLogHelper(h, nil)
+}
+
+// parseLogHelper is used both for the parseLog directive within Server Blocks,
+// as well as the global "log" option for configuring loggers at the global
+// level. The parseAsGlobalOption parameter is used to distinguish any differing logic
+// between the two.
+func parseLogHelper(h Helper, globalLogNames map[string]struct{}) ([]ConfigValue, error) {
+	// When the globalLogNames parameter is passed in, we make
+	// modifications to the parsing behavior.
+	parseAsGlobalOption := globalLogNames != nil
+
 	var configValues []ConfigValue
 	for h.Next() {
-		// log does not currently support any arguments
-		if h.NextArg() {
-			return nil, h.ArgErr()
+		// Logic below expects that a name is always present when a
+		// global option is being parsed.
+		var globalLogName string
+		if parseAsGlobalOption {
+			if h.NextArg() {
+				globalLogName = h.Val()
+
+				// Only a single argument is supported.
+				if h.NextArg() {
+					return nil, h.ArgErr()
+				}
+			} else {
+				// If there is no log name specified, we
+				// reference the default logger. See the
+				// setupNewDefault function in the logging
+				// package for where this is configured.
+				globalLogName = caddy.DefaultLoggerName
+			}
+
+			// Verify this name is unused.
+			_, used := globalLogNames[globalLogName]
+			if used {
+				return nil, h.Err("duplicate global log option for: " + globalLogName)
+			}
+			globalLogNames[globalLogName] = struct{}{}
+		} else {
+			// No arguments are supported for the server block log directive
+			if h.NextArg() {
+				return nil, h.ArgErr()
+			}
 		}
 
 		cl := new(caddy.CustomLog)
@@ -583,21 +863,15 @@ func parseLog(h Helper) ([]ConfigValue, error) {
 				case "discard":
 					wo = caddy.DiscardWriter{}
 				default:
-					mod, err := caddy.GetModule("caddy.logging.writers." + moduleName)
-					if err != nil {
-						return nil, h.Errf("getting log writer module named '%s': %v", moduleName, err)
-					}
-					unm, ok := mod.New().(caddyfile.Unmarshaler)
-					if !ok {
-						return nil, h.Errf("log writer module '%s' is not a Caddyfile unmarshaler", mod)
-					}
-					err = unm.UnmarshalCaddyfile(h.NewFromNextSegment())
+					modID := "caddy.logging.writers." + moduleName
+					unm, err := caddyfile.UnmarshalModule(h.Dispenser, modID)
 					if err != nil {
 						return nil, err
 					}
+					var ok bool
 					wo, ok = unm.(caddy.WriterOpener)
 					if !ok {
-						return nil, h.Errf("module %s is not a WriterOpener", mod)
+						return nil, h.Errf("module %s (%T) is not a WriterOpener", modID, unm)
 					}
 				}
 				cl.WriterRaw = caddyconfig.JSONModuleObject(wo, "output", moduleName, h.warnings)
@@ -607,21 +881,14 @@ func parseLog(h Helper) ([]ConfigValue, error) {
 					return nil, h.ArgErr()
 				}
 				moduleName := h.Val()
-				mod, err := caddy.GetModule("caddy.logging.encoders." + moduleName)
-				if err != nil {
-					return nil, h.Errf("getting log encoder module named '%s': %v", moduleName, err)
-				}
-				unm, ok := mod.New().(caddyfile.Unmarshaler)
-				if !ok {
-					return nil, h.Errf("log encoder module '%s' is not a Caddyfile unmarshaler", mod)
-				}
-				err = unm.UnmarshalCaddyfile(h.NewFromNextSegment())
+				moduleID := "caddy.logging.encoders." + moduleName
+				unm, err := caddyfile.UnmarshalModule(h.Dispenser, moduleID)
 				if err != nil {
 					return nil, err
 				}
 				enc, ok := unm.(zapcore.Encoder)
 				if !ok {
-					return nil, h.Errf("module %s is not a zapcore.Encoder", mod)
+					return nil, h.Errf("module %s (%T) is not a zapcore.Encoder", moduleID, unm)
 				}
 				cl.EncoderRaw = caddyconfig.JSONModuleObject(enc, "format", moduleName, h.warnings)
 
@@ -634,22 +901,48 @@ func parseLog(h Helper) ([]ConfigValue, error) {
 					return nil, h.ArgErr()
 				}
 
+			case "include":
+				// This configuration is only allowed in the global options
+				if !parseAsGlobalOption {
+					return nil, h.ArgErr()
+				}
+				for h.NextArg() {
+					cl.Include = append(cl.Include, h.Val())
+				}
+
+			case "exclude":
+				// This configuration is only allowed in the global options
+				if !parseAsGlobalOption {
+					return nil, h.ArgErr()
+				}
+				for h.NextArg() {
+					cl.Exclude = append(cl.Exclude, h.Val())
+				}
+
 			default:
 				return nil, h.Errf("unrecognized subdirective: %s", h.Val())
 			}
 		}
 
 		var val namedCustomLog
+		// Skip handling of empty logging configs
 		if !reflect.DeepEqual(cl, new(caddy.CustomLog)) {
-			logCounter, ok := h.State["logCounter"].(int)
-			if !ok {
-				logCounter = 0
+			if parseAsGlobalOption {
+				// Use indicated name for global log options
+				val.name = globalLogName
+				val.log = cl
+			} else {
+				// Construct a log name for server log streams
+				logCounter, ok := h.State["logCounter"].(int)
+				if !ok {
+					logCounter = 0
+				}
+				val.name = fmt.Sprintf("log%d", logCounter)
+				cl.Include = []string{"http.log.access." + val.name}
+				val.log = cl
+				logCounter++
+				h.State["logCounter"] = logCounter
 			}
-			val.name = fmt.Sprintf("log%d", logCounter)
-			cl.Include = []string{"http.log.access." + val.name}
-			val.log = cl
-			logCounter++
-			h.State["logCounter"] = logCounter
 		}
 		configValues = append(configValues, ConfigValue{
 			Class: "custom_log",
@@ -657,4 +950,16 @@ func parseLog(h Helper) ([]ConfigValue, error) {
 		})
 	}
 	return configValues, nil
+}
+
+// parseSkipLog parses the skip_log directive. Syntax:
+//
+//	skip_log [<matcher>]
+func parseSkipLog(h Helper) (caddyhttp.MiddlewareHandler, error) {
+	for h.Next() {
+		if h.NextArg() {
+			return nil, h.ArgErr()
+		}
+	}
+	return caddyhttp.VarsMiddleware{"skip_log": true}, nil
 }

@@ -5,7 +5,7 @@ package truststore
 
 import (
 	"bytes"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // not used for cryptographic purposes
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -76,6 +76,7 @@ func (t *JavaTrust) Install(filename string, cert *x509.Certificate) error {
 		"-alias", uniqueName(cert),
 	}
 
+	//nolint:gosec // tolerable risk necessary for function
 	cmd := exec.Command(t.keytoolPath, args...)
 	if out, err := execKeytool(cmd); err != nil {
 		return NewCmdError(err, cmd, out)
@@ -94,6 +95,7 @@ func (t *JavaTrust) Uninstall(filename string, cert *x509.Certificate) error {
 		"-storepass", JavaStorePass,
 	}
 
+	//nolint:gosec // tolerable risk necessary for function
 	cmd := exec.Command(t.keytoolPath, args...)
 	out, err := execKeytool(cmd)
 	if bytes.Contains(out, []byte("does not exist")) {
@@ -121,6 +123,7 @@ func (t *JavaTrust) Exists(cert *x509.Certificate) bool {
 		return bytes.Contains(keytoolOutput, []byte(fp))
 	}
 
+	//nolint:gosec // tolerable risk necessary for function
 	cmd := exec.Command(t.keytoolPath, "-list", "-keystore", t.cacertsPath, "-storepass", JavaStorePass)
 	keytoolOutput, err := cmd.CombinedOutput()
 	if err != nil {
@@ -130,9 +133,10 @@ func (t *JavaTrust) Exists(cert *x509.Certificate) bool {
 
 	// keytool outputs SHA1 and SHA256 (Java 9+) certificates in uppercase hex
 	// with each octet pair delimitated by ":". Drop them from the keytool output
-	keytoolOutput = bytes.Replace(keytoolOutput, []byte(":"), nil, -1)
+	keytoolOutput = bytes.ReplaceAll(keytoolOutput, []byte(":"), nil)
 
 	// pre-Java 9 uses SHA1 fingerprints
+	//nolint:gosec // not used for cryptographic purposes
 	s1, s256 := sha1.New(), sha256.New()
 	return exists(cert, s1, keytoolOutput) || exists(cert, s256, keytoolOutput)
 }
@@ -151,6 +155,7 @@ func execKeytool(cmd *exec.Cmd) ([]byte, error) {
 	out, err := cmd.CombinedOutput()
 	if err != nil && bytes.Contains(out, []byte("java.io.FileNotFoundException")) && runtime.GOOS != "windows" {
 		origArgs := cmd.Args[1:]
+		//nolint:gosec // tolerable risk necessary for function
 		cmd = exec.Command("sudo", cmd.Path)
 		cmd.Args = append(cmd.Args, origArgs...)
 		cmd.Env = []string{

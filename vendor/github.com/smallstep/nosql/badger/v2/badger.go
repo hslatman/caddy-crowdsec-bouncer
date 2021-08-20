@@ -1,3 +1,6 @@
+//go:build !nobadger && !nobadgerv2
+// +build !nobadger,!nobadgerv2
+
 package badger
 
 import (
@@ -124,7 +127,7 @@ func (db *DB) DeleteTable(bucket []byte) error {
 func badgerGetV2(txn *badger.Txn, key []byte) ([]byte, error) {
 	item, err := txn.Get(key)
 	switch {
-	case err == badger.ErrKeyNotFound:
+	case errors.Is(err, badger.ErrKeyNotFound):
 		return nil, errors.Wrapf(database.ErrNotFound, "key %s not found", key)
 	case err != nil:
 		return nil, errors.Wrapf(err, "failed to get key %s", key)
@@ -268,12 +271,12 @@ func (db *DB) Update(txn *database.Tx) error {
 		for _, q := range txn.Operations {
 			switch q.Cmd {
 			case database.CreateTable:
-				if err = db.CreateTable(q.Bucket); err != nil {
+				if err := db.CreateTable(q.Bucket); err != nil {
 					return err
 				}
 				continue
 			case database.DeleteTable:
-				if err = db.DeleteTable(q.Bucket); err != nil {
+				if err := db.DeleteTable(q.Bucket); err != nil {
 					return err
 				}
 				continue
@@ -308,6 +311,11 @@ func (db *DB) Update(txn *database.Tx) error {
 		}
 		return nil
 	})
+}
+
+// Compact triggers a value log garbage collection.
+func (db *DB) Compact(discardRatio float64) error {
+	return db.db.RunValueLogGC(discardRatio)
 }
 
 // toBadgerKey returns the Badger database key using the following algorithm:

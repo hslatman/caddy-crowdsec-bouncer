@@ -7,17 +7,20 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/smallstep/certificates/errs"
+
 	"go.step.sm/crypto/jose"
 	"go.step.sm/crypto/sshutil"
 	"go.step.sm/crypto/x509util"
+	"go.step.sm/linkedca"
+
+	"github.com/smallstep/certificates/errs"
 )
 
 // gcpCertsURL is the url that serves Google OAuth2 public keys.
@@ -78,6 +81,7 @@ func newGCPConfig() *gcpConfig {
 // https://cloud.google.com/compute/docs/instances/verifying-instance-identity
 type GCP struct {
 	*base
+	ID                     string   `json:"-"`
 	Type                   string   `json:"type"`
 	Name                   string   `json:"name"`
 	ServiceAccounts        []string `json:"serviceAccounts"`
@@ -87,15 +91,23 @@ type GCP struct {
 	InstanceAge            Duration `json:"instanceAge,omitempty"`
 	Claims                 *Claims  `json:"claims,omitempty"`
 	Options                *Options `json:"options,omitempty"`
-	claimer                *Claimer
 	config                 *gcpConfig
 	keyStore               *keyStore
-	audiences              Audiences
+	ctl                    *Controller
 }
 
 // GetID returns the provisioner unique identifier. The name should uniquely
 // identify any GCP provisioner.
 func (p *GCP) GetID() string {
+	if p.ID != "" {
+		return p.ID
+	}
+	return p.GetIDForToken()
+}
+
+// GetIDForToken returns an identifier that will be used to load the provisioner
+// from a token.
+func (p *GCP) GetIDForToken() string {
 	return "gcp/" + p.Name
 }
 
@@ -123,7 +135,7 @@ func (p *GCP) GetTokenID(token string) (string, error) {
 	// Create unique ID for Trust On First Use (TOFU). Only the first instance
 	// per provisioner is allowed as we don't have a way to trust the given
 	// sans.
-	unique := fmt.Sprintf("%s.%s", p.GetID(), claims.Google.ComputeEngine.InstanceID)
+	unique := fmt.Sprintf("%s.%s", p.GetIDForToken(), claims.Google.ComputeEngine.InstanceID)
 	sum := sha256.Sum256([]byte(unique))
 	return strings.ToLower(hex.EncodeToString(sum[:])), nil
 }
@@ -139,7 +151,7 @@ func (p *GCP) GetType() Type {
 }
 
 // GetEncryptedKey is not available in a GCP provisioner.
-func (p *GCP) GetEncryptedKey() (kid string, key string, ok bool) {
+func (p *GCP) GetEncryptedKey() (kid, key string, ok bool) {
 	return "", "", false
 }
 
@@ -157,7 +169,9 @@ func (p *GCP) GetIdentityURL(audience string) string {
 
 // GetIdentityToken does an HTTP request to the identity url.
 func (p *GCP) GetIdentityToken(subject, caURL string) (string, error) {
-	audience, err := generateSignAudience(caURL, p.GetID())
+	_ = subject // unused input
+
+	audience, err := generateSignAudience(caURL, p.GetIDForToken())
 	if err != nil {
 		return "", err
 	}
@@ -172,7 +186,7 @@ func (p *GCP) GetIdentityToken(subject, caURL string) (string, error) {
 		return "", errors.Wrap(err, "error doing identity request, are you in a GCP VM?")
 	}
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", errors.Wrap(err, "error on identity request")
 	}
@@ -183,8 +197,7 @@ func (p *GCP) GetIdentityToken(subject, caURL string) (string, error) {
 }
 
 // Init validates and initializes the GCP provisioner.
-func (p *GCP) Init(config Config) error {
-	var err error
+func (p *GCP) Init(config Config) (err error) {
 	switch {
 	case p.Type == "":
 		return errors.New("provisioner type cannot be empty")
@@ -193,25 +206,23 @@ func (p *GCP) Init(config Config) error {
 	case p.InstanceAge.Value() < 0:
 		return errors.New("provisioner instanceAge cannot be negative")
 	}
+
 	// Initialize config
 	p.assertConfig()
-	// Update claims with global ones
-	if p.claimer, err = NewClaimer(p.Claims, config.Claims); err != nil {
-		return err
-	}
+
 	// Initialize key store
-	p.keyStore, err = newKeyStore(p.config.CertsURL)
-	if err != nil {
-		return err
+	if p.keyStore, err = newKeyStore(p.config.CertsURL); err != nil {
+		return
 	}
 
-	p.audiences = config.Audiences.WithFragment(p.GetID())
-	return nil
+	config.Audiences = config.Audiences.WithFragment(p.GetIDForToken())
+	p.ctl, err = NewController(p, p.Claims, config, p.Options)
+	return
 }
 
 // AuthorizeSign validates the given token and returns the sign options that
 // will be used on certificate creation.
-func (p *GCP) AuthorizeSign(ctx context.Context, token string) ([]SignOption, error) {
+func (p *GCP) AuthorizeSign(_ context.Context, token string) ([]SignOption, error) {
 	claims, err := p.authorizeToken(token)
 	if err != nil {
 		return nil, errs.Wrap(http.StatusInternalServerError, err, "gcp.AuthorizeSign")
@@ -233,15 +244,17 @@ func (p *GCP) AuthorizeSign(ctx context.Context, token string) ([]SignOption, er
 	if p.DisableCustomSANs {
 		dnsName1 := fmt.Sprintf("%s.c.%s.internal", ce.InstanceName, ce.ProjectID)
 		dnsName2 := fmt.Sprintf("%s.%s.c.%s.internal", ce.InstanceName, ce.Zone, ce.ProjectID)
-		so = append(so, commonNameSliceValidator([]string{
-			ce.InstanceName, ce.InstanceID, dnsName1, dnsName2,
-		}))
-		so = append(so, dnsNamesValidator([]string{
-			dnsName1, dnsName2,
-		}))
-		so = append(so, ipAddressesValidator(nil))
-		so = append(so, emailAddressesValidator(nil))
-		so = append(so, urisValidator(nil))
+		so = append(so,
+			commonNameSliceValidator([]string{
+				ce.InstanceName, ce.InstanceID, dnsName1, dnsName2,
+			}),
+			dnsNamesValidator([]string{
+				dnsName1, dnsName2,
+			}),
+			ipAddressesValidator(nil),
+			emailAddressesValidator(nil),
+			urisValidator(nil),
+		)
 
 		// Template SANs
 		data.SetSANs([]string{dnsName1, dnsName2})
@@ -253,22 +266,22 @@ func (p *GCP) AuthorizeSign(ctx context.Context, token string) ([]SignOption, er
 	}
 
 	return append(so,
+		p,
 		templateOptions,
 		// modifiers / withOptions
 		newProvisionerExtensionOption(TypeGCP, p.Name, claims.Subject, "InstanceID", ce.InstanceID, "InstanceName", ce.InstanceName),
-		profileDefaultDuration(p.claimer.DefaultTLSCertDuration()),
+		profileDefaultDuration(p.ctl.Claimer.DefaultTLSCertDuration()),
 		// validators
 		defaultPublicKeyValidator{},
-		newValidityValidator(p.claimer.MinTLSCertDuration(), p.claimer.MaxTLSCertDuration()),
+		newValidityValidator(p.ctl.Claimer.MinTLSCertDuration(), p.ctl.Claimer.MaxTLSCertDuration()),
+		newX509NamePolicyValidator(p.ctl.getPolicy().getX509()),
+		p.ctl.newWebhookController(data, linkedca.Webhook_X509),
 	), nil
 }
 
 // AuthorizeRenew returns an error if the renewal is disabled.
 func (p *GCP) AuthorizeRenew(ctx context.Context, cert *x509.Certificate) error {
-	if p.claimer.IsDisableRenewal() {
-		return errs.Unauthorized("gcp.AuthorizeRenew; renew is disabled for gcp provisioner %s", p.GetID())
-	}
-	return nil
+	return p.ctl.AuthorizeRenew(ctx, cert)
 }
 
 // assertConfig initializes the config if it has not been initialized.
@@ -315,7 +328,7 @@ func (p *GCP) authorizeToken(token string) (*gcpPayload, error) {
 	}
 
 	// validate audiences with the defaults
-	if !matchesAudience(claims.Audience, p.audiences.Sign) {
+	if !matchesAudience(claims.Audience, p.ctl.Audiences.Sign) {
 		return nil, errs.Unauthorized("gcp.authorizeToken; invalid gcp token - invalid audience claim (aud)")
 	}
 
@@ -369,9 +382,9 @@ func (p *GCP) authorizeToken(token string) (*gcpPayload, error) {
 }
 
 // AuthorizeSSHSign returns the list of SignOption for a SignSSH request.
-func (p *GCP) AuthorizeSSHSign(ctx context.Context, token string) ([]SignOption, error) {
-	if !p.claimer.IsSSHCAEnabled() {
-		return nil, errs.Unauthorized("gcp.AuthorizeSSHSign; sshCA is disabled for gcp provisioner %s", p.GetID())
+func (p *GCP) AuthorizeSSHSign(_ context.Context, token string) ([]SignOption, error) {
+	if !p.ctl.Claimer.IsSSHCAEnabled() {
+		return nil, errs.Unauthorized("gcp.AuthorizeSSHSign; sshCA is disabled for gcp provisioner '%s'", p.GetName())
 	}
 	claims, err := p.authorizeToken(token)
 	if err != nil {
@@ -415,15 +428,20 @@ func (p *GCP) AuthorizeSSHSign(ctx context.Context, token string) ([]SignOption,
 	signOptions = append(signOptions, templateOptions)
 
 	return append(signOptions,
+		p,
 		// Validate user SignSSHOptions.
 		sshCertOptionsValidator(defaults),
 		// Set the validity bounds if not set.
-		&sshDefaultDuration{p.claimer},
+		&sshDefaultDuration{p.ctl.Claimer},
 		// Validate public key
 		&sshDefaultPublicKeyValidator{},
 		// Validate the validity period.
-		&sshCertValidityValidator{p.claimer},
+		&sshCertValidityValidator{p.ctl.Claimer},
 		// Require all the fields in the SSH certificate
 		&sshCertDefaultValidator{},
+		// Ensure that all principal names are allowed
+		newSSHNamePolicyValidator(p.ctl.getPolicy().getSSHHost(), nil),
+		// Call webhooks
+		p.ctl.newWebhookController(data, linkedca.Webhook_SSH),
 	), nil
 }

@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// +build !windows,!plan9,!nacl,!js
+//go:build !windows && !plan9 && !nacl && !js
 
 package caddy
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -35,12 +36,12 @@ func trapSignalsPosix() {
 			switch sig {
 			case syscall.SIGQUIT:
 				Log().Info("quitting process immediately", zap.String("signal", "SIGQUIT"))
-				certmagic.CleanUpOwnLocks() // try to clean up locks anyway, it's important
+				certmagic.CleanUpOwnLocks(context.TODO(), Log()) // try to clean up locks anyway, it's important
 				os.Exit(ExitCodeForceQuit)
 
 			case syscall.SIGTERM:
-				Log().Info("shutting down apps then terminating", zap.String("signal", "SIGTERM"))
-				gracefulStop("SIGTERM")
+				Log().Info("shutting down apps, then terminating", zap.String("signal", "SIGTERM"))
+				exitProcessFromSignal("SIGTERM")
 
 			case syscall.SIGUSR1:
 				Log().Info("not implemented", zap.String("signal", "SIGUSR1"))

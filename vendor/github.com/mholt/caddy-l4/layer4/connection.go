@@ -22,30 +22,53 @@ import (
 	"sync"
 
 	"github.com/caddyserver/caddy/v2"
+	"go.uber.org/zap"
 )
 
+// WrapConnection wraps an underlying connection into a layer4 connection that
+// supports recording and rewinding, as well as adding context with a replacer
+// and variable table. This function is intended for use at the start of a
+// connection handler chain where the underlying connection is not yet a layer4
+// Connection value.
+func WrapConnection(underlying net.Conn, buf *bytes.Buffer, logger *zap.Logger) *Connection {
+	repl := caddy.NewReplacer()
+	repl.Set("l4.conn.remote_addr", underlying.RemoteAddr())
+	repl.Set("l4.conn.local_addr", underlying.LocalAddr())
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, VarsCtxKey, make(map[string]interface{}))
+	ctx = context.WithValue(ctx, ReplacerCtxKey, repl)
+
+	return &Connection{
+		Conn:    underlying,
+		Context: ctx,
+		Logger:  logger,
+		buf:     buf,
+	}
+}
+
 // Connection contains information about the connection as it
-// passes through various handlers.
+// passes through various handlers. It also has the capability
+// of recording and rewinding when necessary.
+//
+// A Connection can be used as a net.Conn because it embeds a
+// net.Conn; but when wrapping underlying connections, usually
+// you want to be careful to replace the embedded Conn, not
+// this entire Connection value.
 //
 // Connection structs are NOT safe for concurrent use.
 type Connection struct {
-	// The underlying connection; use this for any
-	// wrapping and I/O.
-	Conn net.Conn
+	// The underlying connection.
+	net.Conn
 
 	// The context for the connection.
 	Context context.Context
 
+	Logger *zap.Logger
+
 	buf       *bytes.Buffer // stores recordings
 	bufReader io.Reader     // used to read buf so it doesn't discard bytes
 	recording bool
-}
-
-// recordableConn can record data read from an underlying
-// Conn using the associated Connection struct.
-type recordableConn struct {
-	net.Conn
-	cx *Connection
 
 	bytesRead, bytesWritten uint64
 }
@@ -54,25 +77,28 @@ type recordableConn struct {
 // deplete any associated buffer from the prior recording,
 // and once depleted (or if there isn't one), it continues
 // reading from the underlying connection.
-func (rc *recordableConn) Read(p []byte) (n int, err error) {
+func (cx *Connection) Read(p []byte) (n int, err error) {
 	// if there is a buffer we should read from, start
 	// with that; we only read from the underlying conn
 	// after the buffer has been "depleted"
-	if rc.cx.bufReader != nil {
-		n, err = rc.cx.bufReader.Read(p)
+	if cx.bufReader != nil {
+		n, err = cx.bufReader.Read(p)
 		if err == io.EOF {
-			rc.cx.bufReader = nil
-		} else if err != nil || n > 0 {
+			cx.bufReader = nil
+			err = nil
+		}
+		// prevent first read from returning 0 bytes because of empty bufReader
+		if !(n == 0 && err == nil) {
 			return
 		}
 	}
 
 	// buffer has been "depleted" so read from
 	// underlying connection
-	n, err = rc.Conn.Read(p)
-	rc.bytesRead += uint64(n)
+	n, err = cx.Conn.Read(p)
+	cx.bytesRead += uint64(n)
 
-	if !rc.cx.recording {
+	if !cx.recording {
 		return
 	}
 
@@ -80,7 +106,7 @@ func (rc *recordableConn) Read(p []byte) (n int, err error) {
 	// was read needs to be written to the buffer, even
 	// if there was an error
 	if n > 0 {
-		if nw, errw := rc.cx.buf.Write(p[:n]); errw != nil {
+		if nw, errw := cx.buf.Write(p[:n]); errw != nil {
 			return nw, errw
 		}
 	}
@@ -88,15 +114,34 @@ func (rc *recordableConn) Read(p []byte) (n int, err error) {
 	return
 }
 
-func (rc *recordableConn) Write(p []byte) (n int, err error) {
-	n, err = rc.Conn.Write(p)
-	rc.bytesWritten += uint64(n)
+func (cx *Connection) Write(p []byte) (n int, err error) {
+	n, err = cx.Conn.Write(p)
+	cx.bytesWritten += uint64(n)
 	return
 }
 
-// record starts recording the stream into rc.buf.
+// Wrap wraps conn in a new Connection based on cx (reusing
+// cx's existing buffer and context). This is useful after
+// a connection is wrapped by a package that does not support
+// our Connection type (for example, `tls.Server()`).
+func (cx *Connection) Wrap(conn net.Conn) *Connection {
+	return &Connection{
+		Conn:         conn,
+		Context:      cx.Context,
+		Logger:       cx.Logger,
+		buf:          cx.buf,
+		bufReader:    cx.bufReader,
+		recording:    cx.recording,
+		bytesRead:    cx.bytesRead,
+		bytesWritten: cx.bytesWritten,
+	}
+}
+
+// record starts recording the stream into cx.buf. It also creates a reader
+// to read from the buffer but not to discard any byte.
 func (cx *Connection) record() {
 	cx.recording = true
+	cx.bufReader = bytes.NewReader(cx.buf.Bytes()) // Don't discard bytes.
 }
 
 // rewind stops recording and creates a reader for the
@@ -105,7 +150,7 @@ func (cx *Connection) record() {
 // continue with the underlying conn.
 func (cx *Connection) rewind() {
 	cx.recording = false
-	cx.bufReader = bytes.NewReader(cx.buf.Bytes())
+	cx.bufReader = cx.buf // Actually consume bytes.
 }
 
 // SetVar sets a value in the context's variable table with
@@ -137,6 +182,9 @@ var (
 
 	// ReplacerCtxKey is the key used to store the replacer.
 	ReplacerCtxKey caddy.CtxKey = "replacer"
+
+	// listenerCtxKey is the key used to get the listener from a handler
+	listenerCtxKey caddy.CtxKey = "listener"
 )
 
 var bufPool = sync.Pool{

@@ -2,26 +2,28 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi"
-	"github.com/pkg/errors"
+
 	"github.com/smallstep/certificates/acme"
-	"github.com/smallstep/certificates/api"
+	"github.com/smallstep/certificates/api/render"
 	"github.com/smallstep/certificates/logging"
 )
 
 // NewAccountRequest represents the payload for a new account request.
 type NewAccountRequest struct {
-	Contact              []string `json:"contact"`
-	OnlyReturnExisting   bool     `json:"onlyReturnExisting"`
-	TermsOfServiceAgreed bool     `json:"termsOfServiceAgreed"`
+	Contact                []string                `json:"contact"`
+	OnlyReturnExisting     bool                    `json:"onlyReturnExisting"`
+	TermsOfServiceAgreed   bool                    `json:"termsOfServiceAgreed"`
+	ExternalAccountBinding *ExternalAccountBinding `json:"externalAccountBinding,omitempty"`
 }
 
 func validateContacts(cs []string) error {
 	for _, c := range cs {
-		if len(c) == 0 {
-			return acme.MalformedErr(errors.New("contact cannot be empty string"))
+		if c == "" {
+			return acme.NewError(acme.ErrorMalformedType, "contact cannot be empty string")
 		}
 	}
 	return nil
@@ -30,29 +32,23 @@ func validateContacts(cs []string) error {
 // Validate validates a new-account request body.
 func (n *NewAccountRequest) Validate() error {
 	if n.OnlyReturnExisting && len(n.Contact) > 0 {
-		return acme.MalformedErr(errors.New("incompatible input; onlyReturnExisting must be alone"))
+		return acme.NewError(acme.ErrorMalformedType, "incompatible input; onlyReturnExisting must be alone")
 	}
 	return validateContacts(n.Contact)
 }
 
 // UpdateAccountRequest represents an update-account request.
 type UpdateAccountRequest struct {
-	Contact []string `json:"contact"`
-	Status  string   `json:"status"`
-}
-
-// IsDeactivateRequest returns true if the update request is a deactivation
-// request, false otherwise.
-func (u *UpdateAccountRequest) IsDeactivateRequest() bool {
-	return u.Status == acme.StatusDeactivated
+	Contact []string    `json:"contact"`
+	Status  acme.Status `json:"status"`
 }
 
 // Validate validates a update-account request body.
 func (u *UpdateAccountRequest) Validate() error {
 	switch {
 	case len(u.Status) > 0 && len(u.Contact) > 0:
-		return acme.MalformedErr(errors.New("incompatible input; contact and " +
-			"status updates are mutually exclusive"))
+		return acme.NewError(acme.ErrorMalformedType, "incompatible input; contact and "+
+			"status updates are mutually exclusive")
 	case len(u.Contact) > 0:
 		if err := validateContacts(u.Contact); err != nil {
 			return err
@@ -60,8 +56,8 @@ func (u *UpdateAccountRequest) Validate() error {
 		return nil
 	case len(u.Status) > 0:
 		if u.Status != acme.StatusDeactivated {
-			return acme.MalformedErr(errors.Errorf("cannot update account "+
-				"status to %s, only deactivated", u.Status))
+			return acme.NewError(acme.ErrorMalformedType, "cannot update account "+
+				"status to %s, only deactivated", u.Status)
 		}
 		return nil
 	default:
@@ -72,71 +68,108 @@ func (u *UpdateAccountRequest) Validate() error {
 }
 
 // NewAccount is the handler resource for creating new ACME accounts.
-func (h *Handler) NewAccount(w http.ResponseWriter, r *http.Request) {
-	payload, err := payloadFromContext(r.Context())
+func NewAccount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	db := acme.MustDatabaseFromContext(ctx)
+	linker := acme.MustLinkerFromContext(ctx)
+
+	payload, err := payloadFromContext(ctx)
 	if err != nil {
-		api.WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
 	var nar NewAccountRequest
 	if err := json.Unmarshal(payload.value, &nar); err != nil {
-		api.WriteError(w, acme.MalformedErr(errors.Wrap(err,
-			"failed to unmarshal new-account request payload")))
+		render.Error(w, acme.WrapError(acme.ErrorMalformedType, err,
+			"failed to unmarshal new-account request payload"))
 		return
 	}
 	if err := nar.Validate(); err != nil {
-		api.WriteError(w, err)
+		render.Error(w, err)
+		return
+	}
+
+	prov, err := acmeProvisionerFromContext(ctx)
+	if err != nil {
+		render.Error(w, err)
 		return
 	}
 
 	httpStatus := http.StatusCreated
-	acc, err := acme.AccountFromContext(r.Context())
+	acc, err := accountFromContext(ctx)
 	if err != nil {
-		acmeErr, ok := err.(*acme.Error)
-		if !ok || acmeErr.Status != http.StatusBadRequest {
+		var acmeErr *acme.Error
+		if !errors.As(err, &acmeErr) || acmeErr.Status != http.StatusBadRequest {
 			// Something went wrong ...
-			api.WriteError(w, err)
+			render.Error(w, err)
 			return
 		}
 
 		// Account does not exist //
 		if nar.OnlyReturnExisting {
-			api.WriteError(w, acme.AccountDoesNotExistErr(nil))
-			return
-		}
-		jwk, err := acme.JwkFromContext(r.Context())
-		if err != nil {
-			api.WriteError(w, err)
+			render.Error(w, acme.NewError(acme.ErrorAccountDoesNotExistType,
+				"account does not exist"))
 			return
 		}
 
-		if acc, err = h.Auth.NewAccount(r.Context(), acme.AccountOptions{
-			Key:     jwk,
-			Contact: nar.Contact,
-		}); err != nil {
-			api.WriteError(w, err)
+		jwk, err := jwkFromContext(ctx)
+		if err != nil {
+			render.Error(w, err)
 			return
 		}
+
+		eak, err := validateExternalAccountBinding(ctx, &nar)
+		if err != nil {
+			render.Error(w, err)
+			return
+		}
+
+		acc = &acme.Account{
+			Key:     jwk,
+			Contact: nar.Contact,
+			Status:  acme.StatusValid,
+		}
+		if err := db.CreateAccount(ctx, acc); err != nil {
+			render.Error(w, acme.WrapErrorISE(err, "error creating account"))
+			return
+		}
+
+		if eak != nil { // means that we have a (valid) External Account Binding key that should be bound, updated and sent in the response
+			if err := eak.BindTo(acc); err != nil {
+				render.Error(w, err)
+				return
+			}
+			if err := db.UpdateExternalAccountKey(ctx, prov.ID, eak); err != nil {
+				render.Error(w, acme.WrapErrorISE(err, "error updating external account binding key"))
+				return
+			}
+			acc.ExternalAccountBinding = nar.ExternalAccountBinding
+		}
 	} else {
-		// Account exists //
+		// Account exists
 		httpStatus = http.StatusOK
 	}
 
-	w.Header().Set("Location", h.Auth.GetLink(r.Context(), acme.AccountLink,
-		true, acc.GetID()))
-	api.JSONStatus(w, acc, httpStatus)
+	linker.LinkAccount(ctx, acc)
+
+	w.Header().Set("Location", linker.GetLink(r.Context(), acme.AccountLinkType, acc.ID))
+	render.JSONStatus(w, acc, httpStatus)
 }
 
-// GetUpdateAccount is the api for updating an ACME account.
-func (h *Handler) GetUpdateAccount(w http.ResponseWriter, r *http.Request) {
-	acc, err := acme.AccountFromContext(r.Context())
+// GetOrUpdateAccount is the api for updating an ACME account.
+func GetOrUpdateAccount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	db := acme.MustDatabaseFromContext(ctx)
+	linker := acme.MustLinkerFromContext(ctx)
+
+	acc, err := accountFromContext(ctx)
 	if err != nil {
-		api.WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
-	payload, err := payloadFromContext(r.Context())
+	payload, err := payloadFromContext(ctx)
 	if err != nil {
-		api.WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
 
@@ -145,30 +178,32 @@ func (h *Handler) GetUpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if !payload.isPostAsGet {
 		var uar UpdateAccountRequest
 		if err := json.Unmarshal(payload.value, &uar); err != nil {
-			api.WriteError(w, acme.MalformedErr(errors.Wrap(err, "failed to unmarshal new-account request payload")))
+			render.Error(w, acme.WrapError(acme.ErrorMalformedType, err,
+				"failed to unmarshal new-account request payload"))
 			return
 		}
 		if err := uar.Validate(); err != nil {
-			api.WriteError(w, err)
+			render.Error(w, err)
 			return
 		}
-		var err error
-		// If neither the status nor the contacts are being updated then ignore
-		// the updates and return 200. This conforms with the behavior detailed
-		// in the ACME spec (https://tools.ietf.org/html/rfc8555#section-7.3.2).
-		if uar.IsDeactivateRequest() {
-			acc, err = h.Auth.DeactivateAccount(r.Context(), acc.GetID())
-		} else if len(uar.Contact) > 0 {
-			acc, err = h.Auth.UpdateAccount(r.Context(), acc.GetID(), uar.Contact)
-		}
-		if err != nil {
-			api.WriteError(w, err)
-			return
+		if len(uar.Status) > 0 || len(uar.Contact) > 0 {
+			if len(uar.Status) > 0 {
+				acc.Status = uar.Status
+			} else if len(uar.Contact) > 0 {
+				acc.Contact = uar.Contact
+			}
+
+			if err := db.UpdateAccount(ctx, acc); err != nil {
+				render.Error(w, acme.WrapErrorISE(err, "error updating account"))
+				return
+			}
 		}
 	}
-	w.Header().Set("Location", h.Auth.GetLink(r.Context(), acme.AccountLink,
-		true, acc.GetID()))
-	api.JSON(w, acc)
+
+	linker.LinkAccount(ctx, acc)
+
+	w.Header().Set("Location", linker.GetLink(ctx, acme.AccountLinkType, acc.ID))
+	render.JSON(w, acc)
 }
 
 func logOrdersByAccount(w http.ResponseWriter, oids []string) {
@@ -180,23 +215,31 @@ func logOrdersByAccount(w http.ResponseWriter, oids []string) {
 	}
 }
 
-// GetOrdersByAccount ACME api for retrieving the list of order urls belonging to an account.
-func (h *Handler) GetOrdersByAccount(w http.ResponseWriter, r *http.Request) {
-	acc, err := acme.AccountFromContext(r.Context())
+// GetOrdersByAccountID ACME api for retrieving the list of order urls belonging to an account.
+func GetOrdersByAccountID(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	db := acme.MustDatabaseFromContext(ctx)
+	linker := acme.MustLinkerFromContext(ctx)
+
+	acc, err := accountFromContext(ctx)
 	if err != nil {
-		api.WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
 	accID := chi.URLParam(r, "accID")
 	if acc.ID != accID {
-		api.WriteError(w, acme.UnauthorizedErr(errors.New("account ID does not match url param")))
+		render.Error(w, acme.NewError(acme.ErrorUnauthorizedType, "account ID '%s' does not match url param '%s'", acc.ID, accID))
 		return
 	}
-	orders, err := h.Auth.GetOrdersByAccount(r.Context(), acc.GetID())
+
+	orders, err := db.GetOrdersByAccountID(ctx, acc.ID)
 	if err != nil {
-		api.WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
-	api.JSON(w, orders)
+
+	linker.LinkOrdersByAccountID(ctx, orders)
+
+	render.JSON(w, orders)
 	logOrdersByAccount(w, orders)
 }

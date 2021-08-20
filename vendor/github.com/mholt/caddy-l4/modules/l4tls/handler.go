@@ -21,6 +21,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
 	"github.com/mholt/caddy-l4/layer4"
+	"go.uber.org/zap"
 )
 
 func init() {
@@ -31,8 +32,8 @@ func init() {
 type Handler struct {
 	ConnectionPolicies caddytls.ConnectionPolicies `json:"connection_policies,omitempty"`
 
-	config *tls.Config
 	ctx    caddy.Context
+	logger *zap.Logger
 }
 
 // CaddyModule returns the Caddy module information.
@@ -46,6 +47,7 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the module.
 func (t *Handler) Provision(ctx caddy.Context) error {
 	t.ctx = ctx
+	t.logger = ctx.Logger(t)
 
 	// ensure there is at least one policy, which will act as default
 	if len(t.ConnectionPolicies) == 0 {
@@ -65,32 +67,77 @@ func (t *Handler) Handle(cx *layer4.Connection, next layer4.Handler) error {
 	// get the TLS config to use for this connection
 	tlsCfg := t.ConnectionPolicies.TLSConfig(t.ctx)
 
-	// if no prior matcher or handler read the ClientHello
-	// yet, we'll prepare to do so
-	clientHello, haveClientHello := cx.GetVar("tls_client_hello").(ClientHelloInfo)
-	if !haveClientHello {
-		underlyingGetConfigForClient := tlsCfg.GetConfigForClient
-		tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			clientHello.ClientHelloInfo = *hello
-			return underlyingGetConfigForClient(hello)
-		}
+	// capture the ClientHello info when the handshake is performed
+	var clientHello ClientHelloInfo
+	underlyingGetConfigForClient := tlsCfg.GetConfigForClient
+	tlsCfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		clientHello.ClientHelloInfo = *hello
+		return underlyingGetConfigForClient(hello)
 	}
 
-	// terminate TLS by performing the handshake
-	tlsConn := tls.Server(cx.Conn, tlsCfg)
-	if !haveClientHello {
-		err := tlsConn.Handshake()
-		if err != nil {
-			return err
-		}
-		cx.SetVar("tls_client_hello", clientHello)
+	// terminate TLS by performing the handshake (note that we pass
+	// in cx, not cx.Conn; this is because we must read from the
+	// connection to perform the handshake, and cx might have some
+	// bytes already buffered need to be read first)
+	tlsConn := tls.Server(cx, tlsCfg)
+	err := tlsConn.Handshake()
+	if err != nil {
+		return err
 	}
+	t.logger.Debug("terminated TLS",
+		zap.String("remote", cx.RemoteAddr().String()),
+		zap.String("server_name", clientHello.ServerName),
+	)
 
-	// now all future reads/writes will be
-	// decrypted/encrypted at this point
-	cx.Conn = tlsConn
+	// preserve this ClientHello info for later, if needed
+	appendClientHello(cx, clientHello)
 
-	return next.Handle(cx)
+	// preserve the tls.ConnectionState for use in the http matcher
+	connectionState := tlsConn.ConnectionState()
+	appendConnectionState(cx, &connectionState)
+
+	// all future reads/writes will now be decrypted/encrypted
+	// (tlsConn, which wraps cx, is wrapped into a new cx so
+	// that future I/O succeeds... if we use the same cx, it'd
+	// be wrapping itself, and we'd have nested read calls out
+	// to the kernel, which creates a deadlock/hang; see #18)
+	return next.Handle(cx.Wrap(tlsConn))
+}
+
+func appendClientHello(cx *layer4.Connection, chi ClientHelloInfo) {
+	var clientHellos []ClientHelloInfo
+	if val := cx.GetVar("tls_client_hellos"); val != nil {
+		clientHellos = val.([]ClientHelloInfo)
+	}
+	clientHellos = append(clientHellos, chi)
+	cx.SetVar("tls_client_hellos", clientHellos)
+}
+
+// GetClientHelloInfos gets ClientHello information for all the terminated TLS connections.
+func GetClientHelloInfos(cx *layer4.Connection) []ClientHelloInfo {
+	var clientHellos []ClientHelloInfo
+	if val := cx.GetVar("tls_client_hellos"); val != nil {
+		clientHellos = val.([]ClientHelloInfo)
+	}
+	return clientHellos
+}
+
+func appendConnectionState(cx *layer4.Connection, cs *tls.ConnectionState) {
+	var connectionStates []*tls.ConnectionState
+	if val := cx.GetVar("tls_connection_states"); val != nil {
+		connectionStates = val.([]*tls.ConnectionState)
+	}
+	connectionStates = append(connectionStates, cs)
+	cx.SetVar("tls_connection_states", connectionStates)
+}
+
+// GetConnectionStates gets the tls.ConnectionState for all the terminated TLS connections.
+func GetConnectionStates(cx *layer4.Connection) []*tls.ConnectionState {
+	var connectionStates []*tls.ConnectionState
+	if val := cx.GetVar("tls_connection_states"); val != nil {
+		connectionStates = val.([]*tls.ConnectionState)
+	}
+	return connectionStates
 }
 
 // Interface guards

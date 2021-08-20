@@ -17,246 +17,47 @@ package ext
 import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
-	"github.com/google/cel-go/interpreter/functions"
+	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // function invocation guards for common call signatures within extension functions.
 
-func callInBytesOutBytes(fn func([]byte) ([]byte, error)) functions.UnaryOp {
-	return func(val ref.Val) ref.Val {
-		vVal, ok := val.(types.Bytes)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
-		}
-		byt, err := fn([]byte(vVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.Bytes(byt)
+func intOrError(i int64, err error) ref.Val {
+	if err != nil {
+		return types.NewErr(err.Error())
 	}
+	return types.Int(i)
 }
 
-func callInBytesOutString(fn func([]byte) (string, error)) functions.UnaryOp {
-	return func(val ref.Val) ref.Val {
-		vVal, ok := val.(types.Bytes)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
-		}
-		str, err := fn([]byte(vVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.String(str)
+func bytesOrError(bytes []byte, err error) ref.Val {
+	if err != nil {
+		return types.NewErr(err.Error())
 	}
+	return types.Bytes(bytes)
 }
 
-func callInStrOutBytes(fn func(string) ([]byte, error)) functions.UnaryOp {
-	return func(val ref.Val) ref.Val {
-		vVal, ok := val.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
-		}
-		byt, err := fn(string(vVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.Bytes(byt)
+func stringOrError(str string, err error) ref.Val {
+	if err != nil {
+		return types.NewErr(err.Error())
 	}
+	return types.String(str)
 }
 
-func callInStrOutStr(fn func(string) (string, error)) functions.UnaryOp {
-	return func(val ref.Val) ref.Val {
-		vVal, ok := val.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
-		}
-		str, err := fn(string(vVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.String(str)
+func listStringOrError(strs []string, err error) ref.Val {
+	if err != nil {
+		return types.NewErr(err.Error())
 	}
+	return types.DefaultTypeAdapter.NativeToValue(strs)
 }
 
-func callInStrIntOutStr(fn func(string, int64) (string, error)) functions.BinaryOp {
-	return func(val, arg ref.Val) ref.Val {
-		vVal, ok := val.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
+func macroTargetMatchesNamespace(ns string, target *exprpb.Expr) bool {
+	switch target.GetExprKind().(type) {
+	case *exprpb.Expr_IdentExpr:
+		if target.GetIdentExpr().GetName() != ns {
+			return false
 		}
-		argVal, ok := arg.(types.Int)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(arg)
-		}
-		out, err := fn(string(vVal), int64(argVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.String(out)
-	}
-}
-
-func callInStrStrOutInt(fn func(string, string) (int64, error)) functions.BinaryOp {
-	return func(val, arg ref.Val) ref.Val {
-		vVal, ok := val.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
-		}
-		argVal, ok := arg.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(arg)
-		}
-		out, err := fn(string(vVal), string(argVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.Int(out)
-	}
-}
-
-func callInStrStrOutListStr(fn func(string, string) ([]string, error)) functions.BinaryOp {
-	return func(val, arg ref.Val) ref.Val {
-		vVal, ok := val.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(val)
-		}
-		argVal, ok := arg.(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(arg)
-		}
-		out, err := fn(string(vVal), string(argVal))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.DefaultTypeAdapter.NativeToValue(out)
-	}
-}
-
-func callInStrIntIntOutStr(fn func(string, int64, int64) (string, error)) functions.FunctionOp {
-	return func(args ...ref.Val) ref.Val {
-		if len(args) != 3 {
-			return types.NoSuchOverloadErr()
-		}
-		vVal, ok := args[0].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[0])
-		}
-		arg1Val, ok := args[1].(types.Int)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[1])
-		}
-		arg2Val, ok := args[2].(types.Int)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[2])
-		}
-		out, err := fn(string(vVal), int64(arg1Val), int64(arg2Val))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.String(out)
-	}
-}
-
-func callInStrStrStrOutStr(fn func(string, string, string) (string, error)) functions.FunctionOp {
-	return func(args ...ref.Val) ref.Val {
-		if len(args) != 3 {
-			return types.NoSuchOverloadErr()
-		}
-		vVal, ok := args[0].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[0])
-		}
-		arg1Val, ok := args[1].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[1])
-		}
-		arg2Val, ok := args[2].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[2])
-		}
-		out, err := fn(string(vVal), string(arg1Val), string(arg2Val))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.String(out)
-	}
-}
-
-func callInStrStrIntOutInt(fn func(string, string, int64) (int64, error)) functions.FunctionOp {
-	return func(args ...ref.Val) ref.Val {
-		if len(args) != 3 {
-			return types.NoSuchOverloadErr()
-		}
-		vVal, ok := args[0].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[0])
-		}
-		arg1Val, ok := args[1].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[1])
-		}
-		arg2Val, ok := args[2].(types.Int)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[2])
-		}
-		out, err := fn(string(vVal), string(arg1Val), int64(arg2Val))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.Int(out)
-	}
-}
-
-func callInStrStrIntOutListStr(fn func(string, string, int64) ([]string, error)) functions.FunctionOp {
-	return func(args ...ref.Val) ref.Val {
-		if len(args) != 3 {
-			return types.NoSuchOverloadErr()
-		}
-		vVal, ok := args[0].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[0])
-		}
-		arg1Val, ok := args[1].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[1])
-		}
-		arg2Val, ok := args[2].(types.Int)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[2])
-		}
-		out, err := fn(string(vVal), string(arg1Val), int64(arg2Val))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.DefaultTypeAdapter.NativeToValue(out)
-	}
-}
-
-func callInStrStrStrIntOutStr(fn func(string, string, string, int64) (string, error)) functions.FunctionOp {
-	return func(args ...ref.Val) ref.Val {
-		if len(args) != 4 {
-			return types.NoSuchOverloadErr()
-		}
-		vVal, ok := args[0].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[0])
-		}
-		arg1Val, ok := args[1].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[1])
-		}
-		arg2Val, ok := args[2].(types.String)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[2])
-		}
-		arg3Val, ok := args[3].(types.Int)
-		if !ok {
-			return types.MaybeNoSuchOverloadErr(args[3])
-		}
-		out, err := fn(string(vVal), string(arg1Val), string(arg2Val), int64(arg3Val))
-		if err != nil {
-			return types.NewErr(err.Error())
-		}
-		return types.String(out)
+		return true
+	default:
+		return false
 	}
 }

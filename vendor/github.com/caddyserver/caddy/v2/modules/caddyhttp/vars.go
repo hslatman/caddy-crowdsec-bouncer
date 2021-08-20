@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -29,10 +30,15 @@ func init() {
 	caddy.RegisterModule(MatchVarsRE{})
 }
 
-// VarsMiddleware is an HTTP middleware which sets variables
-// in the context, mainly for use by placeholders. The
-// placeholders have the form: `{http.vars.variable_name}`
-type VarsMiddleware map[string]string
+// VarsMiddleware is an HTTP middleware which sets variables to
+// have values that can be used in the HTTP request handler
+// chain. The primary way to access variables is with placeholders,
+// which have the form: `{http.vars.variable_name}`, or with
+// the `vars` and `vars_regexp` request matchers.
+//
+// The key is the variable name, and the value is the value of the
+// variable. Both the name and value may use or contain placeholders.
+type VarsMiddleware map[string]any
 
 // CaddyModule returns the Caddy module information.
 func (VarsMiddleware) CaddyModule() caddy.ModuleInfo {
@@ -42,20 +48,79 @@ func (VarsMiddleware) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (t VarsMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next Handler) error {
-	vars := r.Context().Value(VarsCtxKey).(map[string]interface{})
+func (m VarsMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next Handler) error {
+	vars := r.Context().Value(VarsCtxKey).(map[string]any)
 	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
-	for k, v := range t {
+	for k, v := range m {
 		keyExpanded := repl.ReplaceAll(k, "")
-		valExpanded := repl.ReplaceAll(v, "")
-		vars[keyExpanded] = valExpanded
+		if valStr, ok := v.(string); ok {
+			v = repl.ReplaceAll(valStr, "")
+		}
+		vars[keyExpanded] = v
 	}
 	return next.ServeHTTP(w, r)
 }
 
+// UnmarshalCaddyfile implements caddyfile.Unmarshaler. Syntax:
+//
+//	vars [<name> <val>] {
+//	    <name> <val>
+//	    ...
+//	}
+func (m *VarsMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	if *m == nil {
+		*m = make(VarsMiddleware)
+	}
+
+	nextVar := func(headerLine bool) error {
+		if headerLine {
+			// header line is optional
+			if !d.NextArg() {
+				return nil
+			}
+		}
+		varName := d.Val()
+
+		if !d.NextArg() {
+			return d.ArgErr()
+		}
+		varValue := d.ScalarVal()
+
+		(*m)[varName] = varValue
+
+		if d.NextArg() {
+			return d.ArgErr()
+		}
+		return nil
+	}
+
+	for d.Next() {
+		if err := nextVar(true); err != nil {
+			return err
+		}
+		for nesting := d.Nesting(); d.NextBlock(nesting); {
+			if err := nextVar(false); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 // VarsMatcher is an HTTP request matcher which can match
-// requests based on variables in the context.
-type VarsMatcher map[string]string
+// requests based on variables in the context or placeholder
+// values. The key is the placeholder or name of the variable,
+// and the values are possible values the variable can be in
+// order to match (logical OR'ed).
+//
+// If the key is surrounded by `{ }` it is assumed to be a
+// placeholder. Otherwise, it will be considered a variable
+// name.
+//
+// Placeholders in the keys are not expanded, but
+// placeholders in the values are.
+type VarsMatcher map[string][]string
 
 // CaddyModule returns the Caddy module information.
 func (VarsMatcher) CaddyModule() caddy.ModuleInfo {
@@ -68,14 +133,18 @@ func (VarsMatcher) CaddyModule() caddy.ModuleInfo {
 // UnmarshalCaddyfile implements caddyfile.Unmarshaler.
 func (m *VarsMatcher) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	if *m == nil {
-		*m = make(map[string]string)
+		*m = make(map[string][]string)
 	}
 	for d.Next() {
-		var field, val string
-		if !d.Args(&field, &val) {
-			return d.Errf("malformed vars matcher: expected both field and value")
+		var field string
+		if !d.Args(&field) {
+			return d.Errf("malformed vars matcher: expected field name")
 		}
-		(*m)[field] = val
+		vals := d.RemainingArgs()
+		if len(vals) == 0 {
+			return d.Errf("malformed vars matcher: expected at least one value to match against")
+		}
+		(*m)[field] = append((*m)[field], vals...)
 		if d.NextBlock(0) {
 			return d.Err("malformed vars matcher: blocks are not supported")
 		}
@@ -83,29 +152,46 @@ func (m *VarsMatcher) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
-// Match matches a request based on variables in the context.
+// Match matches a request based on variables in the context,
+// or placeholders if the key is not a variable.
 func (m VarsMatcher) Match(r *http.Request) bool {
-	vars := r.Context().Value(VarsCtxKey).(map[string]interface{})
+	if len(m) == 0 {
+		return true
+	}
+
+	vars := r.Context().Value(VarsCtxKey).(map[string]any)
 	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
-	for k, v := range m {
-		keyExpanded := repl.ReplaceAll(k, "")
-		valExpanded := repl.ReplaceAll(v, "")
-		var varStr string
-		switch vv := vars[keyExpanded].(type) {
-		case string:
-			varStr = vv
-		case fmt.Stringer:
-			varStr = vv.String()
-		case error:
-			varStr = vv.Error()
-		default:
-			varStr = fmt.Sprintf("%v", vv)
+
+	for key, vals := range m {
+		var varValue any
+		if strings.HasPrefix(key, "{") &&
+			strings.HasSuffix(key, "}") &&
+			strings.Count(key, "{") == 1 {
+			varValue, _ = repl.Get(strings.Trim(key, "{}"))
+		} else {
+			varValue = vars[key]
 		}
-		if varStr != valExpanded {
-			return false
+
+		// see if any of the values given in the matcher match the actual value
+		for _, v := range vals {
+			matcherValExpanded := repl.ReplaceAll(v, "")
+			var varStr string
+			switch vv := varValue.(type) {
+			case string:
+				varStr = vv
+			case fmt.Stringer:
+				varStr = vv.String()
+			case error:
+				varStr = vv.Error()
+			default:
+				varStr = fmt.Sprintf("%v", vv)
+			}
+			if varStr == matcherValExpanded {
+				return true
+			}
 		}
 	}
-	return true
+	return false
 }
 
 // MatchVarsRE matches the value of the context variables by a given regular expression.
@@ -167,11 +253,20 @@ func (m MatchVarsRE) Provision(ctx caddy.Context) error {
 
 // Match returns true if r matches m.
 func (m MatchVarsRE) Match(r *http.Request) bool {
-	vars := r.Context().Value(VarsCtxKey).(map[string]interface{})
+	vars := r.Context().Value(VarsCtxKey).(map[string]any)
 	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
-	for k, rm := range m {
+	for key, val := range m {
+		var varValue any
+		if strings.HasPrefix(key, "{") &&
+			strings.HasSuffix(key, "}") &&
+			strings.Count(key, "{") == 1 {
+			varValue, _ = repl.Get(strings.Trim(key, "{}"))
+		} else {
+			varValue = vars[key]
+		}
+
 		var varStr string
-		switch vv := vars[k].(type) {
+		switch vv := varValue.(type) {
 		case string:
 			varStr = vv
 		case fmt.Stringer:
@@ -181,13 +276,9 @@ func (m MatchVarsRE) Match(r *http.Request) bool {
 		default:
 			varStr = fmt.Sprintf("%v", vv)
 		}
-		valExpanded := repl.ReplaceAll(varStr, "")
-		if match := rm.Match(valExpanded, repl); match {
-			return match
-		}
 
-		replacedVal := repl.ReplaceAll(k, "")
-		if match := rm.Match(replacedVal, repl); match {
+		valExpanded := repl.ReplaceAll(varStr, "")
+		if match := val.Match(valExpanded, repl); match {
 			return match
 		}
 	}
@@ -207,8 +298,8 @@ func (m MatchVarsRE) Validate() error {
 
 // GetVar gets a value out of the context's variable table by key.
 // If the key does not exist, the return value will be nil.
-func GetVar(ctx context.Context, key string) interface{} {
-	varMap, ok := ctx.Value(VarsCtxKey).(map[string]interface{})
+func GetVar(ctx context.Context, key string) any {
+	varMap, ok := ctx.Value(VarsCtxKey).(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -218,16 +309,28 @@ func GetVar(ctx context.Context, key string) interface{} {
 // SetVar sets a value in the context's variable table with
 // the given key. It overwrites any previous value with the
 // same key.
-func SetVar(ctx context.Context, key string, value interface{}) {
-	varMap, ok := ctx.Value(VarsCtxKey).(map[string]interface{})
+//
+// If the value is nil (note: non-nil interface with nil
+// underlying value does not count) and the key exists in
+// the table, the key+value will be deleted from the table.
+func SetVar(ctx context.Context, key string, value any) {
+	varMap, ok := ctx.Value(VarsCtxKey).(map[string]any)
 	if !ok {
 		return
+	}
+	if value == nil {
+		if _, ok := varMap[key]; ok {
+			delete(varMap, key)
+			return
+		}
 	}
 	varMap[key] = value
 }
 
 // Interface guards
 var (
-	_ MiddlewareHandler = (*VarsMiddleware)(nil)
-	_ RequestMatcher    = (*VarsMatcher)(nil)
+	_ MiddlewareHandler     = (*VarsMiddleware)(nil)
+	_ caddyfile.Unmarshaler = (*VarsMiddleware)(nil)
+	_ RequestMatcher        = (*VarsMatcher)(nil)
+	_ caddyfile.Unmarshaler = (*VarsMatcher)(nil)
 )

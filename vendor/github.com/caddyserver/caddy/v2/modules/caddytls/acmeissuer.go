@@ -17,9 +17,10 @@ package caddytls
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/url"
+	"os"
 	"strconv"
 	"time"
 
@@ -36,20 +37,16 @@ func init() {
 	caddy.RegisterModule(ACMEIssuer{})
 }
 
-// ACMEIssuer makes an ACME manager
-// for managing certificates using ACME.
-//
-// TODO: support multiple ACME endpoints (probably
-// requires an array of these structs) - caddy would
-// also have to load certs from the backup CAs if the
-// first one is expired...
+// ACMEIssuer manages certificates using the ACME protocol (RFC 8555).
 type ACMEIssuer struct {
-	// The URL to the CA's ACME directory endpoint.
+	// The URL to the CA's ACME directory endpoint. Default:
+	// https://acme-v02.api.letsencrypt.org/directory
 	CA string `json:"ca,omitempty"`
 
 	// The URL to the test CA's ACME directory endpoint.
 	// This endpoint is only used during retries if there
-	// is a failure using the primary CA.
+	// is a failure using the primary CA. Default:
+	// https://acme-staging-v02.api.letsencrypt.org/directory
 	TestCA string `json:"test_ca,omitempty"`
 
 	// Your email address, so the CA can contact you if necessary.
@@ -59,11 +56,19 @@ type ACMEIssuer struct {
 	// other than ACME transactions.
 	Email string `json:"email,omitempty"`
 
+	// If you have an existing account with the ACME server, put
+	// the private key here in PEM format. The ACME client will
+	// look up your account information with this key first before
+	// trying to create a new one. You can use placeholders here,
+	// for example if you have it in an environment variable.
+	AccountKey string `json:"account_key,omitempty"`
+
 	// If using an ACME CA that requires an external account
 	// binding, specify the CA-provided credentials here.
 	ExternalAccount *acme.EAB `json:"external_account,omitempty"`
 
 	// Time to wait before timing out an ACME operation.
+	// Default: 0 (no timeout)
 	ACMETimeout caddy.Duration `json:"acme_timeout,omitempty"`
 
 	// Configures the various ACME challenge types.
@@ -81,9 +86,11 @@ type ACMEIssuer struct {
 	PreferredChains *ChainPreference `json:"preferred_chains,omitempty"`
 
 	rootPool *x509.CertPool
-	template certmagic.ACMEManager
-	magic    *certmagic.Config
 	logger   *zap.Logger
+
+	template certmagic.ACMEIssuer  // set at Provision
+	magic    *certmagic.Config     // set at PreCheck
+	issuer   *certmagic.ACMEIssuer // set at PreCheck; result of template + magic
 }
 
 // CaddyModule returns the Caddy module information.
@@ -96,15 +103,26 @@ func (ACMEIssuer) CaddyModule() caddy.ModuleInfo {
 
 // Provision sets up iss.
 func (iss *ACMEIssuer) Provision(ctx caddy.Context) error {
-	iss.logger = ctx.Logger(iss)
+	iss.logger = ctx.Logger()
+
+	repl := caddy.NewReplacer()
 
 	// expand email address, if non-empty
 	if iss.Email != "" {
-		email, err := caddy.NewReplacer().ReplaceOrErr(iss.Email, true, true)
+		email, err := repl.ReplaceOrErr(iss.Email, true, true)
 		if err != nil {
 			return fmt.Errorf("expanding email address '%s': %v", iss.Email, err)
 		}
 		iss.Email = email
+	}
+
+	// expand account key, if non-empty
+	if iss.AccountKey != "" {
+		accountKey, err := repl.ReplaceOrErr(iss.AccountKey, true, true)
+		if err != nil {
+			return fmt.Errorf("expanding account key PEM '%s': %v", iss.AccountKey, err)
+		}
+		iss.AccountKey = accountKey
 	}
 
 	// DNS providers
@@ -127,8 +145,10 @@ func (iss *ACMEIssuer) Provision(ctx caddy.Context) error {
 			iss.Challenges.DNS.solver = &certmagic.DNS01Solver{
 				DNSProvider:        val.(certmagic.ACMEDNSProvider),
 				TTL:                time.Duration(iss.Challenges.DNS.TTL),
+				PropagationDelay:   time.Duration(iss.Challenges.DNS.PropagationDelay),
 				PropagationTimeout: time.Duration(iss.Challenges.DNS.PropagationTimeout),
 				Resolvers:          iss.Challenges.DNS.Resolvers,
+				OverrideDomain:     iss.Challenges.DNS.OverrideDomain,
 			}
 		}
 	}
@@ -137,7 +157,7 @@ func (iss *ACMEIssuer) Provision(ctx caddy.Context) error {
 	if len(iss.TrustedRootsPEMFiles) > 0 {
 		iss.rootPool = x509.NewCertPool()
 		for _, pemFile := range iss.TrustedRootsPEMFiles {
-			pemData, err := ioutil.ReadFile(pemFile)
+			pemData, err := os.ReadFile(pemFile)
 			if err != nil {
 				return fmt.Errorf("loading trusted root CA's PEM file: %s: %v", pemFile, err)
 			}
@@ -156,11 +176,12 @@ func (iss *ACMEIssuer) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-func (iss *ACMEIssuer) makeIssuerTemplate() (certmagic.ACMEManager, error) {
-	template := certmagic.ACMEManager{
+func (iss *ACMEIssuer) makeIssuerTemplate() (certmagic.ACMEIssuer, error) {
+	template := certmagic.ACMEIssuer{
 		CA:                iss.CA,
 		TestCA:            iss.TestCA,
 		Email:             iss.Email,
+		AccountKeyPEM:     iss.AccountKey,
 		CertObtainTimeout: time.Duration(iss.ACMETimeout),
 		TrustedRoots:      iss.rootPool,
 		ExternalAccount:   iss.ExternalAccount,
@@ -199,30 +220,27 @@ func (iss *ACMEIssuer) makeIssuerTemplate() (certmagic.ACMEManager, error) {
 // the ConfigSetter interface.
 func (iss *ACMEIssuer) SetConfig(cfg *certmagic.Config) {
 	iss.magic = cfg
+	iss.issuer = certmagic.NewACMEIssuer(cfg, iss.template)
 }
-
-// TODO: I kind of hate how each call to these methods needs to
-// make a new ACME manager to fill in defaults before using; can
-// we find the right place to do that just once and then re-use?
 
 // PreCheck implements the certmagic.PreChecker interface.
 func (iss *ACMEIssuer) PreCheck(ctx context.Context, names []string, interactive bool) error {
-	return certmagic.NewACMEManager(iss.magic, iss.template).PreCheck(ctx, names, interactive)
+	return iss.issuer.PreCheck(ctx, names, interactive)
 }
 
 // Issue obtains a certificate for the given csr.
 func (iss *ACMEIssuer) Issue(ctx context.Context, csr *x509.CertificateRequest) (*certmagic.IssuedCertificate, error) {
-	return certmagic.NewACMEManager(iss.magic, iss.template).Issue(ctx, csr)
+	return iss.issuer.Issue(ctx, csr)
 }
 
 // IssuerKey returns the unique issuer key for the configured CA endpoint.
 func (iss *ACMEIssuer) IssuerKey() string {
-	return certmagic.NewACMEManager(iss.magic, iss.template).IssuerKey()
+	return iss.issuer.IssuerKey()
 }
 
 // Revoke revokes the given certificate.
 func (iss *ACMEIssuer) Revoke(ctx context.Context, cert certmagic.CertificateResource, reason int) error {
-	return certmagic.NewACMEManager(iss.magic, iss.template).Revoke(ctx, cert, reason)
+	return iss.issuer.Revoke(ctx, cert, reason)
 }
 
 // GetACMEIssuer returns iss. This is useful when other types embed ACMEIssuer, because
@@ -233,26 +251,42 @@ func (iss *ACMEIssuer) GetACMEIssuer() *ACMEIssuer { return iss }
 
 // UnmarshalCaddyfile deserializes Caddyfile tokens into iss.
 //
-//     ... acme {
-//         dir <directory_url>
-//         test_dir <test_directory_url>
-//         email <email>
-//         timeout <duration>
-//         disable_http_challenge
-//         disable_tlsalpn_challenge
-//         alt_http_port    <port>
-//         alt_tlsalpn_port <port>
-//         eab <key_id> <mac_key>
-//         trusted_roots <pem_files...>
-//         dns <provider_name> [<options>]
-//         resolvers <dns_servers...>
-//     }
-//
+//	... acme [<directory_url>] {
+//	    dir <directory_url>
+//	    test_dir <test_directory_url>
+//	    email <email>
+//	    timeout <duration>
+//	    disable_http_challenge
+//	    disable_tlsalpn_challenge
+//	    alt_http_port    <port>
+//	    alt_tlsalpn_port <port>
+//	    eab <key_id> <mac_key>
+//	    trusted_roots <pem_files...>
+//	    dns <provider_name> [<options>]
+//	    propagation_delay <duration>
+//	    propagation_timeout <duration>
+//	    resolvers <dns_servers...>
+//	    dns_ttl <duration>
+//	    dns_challenge_override_domain <domain>
+//	    preferred_chains [smallest] {
+//	        root_common_name <common_names...>
+//	        any_common_name  <common_names...>
+//	    }
+//	}
 func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
+		if d.NextArg() {
+			iss.CA = d.Val()
+			if d.NextArg() {
+				return d.ArgErr()
+			}
+		}
 		for nesting := d.Nesting(); d.NextBlock(nesting); {
 			switch d.Val() {
 			case "dir":
+				if iss.CA != "" {
+					return d.Errf("directory is already specified: %s", iss.CA)
+				}
 				if !d.AllArgs(&iss.CA) {
 					return d.ArgErr()
 				}
@@ -354,18 +388,51 @@ func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if iss.Challenges.DNS == nil {
 					iss.Challenges.DNS = new(DNSChallengeConfig)
 				}
-				dnsProvModule, err := caddy.GetModule("dns.providers." + provName)
+				unm, err := caddyfile.UnmarshalModule(d, "dns.providers."+provName)
 				if err != nil {
-					return d.Errf("getting DNS provider module named '%s': %v", provName, err)
+					return err
 				}
-				dnsProvModuleInstance := dnsProvModule.New()
-				if unm, ok := dnsProvModuleInstance.(caddyfile.Unmarshaler); ok {
-					err = unm.UnmarshalCaddyfile(d.NewFromNextSegment())
+				iss.Challenges.DNS.ProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
+
+			case "propagation_delay":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				delayStr := d.Val()
+				delay, err := caddy.ParseDuration(delayStr)
+				if err != nil {
+					return d.Errf("invalid propagation_delay duration %s: %v", delayStr, err)
+				}
+				if iss.Challenges == nil {
+					iss.Challenges = new(ChallengesConfig)
+				}
+				if iss.Challenges.DNS == nil {
+					iss.Challenges.DNS = new(DNSChallengeConfig)
+				}
+				iss.Challenges.DNS.PropagationDelay = caddy.Duration(delay)
+
+			case "propagation_timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				timeoutStr := d.Val()
+				var timeout time.Duration
+				if timeoutStr == "-1" {
+					timeout = time.Duration(-1)
+				} else {
+					var err error
+					timeout, err = caddy.ParseDuration(timeoutStr)
 					if err != nil {
-						return err
+						return d.Errf("invalid propagation_timeout duration %s: %v", timeoutStr, err)
 					}
 				}
-				iss.Challenges.DNS.ProviderRaw = caddyconfig.JSONModuleObject(dnsProvModuleInstance, "name", provName, nil)
+				if iss.Challenges == nil {
+					iss.Challenges = new(ChallengesConfig)
+				}
+				if iss.Challenges.DNS == nil {
+					iss.Challenges.DNS = new(DNSChallengeConfig)
+				}
+				iss.Challenges.DNS.PropagationTimeout = caddy.Duration(timeout)
 
 			case "resolvers":
 				if iss.Challenges == nil {
@@ -379,6 +446,43 @@ func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 
+			case "dns_ttl":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				ttlStr := d.Val()
+				ttl, err := caddy.ParseDuration(ttlStr)
+				if err != nil {
+					return d.Errf("invalid dns_ttl duration %s: %v", ttlStr, err)
+				}
+				if iss.Challenges == nil {
+					iss.Challenges = new(ChallengesConfig)
+				}
+				if iss.Challenges.DNS == nil {
+					iss.Challenges.DNS = new(DNSChallengeConfig)
+				}
+				iss.Challenges.DNS.TTL = caddy.Duration(ttl)
+
+			case "dns_challenge_override_domain":
+				arg := d.RemainingArgs()
+				if len(arg) != 1 {
+					return d.ArgErr()
+				}
+				if iss.Challenges == nil {
+					iss.Challenges = new(ChallengesConfig)
+				}
+				if iss.Challenges.DNS == nil {
+					iss.Challenges.DNS = new(DNSChallengeConfig)
+				}
+				iss.Challenges.DNS.OverrideDomain = arg[0]
+
+			case "preferred_chains":
+				chainPref, err := ParseCaddyfilePreferredChainsOptions(d)
+				if err != nil {
+					return err
+				}
+				iss.PreferredChains = chainPref
+
 			default:
 				return d.Errf("unrecognized ACME issuer property: %s", d.Val())
 			}
@@ -391,7 +495,7 @@ func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 // to see if a certificate can be obtained for name.
 // The certificate request should be denied if this
 // returns an error.
-func onDemandAskRequest(ask string, name string) error {
+func onDemandAskRequest(logger *zap.Logger, ask string, name string) error {
 	askURL, err := url.Parse(ask)
 	if err != nil {
 		return fmt.Errorf("parsing ask URL: %v", err)
@@ -400,19 +504,75 @@ func onDemandAskRequest(ask string, name string) error {
 	qs.Set("domain", name)
 	askURL.RawQuery = qs.Encode()
 
-	resp, err := onDemandAskClient.Get(askURL.String())
+	askURLString := askURL.String()
+	resp, err := onDemandAskClient.Get(askURLString)
 	if err != nil {
 		return fmt.Errorf("error checking %v to determine if certificate for hostname '%s' should be allowed: %v",
 			ask, name, err)
 	}
 	resp.Body.Close()
 
+	logger.Debug("response from ask endpoint",
+		zap.String("domain", name),
+		zap.String("url", askURLString),
+		zap.Int("status", resp.StatusCode))
+
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("certificate for hostname '%s' not allowed; non-2xx status code %d returned from %v",
-			name, resp.StatusCode, ask)
+		return fmt.Errorf("%s: %w %s - non-2xx status code %d", name, errAskDenied, ask, resp.StatusCode)
 	}
 
 	return nil
+}
+
+func ParseCaddyfilePreferredChainsOptions(d *caddyfile.Dispenser) (*ChainPreference, error) {
+	chainPref := new(ChainPreference)
+	if d.NextArg() {
+		smallestOpt := d.Val()
+		if smallestOpt == "smallest" {
+			trueBool := true
+			chainPref.Smallest = &trueBool
+			if d.NextArg() { // Only one argument allowed
+				return nil, d.ArgErr()
+			}
+			if d.NextBlock(d.Nesting()) { // Don't allow other options when smallest == true
+				return nil, d.Err("No more options are accepted when using the 'smallest' option")
+			}
+		} else { // Smallest option should always be 'smallest' or unset
+			return nil, d.Errf("Invalid argument '%s'", smallestOpt)
+		}
+	}
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		switch d.Val() {
+		case "root_common_name":
+			rootCommonNameOpt := d.RemainingArgs()
+			chainPref.RootCommonName = rootCommonNameOpt
+			if rootCommonNameOpt == nil {
+				return nil, d.ArgErr()
+			}
+			if chainPref.AnyCommonName != nil {
+				return nil, d.Err("Can't set root_common_name when any_common_name is already set")
+			}
+
+		case "any_common_name":
+			anyCommonNameOpt := d.RemainingArgs()
+			chainPref.AnyCommonName = anyCommonNameOpt
+			if anyCommonNameOpt == nil {
+				return nil, d.ArgErr()
+			}
+			if chainPref.RootCommonName != nil {
+				return nil, d.Err("Can't set any_common_name when root_common_name is already set")
+			}
+
+		default:
+			return nil, d.Errf("Received unrecognized parameter '%s'", d.Val())
+		}
+	}
+
+	if chainPref.Smallest == nil && chainPref.RootCommonName == nil && chainPref.AnyCommonName == nil {
+		return nil, d.Err("No options for preferred_chains received")
+	}
+
+	return chainPref, nil
 }
 
 // ChainPreference describes the client's preferred certificate chain,
@@ -430,6 +590,11 @@ type ChainPreference struct {
 	// of these common names.
 	AnyCommonName []string `json:"any_common_name,omitempty"`
 }
+
+// errAskDenied is an error that should be wrapped or returned when the
+// configured "ask" endpoint does not allow a certificate to be issued,
+// to distinguish that from other errors such as connection failure.
+var errAskDenied = errors.New("certificate not allowed by ask endpoint")
 
 // Interface guards
 var (

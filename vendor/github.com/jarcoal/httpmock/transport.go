@@ -2,6 +2,7 @@ package httpmock
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -19,7 +20,23 @@ const regexpPrefix = "=~"
 
 // NoResponderFound is returned when no responders are found for a
 // given HTTP method and URL.
-var NoResponderFound = errors.New("no responder found") // nolint: golint
+var NoResponderFound = internal.NoResponderFound
+
+var stdMethods = map[string]bool{
+	"CONNECT": true, // Section 9.9
+	"DELETE":  true, // Section 9.7
+	"GET":     true, // Section 9.3
+	"HEAD":    true, // Section 9.4
+	"OPTIONS": true, // Section 9.2
+	"POST":    true, // Section 9.5
+	"PUT":     true, // Section 9.6
+	"TRACE":   true, // Section 9.8
+}
+
+// methodProbablyWrong returns true if method has probably wrong case.
+func methodProbablyWrong(method string) bool {
+	return !stdMethods[method] && stdMethods[strings.ToUpper(method)]
+}
 
 // ConnectionFailure is a responder that returns a connection failure.
 // This is the default responder, and is called when no other matching
@@ -48,6 +65,11 @@ type regexpResponder struct {
 // doesn't actually make the call, instead deferring to the registered
 // list of responders.
 type MockTransport struct {
+	// DontCheckMethod disables standard methods check. By default, if
+	// a responder is registered using a lower-cased method among CONNECT,
+	// DELETE, GET, HEAD, OPTIONS, POST, PUT and TRACE, a panic occurs
+	// as it is probably a mistake.
+	DontCheckMethod  bool
 	mu               sync.RWMutex
 	responders       map[internal.RouteKey]Responder
 	regexpResponders []regexpResponder
@@ -56,25 +78,13 @@ type MockTransport struct {
 	totalCallCount   int
 }
 
-// RoundTrip receives HTTP requests and routes them to the appropriate
-// responder.  It is required to implement the http.RoundTripper
-// interface.  You will not interact with this directly, instead the
-// *http.Client you are using will call it for you.
-func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	url := req.URL.String()
-
-	method := req.Method
-	if method == "" {
-		// http.Request.Method is documented to default to GET:
-		method = http.MethodGet
-	}
-
-	var (
-		responder  Responder
-		respKey    internal.RouteKey
-		submatches []string
-	)
-	key := internal.RouteKey{
+func (m *MockTransport) findResponder(method string, url *url.URL) (
+	responder Responder,
+	key, respKey internal.RouteKey,
+	submatches []string,
+) {
+	urlStr := url.String()
+	key = internal.RouteKey{
 		Method: method,
 	}
 	for _, getResponder := range []func(internal.RouteKey) (Responder, internal.RouteKey, []string){
@@ -83,7 +93,7 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	} {
 		// try and get a responder that matches the method and URL with
 		// query params untouched: http://z.tld/path?q...
-		key.URL = url
+		key.URL = urlStr
 		responder, respKey, submatches = getResponder(key)
 		if responder != nil {
 			break
@@ -91,11 +101,11 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// if we weren't able to find a responder, try with the URL *and*
 		// sorted query params
-		query := sortedQuery(req.URL.Query())
+		query := sortedQuery(url.Query())
 		if query != "" {
 			// Replace unsorted query params by sorted ones:
 			//   http://z.tld/path?sorted_q...
-			key.URL = strings.Replace(url, req.URL.RawQuery, query, 1)
+			key.URL = strings.Replace(urlStr, url.RawQuery, query, 1)
 			responder, respKey, submatches = getResponder(key)
 			if responder != nil {
 				break
@@ -103,7 +113,7 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		// if we weren't able to find a responder, try without any query params
-		strippedURL := *req.URL
+		strippedURL := *url
 		strippedURL.RawQuery = ""
 		strippedURL.Fragment = ""
 
@@ -111,7 +121,7 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// remove the "?" manually if present.
 		surl := strings.TrimSuffix(strippedURL.String(), "?")
 
-		hasQueryString := url != surl
+		hasQueryString := urlStr != surl
 
 		// if the URL contains a querystring then we strip off the
 		// querystring and try again: http://z.tld/path
@@ -125,20 +135,20 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		// if we weren't able to find a responder for the full URL, try with
 		// the path part only
-		pathAlone := req.URL.Path
+		pathAlone := url.Path
 
 		// First with unsorted querystring: /path?q...
 		if hasQueryString {
-			key.URL = pathAlone + strings.TrimPrefix(url, surl) // concat after-path part
+			key.URL = pathAlone + strings.TrimPrefix(urlStr, surl) // concat after-path part
 			responder, respKey, submatches = getResponder(key)
 			if responder != nil {
 				break
 			}
 
 			// Then with sorted querystring: /path?sorted_q...
-			key.URL = pathAlone + "?" + sortedQuery(req.URL.Query())
-			if req.URL.Fragment != "" {
-				key.URL += "#" + req.URL.Fragment
+			key.URL = pathAlone + "?" + sortedQuery(url.Query())
+			if url.Fragment != "" {
+				key.URL += "#" + url.Fragment
 			}
 			responder, respKey, submatches = getResponder(key)
 			if responder != nil {
@@ -151,6 +161,39 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		responder, respKey, submatches = getResponder(key)
 		if responder != nil {
 			break
+		}
+	}
+	return
+}
+
+// RoundTrip receives HTTP requests and routes them to the appropriate
+// responder.  It is required to implement the http.RoundTripper
+// interface.  You will not interact with this directly, instead the
+// *http.Client you are using will call it for you.
+func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	method := req.Method
+	if method == "" {
+		// http.Request.Method is documented to default to GET:
+		method = http.MethodGet
+	}
+
+	var suggestedMethod string
+
+	responder, key, respKey, submatches := m.findResponder(method, req.URL)
+	if responder == nil {
+		// Responder not found, try to detect some common user mistakes on method
+		var altResp Responder
+		var altKey internal.RouteKey
+		if methodProbablyWrong(method) {
+			// Get → GET
+			altResp, _, altKey, _ = m.findResponder(strings.ToUpper(method), req.URL)
+		}
+		if altResp == nil {
+			// Search for any other method
+			altResp, _, altKey, _ = m.findResponder("", req.URL)
+		}
+		if altResp != nil {
+			suggestedMethod = altKey.Method
 		}
 	}
 
@@ -166,11 +209,18 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// we didn't find a responder, so fire the 'no responder' responder
 		m.callCountInfo[internal.NoResponder]++
 		m.totalCallCount++
+		// give a hint to NewNotFoundResponder() if it is a possible method error
+		if suggestedMethod != "" {
+			req = req.WithContext(context.WithValue(req.Context(), suggestedMethodKey, suggestedMethod))
+		}
 		responder = m.noResponder
 	}
 	m.mu.Unlock()
 
 	if responder == nil {
+		if suggestedMethod != "" {
+			return nil, internal.NewErrorNoResponderFoundWrongMethod(method, suggestedMethod)
+		}
 		return ConnectionFailure(req)
 	}
 	return runCancelable(responder, internal.SetSubmatches(req, submatches))
@@ -248,7 +298,16 @@ func runCancelable(responder Responder, req *http.Request) (*http.Response, erro
 func (m *MockTransport) responderForKey(key internal.RouteKey) (Responder, internal.RouteKey, []string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.responders[key], key, nil
+	if key.Method != "" {
+		return m.responders[key], key, nil
+	}
+
+	for k, resp := range m.responders {
+		if key.URL == k.URL {
+			return resp, k, nil
+		}
+	}
+	return nil, key, nil
 }
 
 // responderForKeyUsingRegexp returns the first responder matching a
@@ -257,7 +316,7 @@ func (m *MockTransport) regexpResponderForKey(key internal.RouteKey) (Responder,
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, regInfo := range m.regexpResponders {
-		if regInfo.method == key.Method {
+		if key.Method == "" || regInfo.method == key.Method {
 			if sm := regInfo.rx.FindStringSubmatch(key.URL); sm != nil {
 				if len(sm) == 1 {
 					sm = nil
@@ -265,7 +324,7 @@ func (m *MockTransport) regexpResponderForKey(key internal.RouteKey) (Responder,
 					sm = sm[1:]
 				}
 				return regInfo.responder, internal.RouteKey{
-					Method: key.Method,
+					Method: regInfo.method,
 					URL:    regInfo.origRx,
 				}, sm
 			}
@@ -276,6 +335,14 @@ func (m *MockTransport) regexpResponderForKey(key internal.RouteKey) (Responder,
 
 func isRegexpURL(url string) bool {
 	return strings.HasPrefix(url, regexpPrefix)
+}
+func (m *MockTransport) checkMethod(method string) {
+	if !m.DontCheckMethod && methodProbablyWrong(method) {
+		panic(fmt.Sprintf("You probably want to use method %q instead of %q? If not and so want to disable this check, set MockTransport.DontCheckMethod field to true",
+			strings.ToUpper(method),
+			method,
+		))
+	}
 }
 
 // RegisterResponder adds a new responder, associated with a given
@@ -297,7 +364,14 @@ func isRegexpURL(url string) bool {
 // GetCallCountInfo(). As 2 regexps can match the same URL, the regexp
 // responders are tested in the order they are registered. Registering
 // an already existing regexp responder (same method & same regexp
-// string) replaces its responder but does not change its position.
+// string) replaces its responder, but does not change its position.
+//
+// Registering an already existing responder resets the corresponding
+// statistics as returned by GetCallCountInfo().
+//
+// Registering a nil Responder removes the existing one and the
+// corresponding statistics as returned by GetCallCountInfo(). It does
+// nothing if it does not already exist.
 //
 // See RegisterRegexpResponder() to directly pass a *regexp.Regexp.
 //
@@ -319,7 +393,14 @@ func isRegexpURL(url string) bool {
 //     // requests to any host with path /path/only return "any host hello world"
 //     // requests to any host with path matching ^/item/id/\d+\z regular expression return "any item get"
 //   }
+//
+// If method is a lower-cased version of CONNECT, DELETE, GET, HEAD,
+// OPTIONS, POST, PUT or TRACE, a panics occurs to notice the possible
+// mistake. This panic can be disabled by setting m.DontCheckMethod to
+// true prior to this call.
 func (m *MockTransport) RegisterResponder(method, url string, responder Responder) {
+	m.checkMethod(method)
+
 	if isRegexpURL(url) {
 		m.registerRegexpResponder(regexpResponder{
 			origRx:    url,
@@ -336,31 +417,49 @@ func (m *MockTransport) RegisterResponder(method, url string, responder Responde
 	}
 
 	m.mu.Lock()
-	m.responders[key] = responder
-	m.callCountInfo[key] = 0
+	if responder == nil {
+		delete(m.responders, key)
+		delete(m.callCountInfo, key)
+	} else {
+		m.responders[key] = responder
+		m.callCountInfo[key] = 0
+	}
 	m.mu.Unlock()
 }
 
-func (m *MockTransport) registerRegexpResponder(regexpResponder regexpResponder) {
+func (m *MockTransport) registerRegexpResponder(rxResp regexpResponder) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 found:
 	for {
 		for i, rr := range m.regexpResponders {
-			if rr.method == regexpResponder.method && rr.origRx == regexpResponder.origRx {
-				m.regexpResponders[i] = regexpResponder
+			if rr.method == rxResp.method && rr.origRx == rxResp.origRx {
+				if rxResp.responder == nil {
+					copy(m.regexpResponders[:i], m.regexpResponders[i+1:])
+					m.regexpResponders[len(m.regexpResponders)-1] = regexpResponder{}
+					m.regexpResponders = m.regexpResponders[:len(m.regexpResponders)-1]
+				} else {
+					m.regexpResponders[i] = rxResp
+				}
 				break found
 			}
 		}
-		m.regexpResponders = append(m.regexpResponders, regexpResponder)
+		if rxResp.responder != nil {
+			m.regexpResponders = append(m.regexpResponders, rxResp)
+		}
 		break // nolint: staticcheck
 	}
 
-	m.callCountInfo[internal.RouteKey{
-		Method: regexpResponder.method,
-		URL:    regexpResponder.origRx,
-	}] = 0
+	key := internal.RouteKey{
+		Method: rxResp.method,
+		URL:    rxResp.origRx,
+	}
+	if rxResp.responder == nil {
+		delete(m.callCountInfo, key)
+	} else {
+		m.callCountInfo[key] = 0
+	}
 }
 
 // RegisterRegexpResponder adds a new responder, associated with a given
@@ -372,14 +471,26 @@ found:
 // As 2 regexps can match the same URL, the regexp responders are
 // tested in the order they are registered. Registering an already
 // existing regexp responder (same method & same regexp string)
-// replaces its responder but does not change its position.
+// replaces its responder, but does not change its position, and
+// resets the corresponding statistics as returned by GetCallCountInfo().
+//
+// Registering a nil Responder removes the existing one and the
+// corresponding statistics as returned by GetCallCountInfo(). It does
+// nothing if it does not already exist.
 //
 // A "=~" prefix is added to the stringified regexp in the statistics
 // returned by GetCallCountInfo().
 //
 // See RegisterResponder function and the "=~" prefix in its url
 // parameter to avoid compiling the regexp by yourself.
+//
+// If method is a lower-cased version of CONNECT, DELETE, GET, HEAD,
+// OPTIONS, POST, PUT or TRACE, a panics occurs to notice the possible
+// mistake. This panic can be disabled by setting m.DontCheckMethod to
+// true prior to this call.
 func (m *MockTransport) RegisterRegexpResponder(method string, urlRegexp *regexp.Regexp, responder Responder) {
+	m.checkMethod(method)
+
 	m.registerRegexpResponder(regexpResponder{
 		origRx:    regexpPrefix + urlRegexp.String(),
 		method:    method,
@@ -401,6 +512,18 @@ func (m *MockTransport) RegisterRegexpResponder(method string, urlRegexp *regexp
 //
 // Unlike RegisterResponder, path cannot be prefixed by "=~" to say it
 // is a regexp. If it is, a panic occurs.
+//
+// Registering an already existing responder resets the corresponding
+// statistics as returned by GetCallCountInfo().
+//
+// Registering a nil Responder removes the existing one and the
+// corresponding statistics as returned by GetCallCountInfo(). It does
+// nothing if it does not already exist.
+//
+// If method is a lower-cased version of CONNECT, DELETE, GET, HEAD,
+// OPTIONS, POST, PUT or TRACE, a panics occurs to notice the possible
+// mistake. This panic can be disabled by setting m.DontCheckMethod to
+// true prior to this call.
 func (m *MockTransport) RegisterResponderWithQuery(method, path string, query interface{}, responder Responder) {
 	if isRegexpURL(path) {
 		panic(`path begins with "=~", RegisterResponder should be used instead of RegisterResponderWithQuery`)
@@ -471,7 +594,33 @@ func sortedQuery(m url.Values) string {
 }
 
 // RegisterNoResponder is used to register a responder that is called
-// if no other responder is found.  The default is httpmock.ConnectionFailure.
+// if no other responder is found.  The default is httpmock.ConnectionFailure
+// that returns an error able to indicate a possible method mismatch.
+//
+// Use it in conjunction with NewNotFoundResponder to ensure that all
+// routes have been mocked:
+//
+//   import (
+//     "testing"
+//     "github.com/jarcoal/httpmock"
+//   )
+//   ...
+//   func TestMyApp(t *testing.T) {
+//      ...
+//      // Calls testing.Fatal with the name of Responder-less route and
+//      // the stack trace of the call.
+//      httpmock.RegisterNoResponder(httpmock.NewNotFoundResponder(t.Fatal))
+//
+// Will abort the current test and print something like:
+//   transport_test.go:735: Called from net/http.Get()
+//         at /go/src/github.com/jarcoal/httpmock/transport_test.go:714
+//       github.com/jarcoal/httpmock.TestCheckStackTracer()
+//         at /go/src/testing/testing.go:865
+//       testing.tRunner()
+//         at /go/src/runtime/asm_amd64.s:1337
+//
+// If responder is passed as nil, the default behavior
+// (httpmock.ConnectionFailure) is re-enabled.
 func (m *MockTransport) RegisterNoResponder(responder Responder) {
 	m.mu.Lock()
 	m.noResponder = responder
@@ -703,7 +852,14 @@ func DeactivateAndReset() {
 // GetCallCountInfo(). As 2 regexps can match the same URL, the regexp
 // responders are tested in the order they are registered. Registering
 // an already existing regexp responder (same method & same regexp
-// string) replaces its responder but does not change its position.
+// string) replaces its responder, but does not change its position.
+//
+// Registering an already existing responder resets the corresponding
+// statistics as returned by GetCallCountInfo().
+//
+// Registering a nil Responder removes the existing one and the
+// corresponding statistics as returned by GetCallCountInfo(). It does
+// nothing if it does not already exist.
 //
 // See RegisterRegexpResponder() to directly pass a *regexp.Regexp.
 //
@@ -725,6 +881,11 @@ func DeactivateAndReset() {
 //     // requests to any host with path /path/only return "any host hello world"
 //     // requests to any host with path matching ^/item/id/\d+\z regular expression return "any item get"
 //   }
+//
+// If method is a lower-cased version of CONNECT, DELETE, GET, HEAD,
+// OPTIONS, POST, PUT or TRACE, a panics occurs to notice the possible
+// mistake. This panic can be disabled by setting
+// DefaultTransport.DontCheckMethod to true prior to this call.
 func RegisterResponder(method, url string, responder Responder) {
 	DefaultTransport.RegisterResponder(method, url, responder)
 }
@@ -738,13 +899,23 @@ func RegisterResponder(method, url string, responder Responder) {
 // As 2 regexps can match the same URL, the regexp responders are
 // tested in the order they are registered. Registering an already
 // existing regexp responder (same method & same regexp string)
-// replaces its responder but does not change its position.
+// replaces its responder, but does not change its position, and
+// resets the corresponding statistics as returned by GetCallCountInfo().
+//
+// Registering a nil Responder removes the existing one and the
+// corresponding statistics as returned by GetCallCountInfo(). It does
+// nothing if it does not already exist.
 //
 // A "=~" prefix is added to the stringified regexp in the statistics
 // returned by GetCallCountInfo().
 //
 // See RegisterResponder function and the "=~" prefix in its url
 // parameter to avoid compiling the regexp by yourself.
+//
+// If method is a lower-cased version of CONNECT, DELETE, GET, HEAD,
+// OPTIONS, POST, PUT or TRACE, a panics occurs to notice the possible
+// mistake. This panic can be disabled by setting
+// DefaultTransport.DontCheckMethod to true prior to this call.
 func RegisterRegexpResponder(method string, urlRegexp *regexp.Regexp, responder Responder) {
 	DefaultTransport.RegisterRegexpResponder(method, urlRegexp, responder)
 }
@@ -759,6 +930,16 @@ func RegisterRegexpResponder(method string, urlRegexp *regexp.Regexp, responder 
 //
 // If the query type is not recognized or the string cannot be parsed
 // using net/url.ParseQuery, a panic() occurs.
+//
+// Unlike RegisterResponder, path cannot be prefixed by "=~" to say it
+// is a regexp. If it is, a panic occurs.
+//
+// Registering an already existing responder resets the corresponding
+// statistics as returned by GetCallCountInfo().
+//
+// Registering a nil Responder removes the existing one and the
+// corresponding statistics as returned by GetCallCountInfo(). It does
+// nothing if it does not already exist.
 //
 // Example using a net/url.Values:
 //   func TestFetchArticles(t *testing.T) {
@@ -808,6 +989,11 @@ func RegisterRegexpResponder(method string, urlRegexp *regexp.Regexp, responder 
 //     //      and to http://example.com?b=4&a=2&b=2&a=8&a=1
 //     // now return 'hello world'
 //   }
+//
+// If method is a lower-cased version of CONNECT, DELETE, GET, HEAD,
+// OPTIONS, POST, PUT or TRACE, a panics occurs to notice the possible
+// mistake. This panic can be disabled by setting
+// DefaultTransport.DontCheckMethod to true prior to this call.
 func RegisterResponderWithQuery(method, path string, query interface{}, responder Responder) {
 	DefaultTransport.RegisterResponderWithQuery(method, path, query, responder)
 }

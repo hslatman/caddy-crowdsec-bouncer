@@ -13,6 +13,6 @@ and BoltDB, but implementations are on the roadmap.
 - [x] [BoltDB](https://github.com/etcd-io/bbolt) etcd fork.
 - [x] Badger
 - [x] MariaDB/MySQL
-- [ ] PostgreSQL
+- [x] PostgreSQL
 - [ ] Cassandra
 - [ ] ...

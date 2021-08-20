@@ -39,12 +39,30 @@ Group 0 is embedded in the Match.  Group 0 is an automatically-assigned group th
 
 The __last__ capture is embedded in each group, so `g.String()` will return the same thing as `g.Capture.String()` and  `g.Captures[len(g.Captures)-1].String()`.
 
+If you want to find multiple matches from a single input string you should use the `FindNextMatch` method.  For example, to implement a function similar to `regexp.FindAllString`:
+
+```go
+func regexp2FindAllString(re *regexp2.Regexp, s string) []string {
+	var matches []string
+	m, _ := re.FindStringMatch(s)
+	for m != nil {
+		matches = append(matches, m.String())
+		m, _ = re.FindNextMatch(m)
+	}
+	return matches
+}
+```
+
+`FindNextMatch` is optmized so that it re-uses the underlying string/rune slice.
+
+The internals of `regexp2` always operate on `[]rune` so `Index` and `Length` data in a `Match` always reference a position in `rune`s rather than `byte`s (even if the input was given as a string). This is a dramatic difference between `regexp` and `regexp2`.  It's advisable to use the provided `String()` methods to avoid having to work with indices.
+
 ## Compare `regexp` and `regexp2`
 | Category | regexp | regexp2 |
 | --- | --- | --- |
 | Catastrophic backtracking possible | no, constant execution time guarantees | yes, if your pattern is at risk you can use the `re.MatchTimeout` field |
-| Python-style capture groups `(P<name>re)` | yes | no |
-| .NET-style capture groups `(<name>re)` or `('name're)` | no | yes |
+| Python-style capture groups `(?P<name>re)` | yes | no (yes in RE2 compat mode) |
+| .NET-style capture groups `(?<name>re)` or `(?'name're)` | no | yes |
 | comments `(?#comment)` | no | yes |
 | branch numbering reset `(?\|a\|b)` | no | no |
 | possessive match `(?>re)` | no | yes |
@@ -54,14 +72,17 @@ The __last__ capture is embedded in each group, so `g.String()` will return the 
 | negative lookbehind `(?<!re)` | no | yes |
 | back reference `\1` | no | yes |
 | named back reference `\k'name'` | no | yes |
-| named ascii character class `[[:foo:]]`| yes | no |
-| conditionals `((expr)yes\|no)` | no | yes |
+| named ascii character class `[[:foo:]]`| yes | no (yes in RE2 compat mode) |
+| conditionals `(?(expr)yes\|no)` | no | yes |
 
 ## RE2 compatibility mode
 The default behavior of `regexp2` is to match the .NET regexp engine, however the `RE2` option is provided to change the parsing to increase compatibility with RE2.  Using the `RE2` option when compiling a regexp will not take away any features, but will change the following behaviors:
 * add support for named ascii character classes (e.g. `[[:foo:]]`)
 * add support for python-style capture groups (e.g. `(P<name>re)`)
-
+* change singleline behavior for `$` to only match end of string (like RE2) (see [#24](https://github.com/dlclark/regexp2/issues/24))
+* change the character classes `\d` `\s` and `\w` to match the same characters as RE2. NOTE: if you also use the `ECMAScript` option then this will change the `\s` character class to match ECMAScript instead of RE2.  ECMAScript allows more whitespace characters in `\s` than RE2 (but still fewer than the the default behavior).
+* allow character escape sequences to have defaults. For example, by default `\_` isn't a known character escape and will fail to compile, but in RE2 mode it will match the literal character `_`
+ 
 ```go
 re := regexp2.MustCompile(`Your RE2-compatible pattern`, regexp2.RE2)
 if isMatch, _ := re.MatchString(`Something to match`); isMatch {
@@ -71,6 +92,10 @@ if isMatch, _ := re.MatchString(`Something to match`); isMatch {
 
 This feature is a work in progress and I'm open to ideas for more things to put here (maybe more relaxed character escaping rules?).
 
+## ECMAScript compatibility mode
+In this mode the engine provides compatibility with the [regex engine](https://tc39.es/ecma262/multipage/text-processing.html#sec-regexp-regular-expression-objects) described in the ECMAScript specification.
+
+Additionally a Unicode mode is provided which allows parsing of `\u{CodePoint}` syntax that is only when both are provided.
 
 ## Library features that I'm still working on
 - Regex split

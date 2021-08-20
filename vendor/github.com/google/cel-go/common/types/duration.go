@@ -20,22 +20,24 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/golang/protobuf/ptypes"
-
 	"github.com/google/cel-go/common/overloads"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 
-	dpb "github.com/golang/protobuf/ptypes/duration"
-	structpb "github.com/golang/protobuf/ptypes/struct"
+	anypb "google.golang.org/protobuf/types/known/anypb"
+	dpb "google.golang.org/protobuf/types/known/durationpb"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 // Duration type that implements ref.Val and supports add, compare, negate,
 // and subtract operators. This type is also a receiver which means it can
 // participate in dispatch to receiver functions.
 type Duration struct {
-	*dpb.Duration
+	time.Duration
+}
+
+func durationOf(d time.Duration) Duration {
+	return Duration{Duration: d}
 }
 
 var (
@@ -52,66 +54,57 @@ var (
 func (d Duration) Add(other ref.Val) ref.Val {
 	switch other.Type() {
 	case DurationType:
-		dur1, err := ptypes.Duration(d.Duration)
+		dur2 := other.(Duration)
+		val, err := addDurationChecked(d.Duration, dur2.Duration)
 		if err != nil {
-			return &Err{err}
+			return WrapErr(err)
 		}
-		dur2, err := ptypes.Duration(other.(Duration).Duration)
-		if err != nil {
-			return &Err{err}
-		}
-		return Duration{ptypes.DurationProto(dur1 + dur2)}
+		return durationOf(val)
 	case TimestampType:
-		dur, err := ptypes.Duration(d.Duration)
+		ts := other.(Timestamp).Time
+		val, err := addTimeDurationChecked(ts, d.Duration)
 		if err != nil {
-			return &Err{err}
+			return WrapErr(err)
 		}
-		ts, err := ptypes.Timestamp(other.(Timestamp).Timestamp)
-		if err != nil {
-			return &Err{err}
-		}
-		tstamp, err := ptypes.TimestampProto(ts.Add(dur))
-		if err != nil {
-			return &Err{err}
-		}
-		return Timestamp{tstamp}
+		return timestampOf(val)
 	}
-	return ValOrErr(other, "no such overload")
+	return MaybeNoSuchOverloadErr(other)
 }
 
 // Compare implements traits.Comparer.Compare.
 func (d Duration) Compare(other ref.Val) ref.Val {
 	otherDur, ok := other.(Duration)
 	if !ok {
-		return ValOrErr(other, "no such overload")
+		return MaybeNoSuchOverloadErr(other)
 	}
-	dur1, err := ptypes.Duration(d.Duration)
-	if err != nil {
-		return &Err{err}
-	}
-	dur2, err := ptypes.Duration(otherDur.Duration)
-	if err != nil {
-		return &Err{err}
-	}
-	dur := dur1 - dur2
-	if dur < 0 {
+	d1 := d.Duration
+	d2 := otherDur.Duration
+	switch {
+	case d1 < d2:
 		return IntNegOne
-	}
-	if dur > 0 {
+	case d1 > d2:
 		return IntOne
+	default:
+		return IntZero
 	}
-	return IntZero
 }
 
 // ConvertToNative implements ref.Val.ConvertToNative.
-func (d Duration) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
+func (d Duration) ConvertToNative(typeDesc reflect.Type) (any, error) {
+	// If the duration is already assignable to the desired type return it.
+	if reflect.TypeOf(d.Duration).AssignableTo(typeDesc) {
+		return d.Duration, nil
+	}
+	if reflect.TypeOf(d).AssignableTo(typeDesc) {
+		return d, nil
+	}
 	switch typeDesc {
 	case anyValueType:
-		// Pack the underlying proto value into an Any value.
-		return ptypes.MarshalAny(d.Value().(*dpb.Duration))
+		// Pack the duration as a dpb.Duration into an Any value.
+		return anypb.New(dpb.New(d.Duration))
 	case durationValueType:
 		// Unwrap the CEL value to its underlying proto value.
-		return d.Value(), nil
+		return dpb.New(d.Duration), nil
 	case jsonValueType:
 		// CEL follows the proto3 to JSON conversion.
 		// Note, using jsonpb would wrap the result in extra double quotes.
@@ -119,29 +112,18 @@ func (d Duration) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
 		if IsError(v) {
 			return nil, v.(*Err)
 		}
-		return &structpb.Value{
-			Kind: &structpb.Value_StringValue{StringValue: string(v.(String))},
-		}, nil
+		return structpb.NewStringValue(string(v.(String))), nil
 	}
-	// If the duration is already assignable to the desired type return it.
-	if reflect.TypeOf(d).AssignableTo(typeDesc) {
-		return d, nil
-	}
-	return nil, fmt.Errorf("type conversion error from "+
-		"'google.protobuf.Duration' to '%v'", typeDesc)
+	return nil, fmt.Errorf("type conversion error from 'Duration' to '%v'", typeDesc)
 }
 
 // ConvertToType implements ref.Val.ConvertToType.
 func (d Duration) ConvertToType(typeVal ref.Type) ref.Val {
 	switch typeVal {
 	case StringType:
-		if dur, err := ptypes.Duration(d.Duration); err == nil {
-			return String(strconv.FormatFloat(dur.Seconds(), 'f', -1, 64) + "s")
-		}
+		return String(strconv.FormatFloat(d.Seconds(), 'f', -1, 64) + "s")
 	case IntType:
-		if dur, err := ptypes.Duration(d.Duration); err == nil {
-			return Int(dur)
-		}
+		return Int(d.Duration)
 	case DurationType:
 		return d
 	case TypeType:
@@ -153,42 +135,44 @@ func (d Duration) ConvertToType(typeVal ref.Type) ref.Val {
 // Equal implements ref.Val.Equal.
 func (d Duration) Equal(other ref.Val) ref.Val {
 	otherDur, ok := other.(Duration)
-	if !ok {
-		return ValOrErr(other, "no such overload")
-	}
-	return Bool(proto.Equal(d.Duration, otherDur.Value().(proto.Message)))
+	return Bool(ok && d.Duration == otherDur.Duration)
+}
+
+// IsZeroValue returns true if the duration value is zero
+func (d Duration) IsZeroValue() bool {
+	return d.Duration == 0
 }
 
 // Negate implements traits.Negater.Negate.
 func (d Duration) Negate() ref.Val {
-	dur, err := ptypes.Duration(d.Duration)
+	val, err := negateDurationChecked(d.Duration)
 	if err != nil {
-		return &Err{err}
+		return WrapErr(err)
 	}
-	return Duration{ptypes.DurationProto(-dur)}
+	return durationOf(val)
 }
 
 // Receive implements traits.Receiver.Receive.
 func (d Duration) Receive(function string, overload string, args []ref.Val) ref.Val {
-	dur, err := ptypes.Duration(d.Duration)
-	if err != nil {
-		return &Err{err}
-	}
 	if len(args) == 0 {
 		if f, found := durationZeroArgOverloads[function]; found {
-			return f(dur)
+			return f(d.Duration)
 		}
 	}
-	return NewErr("no such overload")
+	return NoSuchOverloadErr()
 }
 
 // Subtract implements traits.Subtractor.Subtract.
 func (d Duration) Subtract(subtrahend ref.Val) ref.Val {
 	subtraDur, ok := subtrahend.(Duration)
 	if !ok {
-		return ValOrErr(subtrahend, "no such overload")
+		return MaybeNoSuchOverloadErr(subtrahend)
 	}
-	return d.Add(subtraDur.Negate())
+	val, err := subtractDurationChecked(d.Duration, subtraDur.Duration)
+	if err != nil {
+		return WrapErr(err)
+	}
+	return durationOf(val)
 }
 
 // Type implements ref.Val.Type.
@@ -197,7 +181,7 @@ func (d Duration) Type() ref.Type {
 }
 
 // Value implements ref.Val.Value.
-func (d Duration) Value() interface{} {
+func (d Duration) Value() any {
 	return d.Duration
 }
 
@@ -215,6 +199,6 @@ var (
 			return Int(dur.Seconds())
 		},
 		overloads.TimeGetMilliseconds: func(dur time.Duration) ref.Val {
-			return Int(dur.Nanoseconds() / 1000000)
+			return Int(dur.Milliseconds())
 		}}
 )

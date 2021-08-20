@@ -6,17 +6,10 @@ import (
 	"net/http"
 
 	"github.com/pkg/errors"
+
+	"github.com/smallstep/certificates/api/log"
+	"github.com/smallstep/certificates/api/render"
 )
-
-// StatusCoder interface is used by errors that returns the HTTP response code.
-type StatusCoder interface {
-	StatusCode() int
-}
-
-// StackTracer must be by those errors that return an stack trace.
-type StackTracer interface {
-	StackTrace() errors.StackTrace
-}
 
 // Option modifies the Error type.
 type Option func(e *Error) error
@@ -25,7 +18,7 @@ type Option func(e *Error) error
 // message only if it is empty.
 func withDefaultMessage(format string, args ...interface{}) Option {
 	return func(e *Error) error {
-		if len(e.Msg) > 0 {
+		if e.Msg != "" {
 			return e
 		}
 		e.Msg = fmt.Sprintf(format, args...)
@@ -99,7 +92,8 @@ func Wrap(status int, e error, m string, args ...interface{}) error {
 		return nil
 	}
 	_, opts := splitOptionArgs(args)
-	if err, ok := e.(*Error); ok {
+	var err *Error
+	if errors.As(e, &err) {
 		err.Err = errors.Wrap(err.Err, m)
 		e = err
 	} else {
@@ -115,7 +109,8 @@ func Wrapf(status int, e error, format string, args ...interface{}) error {
 		return nil
 	}
 	as, opts := splitOptionArgs(args)
-	if err, ok := e.(*Error); ok {
+	var err *Error
+	if errors.As(e, &err) {
 		err.Err = errors.Wrapf(err.Err, format, args...)
 		e = err
 	} else {
@@ -142,14 +137,15 @@ func (e *Error) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	e.Status = er.Status
-	e.Err = fmt.Errorf(er.Message)
+	e.Err = fmt.Errorf("%s", er.Message)
 	return nil
 }
 
 // Format implements the fmt.Formatter interface.
 func (e *Error) Format(f fmt.State, c rune) {
-	if err, ok := e.Err.(fmt.Formatter); ok {
-		err.Format(f, c)
+	var fe fmt.Formatter
+	if errors.As(e.Err, &fe) {
+		fe.Format(f, c)
 		return
 	}
 	fmt.Fprint(f, e.Err.Error())
@@ -164,11 +160,13 @@ type Messenger interface {
 func StatusCodeError(code int, e error, opts ...Option) error {
 	switch code {
 	case http.StatusBadRequest:
-		return BadRequestErr(e, opts...)
+		opts = append(opts, withDefaultMessage(BadRequestDefaultMsg))
+		return NewErr(http.StatusBadRequest, e, opts...)
 	case http.StatusUnauthorized:
 		return UnauthorizedErr(e, opts...)
 	case http.StatusForbidden:
-		return ForbiddenErr(e, opts...)
+		opts = append(opts, withDefaultMessage(ForbiddenDefaultMsg))
+		return NewErr(http.StatusForbidden, e, opts...)
 	case http.StatusInternalServerError:
 		return InternalServerErr(e, opts...)
 	case http.StatusNotImplemented:
@@ -181,7 +179,7 @@ func StatusCodeError(code int, e error, opts ...Option) error {
 var (
 	seeLogs = "Please see the certificate authority logs for more info."
 	// BadRequestDefaultMsg 400 default msg
-	BadRequestDefaultMsg = "The request could not be completed; malformed or missing data" + seeLogs
+	BadRequestDefaultMsg = "The request could not be completed; malformed or missing data. " + seeLogs
 	// UnauthorizedDefaultMsg 401 default msg
 	UnauthorizedDefaultMsg = "The request lacked necessary authorization to be completed. " + seeLogs
 	// ForbiddenDefaultMsg 403 default msg
@@ -193,6 +191,27 @@ var (
 	// NotImplementedDefaultMsg 501 default msg
 	NotImplementedDefaultMsg = "The requested method is not implemented by the certificate authority. " + seeLogs
 )
+
+var (
+	// BadRequestPrefix is the prefix added to the bad request messages that are
+	// directly sent to the cli.
+	BadRequestPrefix = "The request could not be completed: "
+
+	// ForbiddenPrefix is the prefix added to the forbidden messates that are
+	// sent to the cli.
+	ForbiddenPrefix = "The request was forbidden by the certificate authority: "
+)
+
+func formatMessage(status int, msg string) string {
+	switch status {
+	case http.StatusBadRequest:
+		return BadRequestPrefix + msg + "."
+	case http.StatusForbidden:
+		return ForbiddenPrefix + msg + "."
+	default:
+		return msg
+	}
+}
 
 // splitOptionArgs splits the variadic length args into string formatting args
 // and Option(s) to apply to an Error.
@@ -218,23 +237,44 @@ func splitOptionArgs(args []interface{}) ([]interface{}, []Option) {
 	return args[:indexOptionStart], opts
 }
 
+// New creates a new http error with the given status and message.
+func New(status int, format string, args ...interface{}) error {
+	msg := fmt.Sprintf(format, args...)
+	return &Error{
+		Status: status,
+		Msg:    formatMessage(status, msg),
+		Err:    errors.New(msg),
+	}
+}
+
+// NewError creates a new http error with the given error and message.
+func NewError(status int, err error, format string, args ...interface{}) error {
+	var e *Error
+	if errors.As(err, &e) {
+		return err
+	}
+	msg := fmt.Sprintf(format, args...)
+	var ste log.StackTracedError
+	if !errors.As(err, &ste) {
+		err = errors.Wrap(err, msg)
+	}
+	return &Error{
+		Status: status,
+		Msg:    formatMessage(status, msg),
+		Err:    err,
+	}
+}
+
 // NewErr returns a new Error. If the given error implements the StatusCoder
 // interface we will ignore the given status.
 func NewErr(status int, err error, opts ...Option) error {
-	var (
-		e  *Error
-		ok bool
-	)
-	if e, ok = err.(*Error); !ok {
-		if sc, ok := err.(StatusCoder); ok {
-			e = &Error{Status: sc.StatusCode(), Err: err}
+	var e *Error
+	if !errors.As(err, &e) {
+		var ste render.StatusCodedError
+		if errors.As(err, &ste) {
+			e = &Error{Status: ste.StatusCode(), Err: err}
 		} else {
-			cause := errors.Cause(err)
-			if sc, ok := cause.(StatusCoder); ok {
-				e = &Error{Status: sc.StatusCode(), Err: err}
-			} else {
-				e = &Error{Status: status, Err: err}
-			}
+			e = &Error{Status: status, Err: err}
 		}
 	}
 	for _, o := range opts {
@@ -252,6 +292,19 @@ func Errorf(code int, format string, args ...interface{}) error {
 		o(e)
 	}
 	return e
+}
+
+// ApplyOptions applies the given options to the error if is the type *Error.
+// TODO(mariano): try to get rid of this.
+func ApplyOptions(err error, opts ...interface{}) error {
+	var e *Error
+	if errors.As(err, &e) {
+		_, o := splitOptionArgs(opts)
+		for _, fn := range o {
+			fn(e)
+		}
+	}
+	return err
 }
 
 // InternalServer creates a 500 error with the given format and arguments.
@@ -280,14 +333,12 @@ func NotImplementedErr(err error, opts ...Option) error {
 
 // BadRequest creates a 400 error with the given format and arguments.
 func BadRequest(format string, args ...interface{}) error {
-	args = append(args, withDefaultMessage(BadRequestDefaultMsg))
-	return Errorf(http.StatusBadRequest, format, args...)
+	return New(http.StatusBadRequest, format, args...)
 }
 
 // BadRequestErr returns an 400 error with the given error.
-func BadRequestErr(err error, opts ...Option) error {
-	opts = append(opts, withDefaultMessage(BadRequestDefaultMsg))
-	return NewErr(http.StatusBadRequest, err, opts...)
+func BadRequestErr(err error, format string, args ...interface{}) error {
+	return NewError(http.StatusBadRequest, err, format, args...)
 }
 
 // Unauthorized creates a 401 error with the given format and arguments.
@@ -304,14 +355,12 @@ func UnauthorizedErr(err error, opts ...Option) error {
 
 // Forbidden creates a 403 error with the given format and arguments.
 func Forbidden(format string, args ...interface{}) error {
-	args = append(args, withDefaultMessage(ForbiddenDefaultMsg))
-	return Errorf(http.StatusForbidden, format, args...)
+	return New(http.StatusForbidden, format, args...)
 }
 
 // ForbiddenErr returns an 403 error with the given error.
-func ForbiddenErr(err error, opts ...Option) error {
-	opts = append(opts, withDefaultMessage(ForbiddenDefaultMsg))
-	return NewErr(http.StatusForbidden, err, opts...)
+func ForbiddenErr(err error, format string, args ...interface{}) error {
+	return NewError(http.StatusForbidden, err, format, args...)
 }
 
 // NotFound creates a 404 error with the given format and arguments.

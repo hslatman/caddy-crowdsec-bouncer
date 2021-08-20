@@ -17,7 +17,6 @@ package spec
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/go-openapi/jsonpointer"
@@ -145,7 +144,7 @@ func (r *SchemaURL) fromMap(v map[string]interface{}) error {
 	}
 	if vv, ok := v["$schema"]; ok {
 		if str, ok := vv.(string); ok {
-			u, err := url.Parse(str)
+			u, err := parseURL(str)
 			if err != nil {
 				return err
 			}
@@ -511,6 +510,56 @@ func (s *Schema) AsUnwrappedXML() *Schema {
 	}
 	s.XML.Wrapped = false
 	return s
+}
+
+// SetValidations defines all schema validations.
+//
+// NOTE: Required, ReadOnly, AllOf, AnyOf, OneOf and Not are not considered.
+func (s *Schema) SetValidations(val SchemaValidations) {
+	s.Maximum = val.Maximum
+	s.ExclusiveMaximum = val.ExclusiveMaximum
+	s.Minimum = val.Minimum
+	s.ExclusiveMinimum = val.ExclusiveMinimum
+	s.MaxLength = val.MaxLength
+	s.MinLength = val.MinLength
+	s.Pattern = val.Pattern
+	s.MaxItems = val.MaxItems
+	s.MinItems = val.MinItems
+	s.UniqueItems = val.UniqueItems
+	s.MultipleOf = val.MultipleOf
+	s.Enum = val.Enum
+	s.MinProperties = val.MinProperties
+	s.MaxProperties = val.MaxProperties
+	s.PatternProperties = val.PatternProperties
+}
+
+// WithValidations is a fluent method to set schema validations
+func (s *Schema) WithValidations(val SchemaValidations) *Schema {
+	s.SetValidations(val)
+	return s
+}
+
+// Validations returns a clone of the validations for this schema
+func (s Schema) Validations() SchemaValidations {
+	return SchemaValidations{
+		CommonValidations: CommonValidations{
+			Maximum:          s.Maximum,
+			ExclusiveMaximum: s.ExclusiveMaximum,
+			Minimum:          s.Minimum,
+			ExclusiveMinimum: s.ExclusiveMinimum,
+			MaxLength:        s.MaxLength,
+			MinLength:        s.MinLength,
+			Pattern:          s.Pattern,
+			MaxItems:         s.MaxItems,
+			MinItems:         s.MinItems,
+			UniqueItems:      s.UniqueItems,
+			MultipleOf:       s.MultipleOf,
+			Enum:             s.Enum,
+		},
+		MinProperties:     s.MinProperties,
+		MaxProperties:     s.MaxProperties,
+		PatternProperties: s.PatternProperties,
+	}
 }
 
 // MarshalJSON marshal this to JSON

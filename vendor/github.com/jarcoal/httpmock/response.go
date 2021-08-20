@@ -2,17 +2,31 @@ package httpmock
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jarcoal/httpmock/internal"
 )
+
+// fromThenKeyType is used by Then().
+type fromThenKeyType struct{}
+
+var fromThenKey = fromThenKeyType{}
+
+// suggestedMethodKeyType is used by NewNotFoundResponder().
+type suggestedMethodKeyType struct{}
+
+var suggestedMethodKey = suggestedMethodKeyType{}
 
 // Responder is a callback that receives an http request and returns
 // a mocked response.
@@ -99,6 +113,95 @@ func (r Responder) Trace(fn func(...interface{})) Responder {
 			Err:      err,
 		}
 	}
+}
+
+// Delay returns a new Responder that calls the original r Responder
+// after a delay of d.
+//   import (
+//     "testing"
+//     "time"
+//     "github.com/jarcoal/httpmock"
+//   )
+//   ...
+//   func TestMyApp(t *testing.T) {
+//     ...
+//     httpmock.RegisterResponder("GET", "/foo/bar",
+//       httpmock.NewStringResponder(200, "{}").Delay(100*time.Millisecond),
+//     )
+func (r Responder) Delay(d time.Duration) Responder {
+	return func(req *http.Request) (*http.Response, error) {
+		time.Sleep(d)
+		return r(req)
+	}
+}
+
+var errThenDone = errors.New("ThenDone")
+
+// similar is simple but a bit tricky. Here we consider two Responder
+// are similar if they share the same function, but not necessarily
+// the same environment. It is only used by Then below.
+func (r Responder) similar(other Responder) bool {
+	return reflect.ValueOf(r).Pointer() == reflect.ValueOf(other).Pointer()
+}
+
+// Then returns a new Responder that calls r on first invocation, then
+// next on following ones, except when Then is chained, in this case
+// next is called only once:
+//   A := httpmock.NewStringResponder(200, "A")
+//   B := httpmock.NewStringResponder(200, "B")
+//   C := httpmock.NewStringResponder(200, "C")
+//
+//   httpmock.RegisterResponder("GET", "/pipo", A.Then(B).Then(C))
+//
+//   http.Get("http://foo.bar/pipo") // A is called
+//   http.Get("http://foo.bar/pipo") // B is called
+//   http.Get("http://foo.bar/pipo") // C is called
+//   http.Get("http://foo.bar/pipo") // C is called, and so on
+//
+// A panic occurs if next is the result of another Then call (because
+// allowing it could cause inextricable problems at runtime). Then
+// calls can be chained, but cannot call each other by
+// parameter. Example:
+//   A.Then(B).Then(C) // is OK
+//   A.Then(B.Then(C)) // panics as A.Then() parameter is another Then() call
+func (r Responder) Then(next Responder) (x Responder) {
+	var done int
+	var mu sync.Mutex
+	x = func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		ctx := req.Context()
+		thenCalledUs, _ := ctx.Value(fromThenKey).(bool)
+		if !thenCalledUs {
+			req = req.WithContext(context.WithValue(ctx, fromThenKey, true))
+		}
+
+		switch done {
+		case 0:
+			resp, err := r(req)
+			if err != errThenDone {
+				if !x.similar(r) { // r is NOT a Then
+					done = 1
+				}
+				return resp, err
+			}
+			fallthrough
+
+		case 1:
+			done = 2 // next is NEVER a Then, as it is forbidden by design
+			return next(req)
+		}
+		if thenCalledUs {
+			return nil, errThenDone
+		}
+		return next(req)
+	}
+
+	if next.similar(x) {
+		panic("Then() does not accept another Then() Responder as parameter")
+	}
+	return
 }
 
 // ResponderFromResponse wraps an *http.Response in a Responder.
@@ -233,9 +336,13 @@ func NewErrorResponder(err error) Responder {
 //         at /go/src/runtime/asm_amd64.s:1337
 func NewNotFoundResponder(fn func(...interface{})) Responder {
 	return func(req *http.Request) (*http.Response, error) {
+		suggestedMethod, _ := req.Context().Value(suggestedMethodKey).(string)
+		if suggestedMethod != "" {
+			suggestedMethod = ", but one matches method " + suggestedMethod
+		}
 		return nil, internal.StackTracer{
 			CustomFn: fn,
-			Err:      fmt.Errorf("Responder not found for %s %s", req.Method, req.URL),
+			Err:      fmt.Errorf("Responder not found for %s %s%s", req.Method, req.URL, suggestedMethod),
 		}
 	}
 }
@@ -293,7 +400,7 @@ func NewBytesResponder(status int, body []byte) Responder {
 //
 // To pass the content of an existing file as body use httpmock.File as in:
 //   httpmock.NewJsonResponse(200, httpmock.File("body.json"))
-func NewJsonResponse(status int, body interface{}) (*http.Response, error) { // nolint: golint
+func NewJsonResponse(status int, body interface{}) (*http.Response, error) { // nolint: revive
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -308,7 +415,7 @@ func NewJsonResponse(status int, body interface{}) (*http.Response, error) { // 
 //
 // To pass the content of an existing file as body use httpmock.File as in:
 //   httpmock.NewJsonResponder(200, httpmock.File("body.json"))
-func NewJsonResponder(status int, body interface{}) (Responder, error) { // nolint: golint
+func NewJsonResponder(status int, body interface{}) (Responder, error) { // nolint: revive
 	resp, err := NewJsonResponse(status, body)
 	if err != nil {
 		return nil, err
@@ -329,7 +436,7 @@ func NewJsonResponder(status int, body interface{}) (Responder, error) { // noli
 //
 // To pass the content of an existing file as body use httpmock.File as in:
 //   httpmock.NewJsonResponderOrPanic(200, httpmock.File("body.json"))
-func NewJsonResponderOrPanic(status int, body interface{}) Responder { // nolint: golint
+func NewJsonResponderOrPanic(status int, body interface{}) Responder { // nolint: revive
 	responder, err := NewJsonResponder(status, body)
 	if err != nil {
 		panic(err)
@@ -343,7 +450,7 @@ func NewJsonResponderOrPanic(status int, body interface{}) Responder { // nolint
 //
 // To pass the content of an existing file as body use httpmock.File as in:
 //   httpmock.NewXmlResponse(200, httpmock.File("body.xml"))
-func NewXmlResponse(status int, body interface{}) (*http.Response, error) { // nolint: golint
+func NewXmlResponse(status int, body interface{}) (*http.Response, error) { // nolint: revive
 	var (
 		encoded []byte
 		err     error
@@ -366,7 +473,7 @@ func NewXmlResponse(status int, body interface{}) (*http.Response, error) { // n
 //
 // To pass the content of an existing file as body use httpmock.File as in:
 //   httpmock.NewXmlResponder(200, httpmock.File("body.xml"))
-func NewXmlResponder(status int, body interface{}) (Responder, error) { // nolint: golint
+func NewXmlResponder(status int, body interface{}) (Responder, error) { // nolint: revive
 	resp, err := NewXmlResponse(status, body)
 	if err != nil {
 		return nil, err
@@ -387,7 +494,7 @@ func NewXmlResponder(status int, body interface{}) (Responder, error) { // nolin
 //
 // To pass the content of an existing file as body use httpmock.File as in:
 //   httpmock.NewXmlResponderOrPanic(200, httpmock.File("body.xml"))
-func NewXmlResponderOrPanic(status int, body interface{}) Responder { // nolint: golint
+func NewXmlResponderOrPanic(status int, body interface{}) Responder { // nolint: revive
 	responder, err := NewXmlResponder(status, body)
 	if err != nil {
 		panic(err)
@@ -437,15 +544,11 @@ func (d *dummyReadCloser) setup() {
 
 func (d *dummyReadCloser) Read(p []byte) (n int, err error) {
 	d.setup()
-	n, err = d.body.Read(p)
-	if err == io.EOF {
-		d.body.Seek(0, 0) // nolint: errcheck
-	}
-	return n, err
+	return d.body.Read(p)
 }
 
 func (d *dummyReadCloser) Close() error {
 	d.setup()
-	d.body.Seek(0, 0) // nolint: errcheck
+	d.body.Seek(0, io.SeekEnd) // nolint: errcheck
 	return nil
 }

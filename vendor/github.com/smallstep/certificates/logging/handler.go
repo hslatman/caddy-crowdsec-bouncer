@@ -3,6 +3,9 @@ package logging
 import (
 	"net"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -10,18 +13,31 @@ import (
 
 // LoggerHandler creates a logger handler
 type LoggerHandler struct {
-	name   string
-	logger *logrus.Logger
-	next   http.Handler
+	name    string
+	logger  *logrus.Logger
+	options options
+	next    http.Handler
+}
+
+// options encapsulates any overriding parameters for the logger handler
+type options struct {
+	// onlyTraceHealthEndpoint determines if the kube-probe requests to the /health
+	// endpoint should only be logged at the TRACE level in the (expected) HTTP
+	// 200 case
+	onlyTraceHealthEndpoint bool
 }
 
 // NewLoggerHandler returns the given http.Handler with the logger integrated.
 func NewLoggerHandler(name string, logger *Logger, next http.Handler) http.Handler {
 	h := RequestID(logger.GetTraceHeader())
+	onlyTraceHealthEndpoint, _ := strconv.ParseBool(os.Getenv("STEP_LOGGER_ONLY_TRACE_HEALTH_ENDPOINT"))
 	return h(&LoggerHandler{
 		name:   name,
 		logger: logger.GetImpl(),
-		next:   next,
+		options: options{
+			onlyTraceHealthEndpoint: onlyTraceHealthEndpoint,
+		},
+		next: next,
 	})
 }
 
@@ -63,7 +79,7 @@ func (l *LoggerHandler) writeEntry(w ResponseLogger, r *http.Request, t time.Tim
 		uri = r.Host
 	}
 	if uri == "" {
-		uri = r.URL.RequestURI()
+		uri = sanitizeLogEntry(r.URL.RequestURI())
 	}
 
 	status := w.StatusCode()
@@ -81,8 +97,8 @@ func (l *LoggerHandler) writeEntry(w ResponseLogger, r *http.Request, t time.Tim
 		"protocol":       r.Proto,
 		"status":         status,
 		"size":           w.Size(),
-		"referer":        r.Referer(),
-		"user-agent":     r.UserAgent(),
+		"referer":        sanitizeLogEntry(r.Referer()),
+		"user-agent":     sanitizeLogEntry(r.UserAgent()),
 	}
 
 	for k, v := range w.Fields() {
@@ -91,10 +107,19 @@ func (l *LoggerHandler) writeEntry(w ResponseLogger, r *http.Request, t time.Tim
 
 	switch {
 	case status < http.StatusBadRequest:
-		l.logger.WithFields(fields).Info()
+		if l.options.onlyTraceHealthEndpoint && uri == "/health" {
+			l.logger.WithFields(fields).Trace()
+		} else {
+			l.logger.WithFields(fields).Info()
+		}
 	case status < http.StatusInternalServerError:
 		l.logger.WithFields(fields).Warn()
 	default:
 		l.logger.WithFields(fields).Error()
 	}
+}
+
+func sanitizeLogEntry(s string) string {
+	escaped := strings.ReplaceAll(s, "\n", "")
+	return strings.ReplaceAll(escaped, "\r", "")
 }

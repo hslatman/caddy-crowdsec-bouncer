@@ -109,6 +109,70 @@ func (r Route) Empty() bool {
 		r.Group == ""
 }
 
+func (r Route) String() string {
+	handlersRaw := "["
+	for _, hr := range r.HandlersRaw {
+		handlersRaw += " " + string(hr)
+	}
+	handlersRaw += "]"
+
+	return fmt.Sprintf(`{Group:"%s" MatcherSetsRaw:%s HandlersRaw:%s Terminal:%t}`,
+		r.Group, r.MatcherSetsRaw, handlersRaw, r.Terminal)
+}
+
+// Provision sets up both the matchers and handlers in the route.
+func (r *Route) Provision(ctx caddy.Context, metrics *Metrics) error {
+	err := r.ProvisionMatchers(ctx)
+	if err != nil {
+		return err
+	}
+	return r.ProvisionHandlers(ctx, metrics)
+}
+
+// ProvisionMatchers sets up all the matchers by loading the
+// matcher modules. Only call this method directly if you need
+// to set up matchers and handlers separately without having
+// to provision a second time; otherwise use Provision instead.
+func (r *Route) ProvisionMatchers(ctx caddy.Context) error {
+	// matchers
+	matchersIface, err := ctx.LoadModule(r, "MatcherSetsRaw")
+	if err != nil {
+		return fmt.Errorf("loading matcher modules: %v", err)
+	}
+	err = r.MatcherSets.FromInterface(matchersIface)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ProvisionHandlers sets up all the handlers by loading the
+// handler modules. Only call this method directly if you need
+// to set up matchers and handlers separately without having
+// to provision a second time; otherwise use Provision instead.
+func (r *Route) ProvisionHandlers(ctx caddy.Context, metrics *Metrics) error {
+	handlersIface, err := ctx.LoadModule(r, "HandlersRaw")
+	if err != nil {
+		return fmt.Errorf("loading handler modules: %v", err)
+	}
+	for _, handler := range handlersIface.([]any) {
+		r.Handlers = append(r.Handlers, handler.(MiddlewareHandler))
+	}
+
+	// pre-compile the middleware handler chain
+	for _, midhandler := range r.Handlers {
+		r.middleware = append(r.middleware, wrapMiddleware(ctx, midhandler, metrics))
+	}
+	return nil
+}
+
+// Compile prepares a middleware chain from the route list.
+// This should only be done once during the request, just
+// before the middleware chain is executed.
+func (r Route) Compile(next Handler) Handler {
+	return wrapRoute(r)(next)
+}
+
 // RouteList is a list of server routes that can
 // create a middleware chain.
 type RouteList []Route
@@ -119,7 +183,7 @@ func (routes RouteList) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return err
 	}
-	return routes.ProvisionHandlers(ctx)
+	return routes.ProvisionHandlers(ctx, nil)
 }
 
 // ProvisionMatchers sets up all the matchers by loading the
@@ -128,12 +192,7 @@ func (routes RouteList) Provision(ctx caddy.Context) error {
 // to provision a second time; otherwise use Provision instead.
 func (routes RouteList) ProvisionMatchers(ctx caddy.Context) error {
 	for i := range routes {
-		// matchers
-		matchersIface, err := ctx.LoadModule(&routes[i], "MatcherSetsRaw")
-		if err != nil {
-			return fmt.Errorf("route %d: loading matcher modules: %v", i, err)
-		}
-		err = routes[i].MatcherSets.FromInterface(matchersIface)
+		err := routes[i].ProvisionMatchers(ctx)
 		if err != nil {
 			return fmt.Errorf("route %d: %v", i, err)
 		}
@@ -145,27 +204,20 @@ func (routes RouteList) ProvisionMatchers(ctx caddy.Context) error {
 // handler modules. Only call this method directly if you need
 // to set up matchers and handlers separately without having
 // to provision a second time; otherwise use Provision instead.
-func (routes RouteList) ProvisionHandlers(ctx caddy.Context) error {
+func (routes RouteList) ProvisionHandlers(ctx caddy.Context, metrics *Metrics) error {
 	for i := range routes {
-		handlersIface, err := ctx.LoadModule(&routes[i], "HandlersRaw")
+		err := routes[i].ProvisionHandlers(ctx, metrics)
 		if err != nil {
-			return fmt.Errorf("route %d: loading handler modules: %v", i, err)
-		}
-		for _, handler := range handlersIface.([]interface{}) {
-			routes[i].Handlers = append(routes[i].Handlers, handler.(MiddlewareHandler))
-		}
-
-		// pre-compile the middleware handler chain
-		for _, midhandler := range routes[i].Handlers {
-			routes[i].middleware = append(routes[i].middleware, wrapMiddleware(ctx, midhandler))
+			return fmt.Errorf("route %d: %v", i, err)
 		}
 	}
 	return nil
 }
 
 // Compile prepares a middleware chain from the route list.
-// This should only be done once: after all the routes have
-// been provisioned, and before serving requests.
+// This should only be done either once during provisioning
+// for top-level routes, or on each request just before the
+// middleware chain is executed for subroutes.
 func (routes RouteList) Compile(next Handler) Handler {
 	mid := make([]Middleware, 0, len(routes))
 	for _, route := range routes {
@@ -200,6 +252,19 @@ func wrapRoute(route Route) Middleware {
 
 			// route must match at least one of the matcher sets
 			if !route.MatcherSets.AnyMatch(req) {
+				// allow matchers the opportunity to short circuit
+				// the request and trigger the error handling chain
+				err, ok := GetVar(req.Context(), MatcherErrorVarKey).(error)
+				if ok {
+					// clear out the error from context, otherwise
+					// it will cascade to the error routes (#4916)
+					SetVar(req.Context(), MatcherErrorVarKey, nil)
+					// return the matcher's error
+					return err
+				}
+
+				// call the next handler, and skip this one,
+				// since the matcher didn't match
 				return nextCopy.ServeHTTP(rw, req)
 			}
 
@@ -220,7 +285,11 @@ func wrapRoute(route Route) Middleware {
 
 			// make terminal routes terminate
 			if route.Terminal {
-				nextCopy = emptyHandler
+				if _, ok := req.Context().Value(ErrorCtxKey).(error); ok {
+					nextCopy = errorEmptyHandler
+				} else {
+					nextCopy = emptyHandler
+				}
 			}
 
 			// compile this route's handler stack
@@ -242,9 +311,12 @@ func wrapRoute(route Route) Middleware {
 // we need to pull this particular MiddlewareHandler
 // pointer into its own stack frame to preserve it so it
 // won't be overwritten in future loop iterations.
-func wrapMiddleware(ctx caddy.Context, mh MiddlewareHandler) Middleware {
-	// wrap the middleware with metrics instrumentation
-	metricsHandler := newMetricsInstrumentedHandler(caddy.GetModuleName(mh), mh)
+func wrapMiddleware(ctx caddy.Context, mh MiddlewareHandler, metrics *Metrics) Middleware {
+	handlerToUse := mh
+	if metrics != nil {
+		// wrap the middleware with metrics instrumentation
+		handlerToUse = newMetricsInstrumentedHandler(caddy.GetModuleName(mh), mh)
+	}
 
 	return func(next Handler) Handler {
 		// copy the next handler (it's an interface, so it's
@@ -256,7 +328,7 @@ func wrapMiddleware(ctx caddy.Context, mh MiddlewareHandler) Middleware {
 		return HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 			// TODO: This is where request tracing could be implemented
 			// TODO: see what the std lib gives us in terms of stack tracing too
-			return metricsHandler.ServeHTTP(w, r, nextCopy)
+			return handlerToUse.ServeHTTP(w, r, nextCopy)
 		})
 	}
 }
@@ -298,9 +370,9 @@ func (ms MatcherSets) AnyMatch(req *http.Request) bool {
 	return len(ms) == 0
 }
 
-// FromInterface fills ms from an interface{} value obtained from LoadModule.
-func (ms *MatcherSets) FromInterface(matcherSets interface{}) error {
-	for _, matcherSetIfaces := range matcherSets.([]map[string]interface{}) {
+// FromInterface fills ms from an 'any' value obtained from LoadModule.
+func (ms *MatcherSets) FromInterface(matcherSets any) error {
+	for _, matcherSetIfaces := range matcherSets.([]map[string]any) {
 		var matcherSet MatcherSet
 		for _, matcher := range matcherSetIfaces {
 			reqMatcher, ok := matcher.(RequestMatcher)
@@ -312,6 +384,17 @@ func (ms *MatcherSets) FromInterface(matcherSets interface{}) error {
 		*ms = append(*ms, matcherSet)
 	}
 	return nil
+}
+
+// TODO: Is this used?
+func (ms MatcherSets) String() string {
+	result := "["
+	for _, matcherSet := range ms {
+		for _, matcher := range matcherSet {
+			result += fmt.Sprintf(" %#v", matcher)
+		}
+	}
+	return result + " ]"
 }
 
 var routeGroupCtxKey = caddy.CtxKey("route_group")

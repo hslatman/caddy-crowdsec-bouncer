@@ -20,7 +20,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -217,6 +220,65 @@ func StatusCodeMatches(actual, configured int) bool {
 	return false
 }
 
+// SanitizedPathJoin performs filepath.Join(root, reqPath) that
+// is safe against directory traversal attacks. It uses logic
+// similar to that in the Go standard library, specifically
+// in the implementation of http.Dir. The root is assumed to
+// be a trusted path, but reqPath is not; and the output will
+// never be outside of root. The resulting path can be used
+// with the local file system.
+func SanitizedPathJoin(root, reqPath string) string {
+	if root == "" {
+		root = "."
+	}
+
+	path := filepath.Join(root, path.Clean("/"+reqPath))
+
+	// filepath.Join also cleans the path, and cleaning strips
+	// the trailing slash, so we need to re-add it afterwards.
+	// if the length is 1, then it's a path to the root,
+	// and that should return ".", so we don't append the separator.
+	if strings.HasSuffix(reqPath, "/") && len(reqPath) > 1 {
+		path += separator
+	}
+
+	return path
+}
+
+// CleanPath cleans path p according to path.Clean(), but only
+// merges repeated slashes if collapseSlashes is true, and always
+// preserves trailing slashes.
+func CleanPath(p string, collapseSlashes bool) string {
+	if collapseSlashes {
+		return cleanPath(p)
+	}
+
+	// insert an invalid/impossible URI character into each two consecutive
+	// slashes to expand empty path segments; then clean the path as usual,
+	// and then remove the remaining temporary characters.
+	const tmpCh = 0xff
+	var sb strings.Builder
+	for i, ch := range p {
+		if ch == '/' && i > 0 && p[i-1] == '/' {
+			sb.WriteByte(tmpCh)
+		}
+		sb.WriteRune(ch)
+	}
+	halfCleaned := cleanPath(sb.String())
+	halfCleaned = strings.ReplaceAll(halfCleaned, string([]byte{tmpCh}), "")
+
+	return halfCleaned
+}
+
+// cleanPath does path.Clean(p) but preserves any trailing slash.
+func cleanPath(p string) string {
+	cleaned := path.Clean(p)
+	if cleaned != "/" && strings.HasSuffix(p, "/") {
+		cleaned = cleaned + "/"
+	}
+	return cleaned
+}
+
 // tlsPlaceholderWrapper is a no-op listener wrapper that marks
 // where the TLS listener should be in a chain of listener wrappers.
 // It should only be used if another listener wrapper must be placed
@@ -241,6 +303,8 @@ const (
 	// DefaultHTTPSPort is the default port for HTTPS.
 	DefaultHTTPSPort = 443
 )
+
+const separator = string(filepath.Separator)
 
 // Interface guard
 var _ caddy.ListenerWrapper = (*tlsPlaceholderWrapper)(nil)

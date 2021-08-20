@@ -3,11 +3,14 @@ package api
 import (
 	"net/http"
 
+	"golang.org/x/crypto/ocsp"
+
+	"github.com/smallstep/certificates/api/read"
+	"github.com/smallstep/certificates/api/render"
 	"github.com/smallstep/certificates/authority"
 	"github.com/smallstep/certificates/authority/provisioner"
 	"github.com/smallstep/certificates/errs"
 	"github.com/smallstep/certificates/logging"
-	"golang.org/x/crypto/ocsp"
 )
 
 // SSHRevokeResponse is the response object that returns the health of the server.
@@ -36,7 +39,7 @@ func (r *SSHRevokeRequest) Validate() (err error) {
 	if !r.Passive {
 		return errs.NotImplemented("non-passive revocation not implemented")
 	}
-	if len(r.OTT) == 0 {
+	if r.OTT == "" {
 		return errs.BadRequest("missing ott")
 	}
 	return
@@ -45,15 +48,15 @@ func (r *SSHRevokeRequest) Validate() (err error) {
 // Revoke supports handful of different methods that revoke a Certificate.
 //
 // NOTE: currently only Passive revocation is supported.
-func (h *caHandler) SSHRevoke(w http.ResponseWriter, r *http.Request) {
+func SSHRevoke(w http.ResponseWriter, r *http.Request) {
 	var body SSHRevokeRequest
-	if err := ReadJSON(r.Body, &body); err != nil {
-		WriteError(w, errs.Wrap(http.StatusBadRequest, err, "error reading request body"))
+	if err := read.JSON(r.Body, &body); err != nil {
+		render.Error(w, errs.BadRequestErr(err, "error reading request body"))
 		return
 	}
 
 	if err := body.Validate(); err != nil {
-		WriteError(w, err)
+		render.Error(w, err)
 		return
 	}
 
@@ -65,22 +68,25 @@ func (h *caHandler) SSHRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := provisioner.NewContextWithMethod(r.Context(), provisioner.SSHRevokeMethod)
+	a := mustAuthority(ctx)
+
 	// A token indicates that we are using the api via a provisioner token,
 	// otherwise it is assumed that the certificate is revoking itself over mTLS.
 	logOtt(w, body.OTT)
-	if _, err := h.Authority.Authorize(ctx, body.OTT); err != nil {
-		WriteError(w, errs.UnauthorizedErr(err))
+
+	if _, err := a.Authorize(ctx, body.OTT); err != nil {
+		render.Error(w, errs.UnauthorizedErr(err))
 		return
 	}
 	opts.OTT = body.OTT
 
-	if err := h.Authority.Revoke(ctx, opts); err != nil {
-		WriteError(w, errs.ForbiddenErr(err))
+	if err := a.Revoke(ctx, opts); err != nil {
+		render.Error(w, errs.ForbiddenErr(err, "error revoking ssh certificate"))
 		return
 	}
 
 	logSSHRevoke(w, opts)
-	JSON(w, &SSHRevokeResponse{Status: "ok"})
+	render.JSON(w, &SSHRevokeResponse{Status: "ok"})
 }
 
 func logSSHRevoke(w http.ResponseWriter, ri *authority.RevokeOptions) {

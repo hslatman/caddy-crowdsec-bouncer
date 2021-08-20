@@ -41,7 +41,7 @@ import (
 // body will have been drained and closed, so there is no need to close it again.
 // It automatically retries in the case of network, I/O, or badNonce errors.
 func (c *Client) httpPostJWS(ctx context.Context, privateKey crypto.Signer,
-	kid, endpoint string, input, output interface{}) (*http.Response, error) {
+	kid, endpoint string, input, output any) (*http.Response, error) {
 
 	if err := c.provision(ctx); err != nil {
 		return nil, err
@@ -117,8 +117,7 @@ func (c *Client) httpPostJWS(ctx context.Context, privateKey crypto.Signer,
 		break
 	}
 
-	return resp, fmt.Errorf("request to %s failed after %d attempts: %v",
-		endpoint, attempts, err)
+	return resp, fmt.Errorf("attempt %d: %s: %w", attempts, endpoint, err)
 }
 
 // httpReq robustly performs an HTTP request using the given method to the given endpoint, honoring
@@ -131,7 +130,7 @@ func (c *Client) httpPostJWS(ctx context.Context, privateKey crypto.Signer,
 //
 // If there are any network or I/O errors, the request will be retried as safely and resiliently as
 // possible.
-func (c *Client) httpReq(ctx context.Context, method, endpoint string, joseJSONPayload []byte, output interface{}) (*http.Response, error) {
+func (c *Client) httpReq(ctx context.Context, method, endpoint string, joseJSONPayload []byte, output any) (*http.Response, error) {
 	// even if the caller doesn't specify an output, we still use a
 	// buffer to store possible error response (we reset it later)
 	buf := bufPool.Get().(*bytes.Buffer)
@@ -272,8 +271,8 @@ func (c *Client) doHTTPRequest(req *http.Request, buf *bytes.Buffer) (resp *http
 			zap.String("method", req.Method),
 			zap.String("url", req.URL.String()),
 			zap.Reflect("headers", req.Header),
-			zap.Int("status_code", resp.StatusCode),
-			zap.Reflect("response_headers", resp.Header))
+			zap.Reflect("response_headers", resp.Header),
+			zap.Int("status_code", resp.StatusCode))
 	}
 
 	// "The server MUST include a Replay-Nonce header field
@@ -374,19 +373,35 @@ func retryAfter(resp *http.Response, fallback time.Duration) (time.Duration, err
 	if resp == nil {
 		return fallback, nil
 	}
-	raSeconds := resp.Header.Get("Retry-After")
-	if raSeconds == "" {
+	raTime, err := retryAfterTime(resp)
+	if err != nil {
+		return fallback, fmt.Errorf("response had invalid Retry-After header: %v", err)
+	}
+	if raTime.IsZero() {
 		return fallback, nil
 	}
-	ra, err := strconv.Atoi(raSeconds)
-	if err != nil || ra < 0 {
-		return 0, fmt.Errorf("response had invalid Retry-After header: %s", raSeconds)
+	return time.Until(raTime), nil
+}
+
+// retryAfterTime returns the timestamp represented by the Retry-After header of the response.
+// It returns a zero-value if there is no Retry-After header.
+func retryAfterTime(resp *http.Response) (time.Time, error) {
+	if resp == nil {
+		return time.Time{}, nil
 	}
-	return time.Duration(ra) * time.Second, nil
+	raHeader := resp.Header.Get("Retry-After")
+	if raHeader == "" {
+		return time.Time{}, nil
+	}
+	raSeconds, err := strconv.Atoi(raHeader)
+	if err == nil && raSeconds >= 0 {
+		return time.Now().Add(time.Duration(raSeconds) * time.Second), nil
+	}
+	return time.Parse(http.TimeFormat, raHeader)
 }
 
 var bufPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(bytes.Buffer)
 	},
 }

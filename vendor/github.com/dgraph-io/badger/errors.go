@@ -17,9 +17,14 @@
 package badger
 
 import (
-	"encoding/hex"
+	"math"
 
 	"github.com/pkg/errors"
+)
+
+const (
+	// ValueThresholdLimit is the maximum permissible value of opt.ValueThreshold.
+	ValueThresholdLimit = math.MaxUint16 - 16 + 1
 )
 
 var (
@@ -29,7 +34,8 @@ var (
 
 	// ErrValueThreshold is returned when ValueThreshold is set to a value close to or greater than
 	// uint16.
-	ErrValueThreshold = errors.New("Invalid ValueThreshold, must be lower than uint16.")
+	ErrValueThreshold = errors.Errorf(
+		"Invalid ValueThreshold, must be less than %d", ValueThresholdLimit)
 
 	// ErrKeyNotFound is returned when key isn't found on a txn.Get.
 	ErrKeyNotFound = errors.New("Key not found")
@@ -37,8 +43,8 @@ var (
 	// ErrTxnTooBig is returned if too many writes are fit into a single transaction.
 	ErrTxnTooBig = errors.New("Txn is too big to fit into one request")
 
-	// ErrConflict is returned when a transaction conflicts with another transaction. This can happen if
-	// the read rows had been updated concurrently by another transaction.
+	// ErrConflict is returned when a transaction conflicts with another transaction. This can
+	// happen if the read rows had been updated concurrently by another transaction.
 	ErrConflict = errors.New("Transaction Conflict. Please retry")
 
 	// ErrReadOnlyTxn is returned if an update function is called on a read-only transaction.
@@ -49,6 +55,10 @@ var (
 
 	// ErrEmptyKey is returned if an empty key is passed on an update function.
 	ErrEmptyKey = errors.New("Key cannot be empty")
+
+	// ErrInvalidKey is returned if the key has a special !badger! prefix,
+	// reserved for internal usage.
+	ErrInvalidKey = errors.New("Key is using a reserved !badger! prefix")
 
 	// ErrRetry is returned when a log file containing the value is not found.
 	// This usually indicates that it may have been garbage collected, and the
@@ -93,20 +103,18 @@ var (
 	// ErrWindowsNotSupported is returned when opt.ReadOnly is used on Windows
 	ErrWindowsNotSupported = errors.New("Read-only mode is not supported on Windows")
 
+	// ErrPlan9NotSupported is returned when opt.ReadOnly is used on Plan 9
+	ErrPlan9NotSupported = errors.New("Read-only mode is not supported on Plan 9")
+
 	// ErrTruncateNeeded is returned when the value log gets corrupt, and requires truncation of
 	// corrupt data to allow Badger to run properly.
-	ErrTruncateNeeded = errors.New("Value log truncate required to run DB. This might result in data loss.")
+	ErrTruncateNeeded = errors.New(
+		"Value log truncate required to run DB. This might result in data loss")
+
+	// ErrBlockedWrites is returned if the user called DropAll. During the process of dropping all
+	// data from Badger, we stop accepting new writes, by returning this error.
+	ErrBlockedWrites = errors.New("Writes are blocked, possibly due to DropAll or Close")
+
+	// ErrNilCallback is returned when subscriber's callback is nil.
+	ErrNilCallback = errors.New("Callback cannot be nil")
 )
-
-// Key length can't be more than uint16, as determined by table::header.
-const maxKeySize = 1<<16 - 8 // 8 bytes are for storing timestamp
-
-func exceedsMaxKeySizeError(key []byte) error {
-	return errors.Errorf("Key with size %d exceeded %d limit. Key:\n%s",
-		len(key), maxKeySize, hex.Dump(key[:1<<10]))
-}
-
-func exceedsMaxValueSizeError(value []byte, maxValueSize int64) error {
-	return errors.Errorf("Value with size %d exceeded ValueLogFileSize (%d). Key:\n%s",
-		len(value), maxValueSize, hex.Dump(value[:1<<10]))
-}

@@ -1,0 +1,213 @@
+syntax = "proto3";
+
+package config;
+
+option go_package = "go.step.sm/linkedca";
+
+import "admin.proto";
+import "provisioners.proto";
+import "policy.proto";
+import "google/protobuf/struct.proto";
+
+// Configuration is the proto representation of a ca.json. Root keys and SSH
+// public keys are not present in the ca.json but have been added here to be
+// used in the initialization of a PKI.
+message Configuration {
+    string version = 1;
+    repeated string root = 2;            // pem representation in files
+    repeated string root_key = 3;        // pem representation in files
+    repeated string federated_roots = 4; // pem representation in files
+    string intermediate = 5;             // pem representation in files
+    string intermediate_key = 6;         // pem representation in files
+    string address = 7;
+    string insecure_address = 8;
+    repeated string dns_names = 9;
+    SSH ssh = 10;
+    KMS kms = 11;
+    google.protobuf.Struct logger = 12;     // json representation
+    google.protobuf.Struct db = 13;         // json representation
+    google.protobuf.Struct monitoring = 14; // json representation
+    Authority authority = 15;
+    TLS tls = 16;
+    ConfigTemplates templates = 17;
+    bytes password = 18;
+    map<string, bytes> files = 19;
+}
+
+// Defaults is the proto representation of the defaults.json, this file can be
+// extended, so it will only contain the default fields.
+message Defaults {
+    string ca_url = 1;
+    string ca_config = 2;
+    string fingerprint = 3;
+    string root = 4;
+}
+
+message Authority {
+    enum Type {
+        DEFAULT  = 0;
+        SOFTCAS  = 1;
+        CLOUDCAS = 2;
+        STEPCAS  = 3;
+    }
+
+    // Authority id.
+    string id = 1;
+    
+    // CAS specific properties.
+    Type type = 2;
+    string certificate_authority = 3;
+    string certificate_authority_fingerprint = 4;
+    CertificateIssuer certificate_issuer = 5;
+    string credentials_file = 6;
+    
+    // Authority configuration.
+    bool enable_admin = 7;
+    repeated linkedca.Provisioner provisioners = 8;
+    repeated linkedca.Admin admins = 9;
+    DistinguishedName template = 10;
+    linkedca.Claims claims = 11;
+    bool disable_issued_at_check = 12;
+    string backdate = 13;
+    string deployment_type = 14;
+    linkedca.Policy policy = 15;
+}
+
+message DistinguishedName {
+    string country = 1;
+    string organization = 2;
+    string organizational_unit = 3;
+    string locality = 4;
+    string province = 5;
+    string street_address = 6;
+    string serial_number = 7;
+    string common_name = 8;
+}
+
+message CertificateIssuer {
+    enum Type {
+        UNKNOWN = 0;
+        JWK     = 1;
+        X5C     = 2;
+    }
+    Type type = 1;
+    string provisioner = 2;
+    string certificate = 3;
+    string key = 4;
+    bytes password = 5;
+}
+
+message SSH {
+    string host_key = 1;        // pem representation in files
+    string user_key = 2;        // pem representation in files
+    string host_public_key = 3; // ssh representation in files
+    string user_public_key = 4; // ssh representation in files
+    repeated SSHPublicKey keys = 5;
+    string add_user_principal = 6;
+    string add_user_command = 7;
+    Bastion bastion = 8;
+}
+
+message SSHPublicKey {
+    enum Type {
+        UNKNOWN = 0;
+        USER    = 1;
+        HOST    = 2;
+    }
+    Type type = 1;
+    bool federated = 2;
+    google.protobuf.Struct key = 3;
+}
+
+message Bastion {
+    string hostname = 1;
+    string user = 2;
+    string port = 3;
+    string command = 4;
+    string flags = 5;
+}
+
+message KMS {
+    enum Type {
+        DEFAULT     = 0;
+        SOFTKMS     = 1;
+        CLOUDKMS    = 2;
+        AMAZONKMS   = 3;
+        PKCS11      = 4;
+        YUBIKEY     = 5;
+        SSHAGENTKMS = 6;
+        AZUREKMS    = 7;
+    }
+    Type type = 1;
+    string credentialsFile = 2;
+    string uri = 3;
+    string pin = 4;
+    string managementKey = 5;
+    string region = 6;
+    string profile = 7;
+}
+
+message TLS {
+    enum CiperSuite {
+        UNKNOWN                                       = 0;
+
+        // TLS 1.0 - 1.2 cipher suites.
+        TLS_RSA_WITH_RC4_128_SHA                      = 0x0005;
+        TLS_RSA_WITH_3DES_EDE_CBC_SHA                 = 0x000a;
+        TLS_RSA_WITH_AES_128_CBC_SHA                  = 0x002f;
+        TLS_RSA_WITH_AES_256_CBC_SHA                  = 0x0035;
+        TLS_RSA_WITH_AES_128_CBC_SHA256               = 0x003c;
+        TLS_RSA_WITH_AES_128_GCM_SHA256               = 0x009c;
+        TLS_RSA_WITH_AES_256_GCM_SHA384               = 0x009d;
+        TLS_ECDHE_ECDSA_WITH_RC4_128_SHA              = 0xc007;
+        TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA          = 0xc009;
+        TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA          = 0xc00a;
+        TLS_ECDHE_RSA_WITH_RC4_128_SHA                = 0xc011;
+        TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA           = 0xc012;
+        TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA            = 0xc013;
+        TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA            = 0xc014;
+        TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256       = 0xc023;
+        TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256         = 0xc027;
+        TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256         = 0xc02f;
+        TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256       = 0xc02b;
+        TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384         = 0xc030;
+        TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384       = 0xc02c;
+        TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256   = 0xcca8;
+        TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 = 0xcca9;
+
+        // TLS 1.3 cipher suites.
+        TLS_AES_128_GCM_SHA256       = 0x1301;
+        TLS_AES_256_GCM_SHA384       = 0x1302;
+        TLS_CHACHA20_POLY1305_SHA256 = 0x1303;
+    }
+    repeated CiperSuite cipher_suites = 1;
+    string min_version = 2;
+    string max_version = 3;
+    bool renegotiation = 4;
+}
+
+message ConfigTemplates {
+    SSHConfigTemplate ssh = 1;
+    google.protobuf.Struct data = 2;
+}
+
+message SSHConfigTemplate {
+    repeated ConfigTemplate users = 1;
+    repeated ConfigTemplate hosts = 2;
+}
+
+message ConfigTemplate {
+    enum Type {
+        UNKNOWN   = 0;
+        SNIPPET   = 1;
+        FILE      = 2;
+        DIRECTORY = 3;
+    }
+    Type type = 1;
+    string name = 2;
+    string template = 3;
+    string path = 4;
+    string comment = 5;
+    repeated string requires = 6;
+    bytes content = 7;
+}

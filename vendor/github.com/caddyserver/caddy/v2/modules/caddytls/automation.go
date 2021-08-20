@@ -16,19 +16,22 @@ package caddytls
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/certmagic"
 	"github.com/mholt/acmez"
+	"go.uber.org/zap"
 )
 
 // AutomationConfig governs the automated management of TLS certificates.
 type AutomationConfig struct {
-	// The list of automation policies. The first matching
-	// policy will be applied for a given certificate/name.
+	// The list of automation policies. The first policy matching
+	// a certificate or subject name will be applied.
 	Policies []*AutomationPolicy `json:"policies,omitempty"`
 
 	// On-Demand TLS defers certificate operations to the
@@ -39,7 +42,7 @@ type AutomationConfig struct {
 	// In 2015, Caddy became the first web server to
 	// implement this experimental technology.
 	//
-	// Note that this field does not enable on-demand TLS,
+	// Note that this field does not enable on-demand TLS;
 	// it only configures it for when it is used. To enable
 	// it, create an automation policy with `on_demand`.
 	OnDemand *OnDemandConfig `json:"on_demand,omitempty"`
@@ -56,6 +59,19 @@ type AutomationConfig struct {
 	// performed. Default: 10m
 	RenewCheckInterval caddy.Duration `json:"renew_interval,omitempty"`
 
+	// How often to scan storage units for old or expired
+	// assets and remove them. These scans exert lots of
+	// reads (and list operations) on the storage module, so
+	// choose a longer interval for large deployments.
+	// Default: 24h
+	//
+	// Storage will always be cleaned when the process first
+	// starts. Then, a new cleaning will be started this
+	// duration after the previous cleaning started if the
+	// previous cleaning finished in less than half the time
+	// of this interval (otherwise next start will be skipped).
+	StorageCleanInterval caddy.Duration `json:"storage_clean_interval,omitempty"`
+
 	defaultPublicAutomationPolicy   *AutomationPolicy
 	defaultInternalAutomationPolicy *AutomationPolicy // only initialized if necessary
 }
@@ -69,16 +85,29 @@ type AutomationConfig struct {
 // TLS app to properly provision a new policy.
 type AutomationPolicy struct {
 	// Which subjects (hostnames or IP addresses) this policy applies to.
-	Subjects []string `json:"subjects,omitempty"`
+	//
+	// This list is a filter, not a command. In other words, it is used
+	// only to filter whether this policy should apply to a subject that
+	// needs a certificate; it does NOT command the TLS app to manage a
+	// certificate for that subject. To have Caddy automate a certificate
+	// or specific subjects, use the "automate" certificate loader module
+	// of the TLS app.
+	SubjectsRaw []string `json:"subjects,omitempty"`
 
 	// The modules that may issue certificates. Default: internal if all
 	// subjects do not qualify for public certificates; othewise acme and
 	// zerossl.
 	IssuersRaw []json.RawMessage `json:"issuers,omitempty" caddy:"namespace=tls.issuance inline_key=module"`
 
-	// DEPRECATED: Use `issuers` instead (November 2020). This field will
-	// be removed in the future.
-	IssuerRaw json.RawMessage `json:"issuer,omitempty" caddy:"namespace=tls.issuance inline_key=module"`
+	// Modules that can get a custom certificate to use for any
+	// given TLS handshake at handshake-time. Custom certificates
+	// can be useful if another entity is managing certificates
+	// and Caddy need only get it and serve it. Specifying a Manager
+	// enables on-demand TLS, i.e. it has the side-effect of setting
+	// the on_demand parameter to `true`.
+	//
+	// TODO: This is an EXPERIMENTAL feature. Subject to change or removal.
+	ManagersRaw []json.RawMessage `json:"get_certificate,omitempty" caddy:"namespace=tls.get_certificate inline_key=via"`
 
 	// If true, certificates will be requested with MustStaple. Not all
 	// CAs support this, and there are potentially serious consequences
@@ -104,20 +133,44 @@ type AutomationPolicy struct {
 
 	// If true, certificates will be managed "on demand"; that is, during
 	// TLS handshakes or when needed, as opposed to at startup or config
-	// load.
+	// load. This enables On-Demand TLS for this policy.
 	OnDemand bool `json:"on_demand,omitempty"`
 
-	// Issuers stores the decoded issuer parameters. This is only
-	// used to populate an underlying certmagic.Config's Issuers
-	// field; it is not referenced thereafter.
-	Issuers []certmagic.Issuer `json:"-"`
+	// Disables OCSP stapling. Disabling OCSP stapling puts clients at
+	// greater risk, reduces their privacy, and usually lowers client
+	// performance. It is NOT recommended to disable this unless you
+	// are able to justify the costs.
+	// EXPERIMENTAL. Subject to change.
+	DisableOCSPStapling bool `json:"disable_ocsp_stapling,omitempty"`
 
-	magic   *certmagic.Config
-	storage certmagic.Storage
+	// Overrides the URLs of OCSP responders embedded in certificates.
+	// Each key is a OCSP server URL to override, and its value is the
+	// replacement. An empty value will disable querying of that server.
+	// EXPERIMENTAL. Subject to change.
+	OCSPOverrides map[string]string `json:"ocsp_overrides,omitempty"`
+
+	// Issuers and Managers store the decoded issuer and manager modules;
+	// they are only used to populate an underlying certmagic.Config's
+	// fields during provisioning so that the modules can survive a
+	// re-provisioning.
+	Issuers  []certmagic.Issuer  `json:"-"`
+	Managers []certmagic.Manager `json:"-"`
+
+	subjects []string
+	magic    *certmagic.Config
+	storage  certmagic.Storage
 }
 
 // Provision sets up ap and builds its underlying CertMagic config.
 func (ap *AutomationPolicy) Provision(tlsApp *TLS) error {
+	// replace placeholders in subjects to allow environment variables
+	repl := caddy.NewReplacer()
+	subjects := make([]string, len(ap.SubjectsRaw))
+	for i, sub := range ap.SubjectsRaw {
+		subjects[i] = repl.ReplaceAll(sub, "")
+	}
+	ap.subjects = subjects
+
 	// policy-specific storage implementation
 	if ap.StorageRaw != nil {
 		val, err := tlsApp.ctx.LoadModule(ap, "StorageRaw")
@@ -131,33 +184,20 @@ func (ap *AutomationPolicy) Provision(tlsApp *TLS) error {
 		ap.storage = cmStorage
 	}
 
-	var ond *certmagic.OnDemandConfig
-	if ap.OnDemand {
-		ond = &certmagic.OnDemandConfig{
-			DecisionFunc: func(name string) error {
-				// if an "ask" endpoint was defined, consult it first
-				if tlsApp.Automation != nil &&
-					tlsApp.Automation.OnDemand != nil &&
-					tlsApp.Automation.OnDemand.Ask != "" {
-					err := onDemandAskRequest(tlsApp.Automation.OnDemand.Ask, name)
-					if err != nil {
-						return err
-					}
-				}
-				// check the rate limiter last because
-				// doing so makes a reservation
-				if !onDemandRateLimiter.Allow() {
-					return fmt.Errorf("on-demand rate limit exceeded")
-				}
-				return nil
-			},
-		}
-	}
+	// we don't store loaded modules directly in the certmagic config since
+	// policy provisioning may happen more than once (during auto-HTTPS) and
+	// loading a module clears its config bytes; thus, load the module and
+	// store them on the policy before putting it on the config
 
-	// TODO: IssuerRaw field deprecated as of November 2020 - remove this shim after deprecation is complete
-	if ap.IssuerRaw != nil {
-		tlsApp.logger.Warn("the 'issuer' field is deprecated and will be removed in the future; use 'issuers' instead; your issuer has been appended automatically for now")
-		ap.IssuersRaw = append(ap.IssuersRaw, ap.IssuerRaw)
+	// load and provision any cert manager modules
+	if ap.ManagersRaw != nil {
+		vals, err := tlsApp.ctx.LoadModule(ap, "ManagersRaw")
+		if err != nil {
+			return fmt.Errorf("loading external certificate manager modules: %v", err)
+		}
+		for _, getCertVal := range vals.([]any) {
+			ap.Managers = append(ap.Managers, getCertVal.(certmagic.Manager))
+		}
 	}
 
 	// load and provision any explicitly-configured issuer modules
@@ -166,7 +206,7 @@ func (ap *AutomationPolicy) Provision(tlsApp *TLS) error {
 		if err != nil {
 			return fmt.Errorf("loading TLS automation management module: %s", err)
 		}
-		for _, issVal := range val.([]interface{}) {
+		for _, issVal := range val.([]any) {
 			ap.Issuers = append(ap.Issuers, issVal.(certmagic.Issuer))
 		}
 	}
@@ -174,7 +214,7 @@ func (ap *AutomationPolicy) Provision(tlsApp *TLS) error {
 	issuers := ap.Issuers
 	if len(issuers) == 0 {
 		var err error
-		issuers, err = DefaultIssuers(tlsApp.ctx)
+		issuers, err = DefaultIssuersProvisioned(tlsApp.ctx)
 		if err != nil {
 			return err
 		}
@@ -200,14 +240,59 @@ func (ap *AutomationPolicy) Provision(tlsApp *TLS) error {
 		storage = tlsApp.ctx.Storage()
 	}
 
+	// on-demand TLS
+	var ond *certmagic.OnDemandConfig
+	if ap.OnDemand || len(ap.Managers) > 0 {
+		// ask endpoint is now required after a number of negligence cases causing abuse;
+		// but is still allowed for explicit subjects (non-wildcard, non-unbounded),
+		// for the internal issuer since it doesn't cause ACME issuer pressure
+		if ap.isWildcardOrDefault() && !ap.onlyInternalIssuer() && (tlsApp.Automation == nil || tlsApp.Automation.OnDemand == nil || tlsApp.Automation.OnDemand.Ask == "") {
+			return fmt.Errorf("on-demand TLS cannot be enabled without an 'ask' endpoint to prevent abuse; please refer to documentation for details")
+		}
+		ond = &certmagic.OnDemandConfig{
+			DecisionFunc: func(name string) error {
+				if tlsApp.Automation == nil || tlsApp.Automation.OnDemand == nil {
+					return nil
+				}
+				if err := onDemandAskRequest(tlsApp.logger, tlsApp.Automation.OnDemand.Ask, name); err != nil {
+					// distinguish true errors from denials, because it's important to elevate actual errors
+					if errors.Is(err, errAskDenied) {
+						tlsApp.logger.Debug("certificate issuance denied",
+							zap.String("ask_endpoint", tlsApp.Automation.OnDemand.Ask),
+							zap.String("domain", name),
+							zap.Error(err))
+					} else {
+						tlsApp.logger.Error("request to 'ask' endpoint failed",
+							zap.String("ask_endpoint", tlsApp.Automation.OnDemand.Ask),
+							zap.String("domain", name),
+							zap.Error(err))
+					}
+					return err
+				}
+				// check the rate limiter last because
+				// doing so makes a reservation
+				if !onDemandRateLimiter.Allow() {
+					return fmt.Errorf("on-demand rate limit exceeded")
+				}
+				return nil
+			},
+			Managers: ap.Managers,
+		}
+	}
+
 	template := certmagic.Config{
 		MustStaple:         ap.MustStaple,
 		RenewalWindowRatio: ap.RenewalWindowRatio,
 		KeySource:          keySource,
+		OnEvent:            tlsApp.onEvent,
 		OnDemand:           ond,
-		Storage:            storage,
-		Issuers:            issuers,
-		Logger:             tlsApp.logger,
+		OCSP: certmagic.OCSPConfig{
+			DisableStapling:    ap.DisableOCSPStapling,
+			ResponderOverrides: ap.OCSPOverrides,
+		},
+		Storage: storage,
+		Issuers: issuers,
+		Logger:  tlsApp.logger,
 	}
 	ap.magic = certmagic.New(tlsApp.certCache, template)
 
@@ -225,21 +310,57 @@ func (ap *AutomationPolicy) Provision(tlsApp *TLS) error {
 	return nil
 }
 
-// DefaultIssuers returns empty but provisioned default Issuers.
+// Subjects returns the list of subjects with all placeholders replaced.
+func (ap *AutomationPolicy) Subjects() []string {
+	return ap.subjects
+}
+
+func (ap *AutomationPolicy) onlyInternalIssuer() bool {
+	if len(ap.Issuers) != 1 {
+		return false
+	}
+	_, ok := ap.Issuers[0].(*InternalIssuer)
+	return ok
+}
+
+// isWildcardOrDefault determines if the subjects include any wildcard domains,
+// or is the "default" policy (i.e. no subjects) which is unbounded.
+func (ap *AutomationPolicy) isWildcardOrDefault() bool {
+	isWildcardOrDefault := false
+	if len(ap.subjects) == 0 {
+		isWildcardOrDefault = true
+	}
+	for _, sub := range ap.subjects {
+		if strings.HasPrefix(sub, "*") {
+			isWildcardOrDefault = true
+			break
+		}
+	}
+	return isWildcardOrDefault
+}
+
+// DefaultIssuers returns empty Issuers (not provisioned) to be used as defaults.
 // This function is experimental and has no compatibility promises.
-func DefaultIssuers(ctx caddy.Context) ([]certmagic.Issuer, error) {
-	acme := new(ACMEIssuer)
-	err := acme.Provision(ctx)
-	if err != nil {
-		return nil, err
+func DefaultIssuers() []certmagic.Issuer {
+	return []certmagic.Issuer{
+		new(ACMEIssuer),
+		&ZeroSSLIssuer{ACMEIssuer: new(ACMEIssuer)},
 	}
-	zerossl := new(ZeroSSLIssuer)
-	err = zerossl.Provision(ctx)
-	if err != nil {
-		return nil, err
+}
+
+// DefaultIssuersProvisioned returns empty but provisioned default Issuers from
+// DefaultIssuers(). This function is experimental and has no compatibility promises.
+func DefaultIssuersProvisioned(ctx caddy.Context) ([]certmagic.Issuer, error) {
+	issuers := DefaultIssuers()
+	for i, iss := range issuers {
+		if prov, ok := iss.(caddy.Provisioner); ok {
+			err := prov.Provision(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("provisioning default issuer %d: %T: %v", i, iss, err)
+			}
+		}
 	}
-	// TODO: eventually, insert ZeroSSL into first position in the slice -- see also httpcaddyfile/tlsapp.go for where similar defaults are configured
-	return []certmagic.Issuer{acme, zerossl}, nil
+	return issuers, nil
 }
 
 // ChallengesConfig configures the ACME challenges.
@@ -308,12 +429,23 @@ type DNSChallengeConfig struct {
 	// The TTL of the TXT record used for the DNS challenge.
 	TTL caddy.Duration `json:"ttl,omitempty"`
 
-	// How long to wait for DNS record to propagate.
+	// How long to wait before starting propagation checks.
+	// Default: 0 (no wait).
+	PropagationDelay caddy.Duration `json:"propagation_delay,omitempty"`
+
+	// Maximum time to wait for temporary DNS record to appear.
+	// Set to -1 to disable propagation checks.
+	// Default: 2 minutes.
 	PropagationTimeout caddy.Duration `json:"propagation_timeout,omitempty"`
 
 	// Custom DNS resolvers to prefer over system/built-in defaults.
 	// Often necessary to configure when using split-horizon DNS.
 	Resolvers []string `json:"resolvers,omitempty"`
+
+	// Override the domain to use for the DNS challenge. This
+	// is to delegate the challenge to a different domain,
+	// e.g. one that updates faster or one with a provider API.
+	OverrideDomain string `json:"override_domain,omitempty"`
 
 	solver acmez.Solver
 }
@@ -329,7 +461,7 @@ type OnDemandConfig struct {
 	// issuance of certificates from handshakes.
 	RateLimit *RateLimit `json:"rate_limit,omitempty"`
 
-	// If Caddy needs to obtain or renew a certificate
+	// REQUIRED. If Caddy needs to obtain/renew a certificate
 	// during a TLS handshake, it will perform a quick
 	// HTTP request to this URL to check if it should be
 	// allowed to try to get a certificate for the name

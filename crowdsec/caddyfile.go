@@ -7,7 +7,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 )
 
-func parseCaddyfileGlobalOption(d *caddyfile.Dispenser) (interface{}, error) {
+func parseCaddyfileGlobalOption(d *caddyfile.Dispenser, existingVal interface{}) (interface{}, error) {
 
 	// TODO: make this work similar to the handler? Or doesn't that work for this
 	// app level module, because of shared config etc.

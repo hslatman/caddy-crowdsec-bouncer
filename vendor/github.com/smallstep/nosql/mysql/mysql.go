@@ -1,3 +1,6 @@
+//go:build !nomysql
+// +build !nomysql
+
 package mysql
 
 import (
@@ -6,8 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	// import mysql driver anonymously (just run the init)
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/pkg/errors"
 	"github.com/smallstep/nosql/database"
 )
@@ -27,16 +29,27 @@ func (db *DB) Open(dataSourceName string, opt ...database.Option) error {
 		}
 	}
 
-	var err error
-	_db, err := sql.Open("mysql", dataSourceName)
+	parsedDSN, err := mysql.ParseDSN(dataSourceName)
+	if err != nil {
+		return errors.Wrap(err, "parse database from dataSource")
+	}
+	// Database name in DSN is ignored if explicitly set
+	if opts.Database == "" {
+		opts.Database = parsedDSN.DBName
+	}
+
+	// First connect to no db to create it if it doesn't exist
+	parsedDSN.DBName = ""
+	_db, err := sql.Open("mysql", parsedDSN.FormatDSN())
 	if err != nil {
 		return errors.Wrap(err, "error connecting to mysql")
 	}
-	_, err = _db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", opts.Database))
+	_, err = _db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", opts.Database))
 	if err != nil {
 		return errors.Wrapf(err, "error creating database %s (if not exists)", opts.Database)
 	}
-	db.db, err = sql.Open("mysql", dataSourceName+opts.Database)
+	parsedDSN.DBName = opts.Database
+	db.db, err = sql.Open("mysql", parsedDSN.FormatDSN())
 	if err != nil {
 		return errors.Wrapf(err, "error connecting to mysql database")
 	}
@@ -51,6 +64,10 @@ func (db *DB) Close() error {
 
 func getQry(bucket []byte) string {
 	return fmt.Sprintf("SELECT nvalue FROM `%s` WHERE nkey = ?", bucket)
+}
+
+func getQryForUpdate(bucket []byte) string {
+	return fmt.Sprintf("SELECT nvalue FROM `%s` WHERE nkey = ? FOR UPDATE", bucket)
 }
 
 func insertUpdateQry(bucket []byte) string {
@@ -103,7 +120,7 @@ func (db *DB) List(bucket []byte) ([]*database.Entry, error) {
 	rows, err := db.db.Query(fmt.Sprintf("SELECT * FROM `%s`", bucket))
 	if err != nil {
 		estr := err.Error()
-		if strings.HasPrefix(estr, "Error 1146:") {
+		if strings.HasPrefix(estr, "Error 1146") {
 			return nil, errors.Wrapf(database.ErrNotFound, estr)
 		}
 		return nil, errors.Wrapf(err, "error querying table %s", bucket)
@@ -148,7 +165,7 @@ func (db *DB) CmpAndSwap(bucket, key, oldValue, newValue []byte) ([]byte, bool, 
 		return nil, false, err
 	case swapped:
 		if err := sqlTx.Commit(); err != nil {
-			return nil, false, errors.Wrapf(err, "failed to commit badger transaction")
+			return nil, false, errors.Wrapf(err, "failed to commit MySQL transaction")
 		}
 		return val, swapped, nil
 	default:
@@ -161,9 +178,9 @@ func (db *DB) CmpAndSwap(bucket, key, oldValue, newValue []byte) ([]byte, bool, 
 
 func cmpAndSwap(sqlTx *sql.Tx, bucket, key, oldValue, newValue []byte) ([]byte, bool, error) {
 	var current []byte
-	err := sqlTx.QueryRow(getQry(bucket), key).Scan(&current)
+	err := sqlTx.QueryRow(getQryForUpdate(bucket), key).Scan(&current)
 
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, false, err
 	}
 	if !bytes.Equal(current, oldValue) {
@@ -200,7 +217,7 @@ func (db *DB) Update(tx *database.Tx) error {
 			_, err := sqlTx.Exec(deleteTableQry(q.Bucket))
 			if err != nil {
 				estr := err.Error()
-				if strings.HasPrefix(err.Error(), "Error 1051:") {
+				if strings.HasPrefix(err.Error(), "Error 1051") {
 					return errors.Wrapf(database.ErrNotFound, estr)
 				}
 				return errors.Wrapf(err, "failed to delete table %s", q.Bucket)
@@ -256,7 +273,7 @@ func (db *DB) DeleteTable(bucket []byte) error {
 	_, err := db.db.Exec(deleteTableQry(bucket))
 	if err != nil {
 		estr := err.Error()
-		if strings.HasPrefix(err.Error(), "Error 1051:") {
+		if strings.HasPrefix(estr, "Error 1051") {
 			return errors.Wrapf(database.ErrNotFound, estr)
 		}
 		return errors.Wrapf(err, "failed to delete table %s", bucket)

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/smallstep/certificates/authority/provisioner"
 	"github.com/smallstep/nosql"
 	"github.com/smallstep/nosql/database"
 	"golang.org/x/crypto/ssh"
@@ -15,7 +17,9 @@ import (
 
 var (
 	certsTable             = []byte("x509_certs")
+	certsDataTable         = []byte("x509_certs_data")
 	revokedCertsTable      = []byte("revoked_x509_certs")
+	crlTable               = []byte("x509_crl")
 	revokedSSHCertsTable   = []byte("revoked_ssh_certs")
 	usedOTTTable           = []byte("used_ott")
 	sshCertsTable          = []byte("ssh_certs")
@@ -23,6 +27,10 @@ var (
 	sshUsersTable          = []byte("ssh_users")
 	sshHostPrincipalsTable = []byte("ssh_host_principals")
 )
+
+// TODO: at the moment we store a single CRL in the database, in a dedicated table.
+// is this acceptable? probably not....
+var crlKey = []byte("crl")
 
 // ErrAlreadyExists can be returned if the DB attempts to set a key that has
 // been previously set.
@@ -47,12 +55,48 @@ type AuthDB interface {
 	IsSSHRevoked(sn string) (bool, error)
 	Revoke(rci *RevokedCertificateInfo) error
 	RevokeSSH(rci *RevokedCertificateInfo) error
-	StoreCertificate(crt *x509.Certificate) error
+	GetCertificate(serialNumber string) (*x509.Certificate, error)
 	UseToken(id, tok string) (bool, error)
 	IsSSHHost(name string) (bool, error)
-	StoreSSHCertificate(crt *ssh.Certificate) error
 	GetSSHHostPrincipals() ([]string, error)
 	Shutdown() error
+}
+
+type dbKey struct{}
+
+// NewContext adds the given authority database to the context.
+func NewContext(ctx context.Context, db AuthDB) context.Context {
+	return context.WithValue(ctx, dbKey{}, db)
+}
+
+// FromContext returns the current authority database from the given context.
+func FromContext(ctx context.Context) (db AuthDB, ok bool) {
+	db, ok = ctx.Value(dbKey{}).(AuthDB)
+	return
+}
+
+// MustFromContext returns the current database from the given context. It
+// will panic if it's not in the context.
+func MustFromContext(ctx context.Context) AuthDB {
+	if db, ok := FromContext(ctx); !ok {
+		panic("authority database is not in the context")
+	} else {
+		return db
+	}
+}
+
+// CertificateStorer is an extension of AuthDB that allows to store
+// certificates.
+type CertificateStorer interface {
+	StoreCertificate(crt *x509.Certificate) error
+	StoreSSHCertificate(crt *ssh.Certificate) error
+}
+
+// CertificateRevocationListDB is an interface to indicate whether the DB supports CRL generation
+type CertificateRevocationListDB interface {
+	GetRevokedCertificates() (*[]RevokedCertificateInfo, error)
+	GetCRL() (*CertificateRevocationListInfo, error)
+	StoreCRL(*CertificateRevocationListInfo) error
 }
 
 // DB is a wrapper over the nosql.DB interface.
@@ -81,7 +125,7 @@ func New(c *Config) (AuthDB, error) {
 	tables := [][]byte{
 		revokedCertsTable, certsTable, usedOTTTable,
 		sshCertsTable, sshHostsTable, sshHostPrincipalsTable, sshUsersTable,
-		revokedSSHCertsTable,
+		revokedSSHCertsTable, certsDataTable, crlTable,
 	}
 	for _, b := range tables {
 		if err := db.CreateTable(b); err != nil {
@@ -101,8 +145,19 @@ type RevokedCertificateInfo struct {
 	ReasonCode    int
 	Reason        string
 	RevokedAt     time.Time
+	ExpiresAt     time.Time
 	TokenID       string
 	MTLS          bool
+	ACME          bool
+}
+
+// CertificateRevocationListInfo contains a CRL in DER format and associated
+// metadata to allow a decision on whether to regenerate the CRL or not easier
+type CertificateRevocationListInfo struct {
+	Number    int64
+	ExpiresAt time.Time
+	Duration  time.Duration
+	DER       []byte
 }
 
 // IsRevoked returns whether or not a certificate with the given identifier
@@ -187,10 +242,155 @@ func (db *DB) RevokeSSH(rci *RevokedCertificateInfo) error {
 	}
 }
 
+// GetRevokedCertificates gets a list of all revoked certificates.
+func (db *DB) GetRevokedCertificates() (*[]RevokedCertificateInfo, error) {
+	entries, err := db.List(revokedCertsTable)
+	if err != nil {
+		return nil, err
+	}
+	var revokedCerts []RevokedCertificateInfo
+	for _, e := range entries {
+		var data RevokedCertificateInfo
+		if err := json.Unmarshal(e.Value, &data); err != nil {
+			return nil, err
+		}
+		revokedCerts = append(revokedCerts, data)
+	}
+	return &revokedCerts, nil
+}
+
+// StoreCRL stores a CRL in the DB
+func (db *DB) StoreCRL(crlInfo *CertificateRevocationListInfo) error {
+	crlInfoBytes, err := json.Marshal(crlInfo)
+	if err != nil {
+		return errors.Wrap(err, "json Marshal error")
+	}
+
+	if err := db.Set(crlTable, crlKey, crlInfoBytes); err != nil {
+		return errors.Wrap(err, "database Set error")
+	}
+	return nil
+}
+
+// GetCRL gets the existing CRL from the database
+func (db *DB) GetCRL() (*CertificateRevocationListInfo, error) {
+	crlInfoBytes, err := db.Get(crlTable, crlKey)
+	if err != nil {
+		return nil, errors.Wrap(err, "database Get error")
+	}
+
+	var crlInfo CertificateRevocationListInfo
+	err = json.Unmarshal(crlInfoBytes, &crlInfo)
+	if err != nil {
+		return nil, errors.Wrap(err, "json Unmarshal error")
+	}
+	return &crlInfo, err
+}
+
+// GetCertificate retrieves a certificate by the serial number.
+func (db *DB) GetCertificate(serialNumber string) (*x509.Certificate, error) {
+	asn1Data, err := db.Get(certsTable, []byte(serialNumber))
+	if err != nil {
+		return nil, errors.Wrap(err, "database Get error")
+	}
+	cert, err := x509.ParseCertificate(asn1Data)
+	if err != nil {
+		return nil, errors.Wrapf(err, "error parsing certificate with serial number %s", serialNumber)
+	}
+	return cert, nil
+}
+
+// GetCertificateData returns the data stored for a provisioner
+func (db *DB) GetCertificateData(serialNumber string) (*CertificateData, error) {
+	b, err := db.Get(certsDataTable, []byte(serialNumber))
+	if err != nil {
+		return nil, errors.Wrap(err, "database Get error")
+	}
+	var data CertificateData
+	if err := json.Unmarshal(b, &data); err != nil {
+		return nil, errors.Wrap(err, "error unmarshaling json")
+	}
+	return &data, nil
+}
+
 // StoreCertificate stores a certificate PEM.
 func (db *DB) StoreCertificate(crt *x509.Certificate) error {
 	if err := db.Set(certsTable, []byte(crt.SerialNumber.String()), crt.Raw); err != nil {
 		return errors.Wrap(err, "database Set error")
+	}
+	return nil
+}
+
+// CertificateData is the JSON representation of the data stored in
+// x509_certs_data table.
+type CertificateData struct {
+	Provisioner *ProvisionerData    `json:"provisioner,omitempty"`
+	RaInfo      *provisioner.RAInfo `json:"ra,omitempty"`
+}
+
+// ProvisionerData is the JSON representation of the provisioner stored in the
+// x509_certs_data table.
+type ProvisionerData struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type raProvisioner interface {
+	RAInfo() *provisioner.RAInfo
+}
+
+// StoreCertificateChain stores the leaf certificate and the provisioner that
+// authorized the certificate.
+func (db *DB) StoreCertificateChain(p provisioner.Interface, chain ...*x509.Certificate) error {
+	leaf := chain[0]
+	serialNumber := []byte(leaf.SerialNumber.String())
+	data := &CertificateData{}
+	if p != nil {
+		data.Provisioner = &ProvisionerData{
+			ID:   p.GetID(),
+			Name: p.GetName(),
+			Type: p.GetType().String(),
+		}
+		if rap, ok := p.(raProvisioner); ok {
+			data.RaInfo = rap.RAInfo()
+		}
+	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		return errors.Wrap(err, "error marshaling json")
+	}
+	// Add certificate and certificate data in one transaction.
+	tx := new(database.Tx)
+	tx.Set(certsTable, serialNumber, leaf.Raw)
+	tx.Set(certsDataTable, serialNumber, b)
+	if err := db.Update(tx); err != nil {
+		return errors.Wrap(err, "database Update error")
+	}
+	return nil
+}
+
+// StoreRenewedCertificate stores the leaf certificate and the provisioner that
+// authorized the old certificate if available.
+func (db *DB) StoreRenewedCertificate(oldCert *x509.Certificate, chain ...*x509.Certificate) error {
+	var certificateData []byte
+	if data, err := db.GetCertificateData(oldCert.SerialNumber.String()); err == nil {
+		if b, err := json.Marshal(data); err == nil {
+			certificateData = b
+		}
+	}
+
+	leaf := chain[0]
+	serialNumber := []byte(leaf.SerialNumber.String())
+
+	// Add certificate and certificate data in one transaction.
+	tx := new(database.Tx)
+	tx.Set(certsTable, serialNumber, leaf.Raw)
+	if certificateData != nil {
+		tx.Set(certsDataTable, serialNumber, certificateData)
+	}
+	if err := db.Update(tx); err != nil {
+		return errors.Wrap(err, "database Update error")
 	}
 	return nil
 }
@@ -282,18 +482,44 @@ func (db *DB) Shutdown() error {
 
 // MockAuthDB mocks the AuthDB interface. //
 type MockAuthDB struct {
-	Err                   error
-	Ret1                  interface{}
-	MIsRevoked            func(string) (bool, error)
-	MIsSSHRevoked         func(string) (bool, error)
-	MRevoke               func(rci *RevokedCertificateInfo) error
-	MRevokeSSH            func(rci *RevokedCertificateInfo) error
-	MStoreCertificate     func(crt *x509.Certificate) error
-	MUseToken             func(id, tok string) (bool, error)
-	MIsSSHHost            func(principal string) (bool, error)
-	MStoreSSHCertificate  func(crt *ssh.Certificate) error
-	MGetSSHHostPrincipals func() ([]string, error)
-	MShutdown             func() error
+	Err                     error
+	Ret1                    interface{}
+	MIsRevoked              func(string) (bool, error)
+	MIsSSHRevoked           func(string) (bool, error)
+	MRevoke                 func(rci *RevokedCertificateInfo) error
+	MRevokeSSH              func(rci *RevokedCertificateInfo) error
+	MGetCertificate         func(serialNumber string) (*x509.Certificate, error)
+	MGetCertificateData     func(serialNumber string) (*CertificateData, error)
+	MStoreCertificate       func(crt *x509.Certificate) error
+	MUseToken               func(id, tok string) (bool, error)
+	MIsSSHHost              func(principal string) (bool, error)
+	MStoreSSHCertificate    func(crt *ssh.Certificate) error
+	MGetSSHHostPrincipals   func() ([]string, error)
+	MShutdown               func() error
+	MGetRevokedCertificates func() (*[]RevokedCertificateInfo, error)
+	MGetCRL                 func() (*CertificateRevocationListInfo, error)
+	MStoreCRL               func(*CertificateRevocationListInfo) error
+}
+
+func (m *MockAuthDB) GetRevokedCertificates() (*[]RevokedCertificateInfo, error) {
+	if m.MGetRevokedCertificates != nil {
+		return m.MGetRevokedCertificates()
+	}
+	return m.Ret1.(*[]RevokedCertificateInfo), m.Err
+}
+
+func (m *MockAuthDB) GetCRL() (*CertificateRevocationListInfo, error) {
+	if m.MGetCRL != nil {
+		return m.MGetCRL()
+	}
+	return m.Ret1.(*CertificateRevocationListInfo), m.Err
+}
+
+func (m *MockAuthDB) StoreCRL(info *CertificateRevocationListInfo) error {
+	if m.MStoreCRL != nil {
+		return m.MStoreCRL(info)
+	}
+	return m.Err
 }
 
 // IsRevoked mock.
@@ -337,6 +563,25 @@ func (m *MockAuthDB) RevokeSSH(rci *RevokedCertificateInfo) error {
 		return m.MRevokeSSH(rci)
 	}
 	return m.Err
+}
+
+// GetCertificate mock.
+func (m *MockAuthDB) GetCertificate(serialNumber string) (*x509.Certificate, error) {
+	if m.MGetCertificate != nil {
+		return m.MGetCertificate(serialNumber)
+	}
+	return m.Ret1.(*x509.Certificate), m.Err
+}
+
+// GetCertificateData mock.
+func (m *MockAuthDB) GetCertificateData(serialNumber string) (*CertificateData, error) {
+	if m.MGetCertificateData != nil {
+		return m.MGetCertificateData(serialNumber)
+	}
+	if cd, ok := m.Ret1.(*CertificateData); ok {
+		return cd, m.Err
+	}
+	return nil, m.Err
 }
 
 // StoreCertificate mock.

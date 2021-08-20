@@ -62,8 +62,8 @@ type Options struct {
 	BlockSize          int
 	BloomFalsePositive float64
 	KeepL0InMemory     bool
-	MaxCacheSize       int64
-	MaxBfCacheSize     int64
+	BlockCacheSize     int64
+	IndexCacheSize     int64
 	LoadBloomsOnOpen   bool
 
 	NumLevelZeroTables      int
@@ -93,6 +93,11 @@ type Options struct {
 	// ChecksumVerificationMode decides when db should verify checksums for SSTable blocks.
 	ChecksumVerificationMode options.ChecksumVerificationMode
 
+	// DetectConflicts determines whether the transactions would be checked for
+	// conflicts. The transactions can be processed at a higher rate when
+	// conflict detection is disabled.
+	DetectConflicts bool
+
 	// Transaction start and commit timestamps are managed by end-user.
 	// This is only useful for databases built on top of Badger (like Dgraph).
 	// Not recommended for most users.
@@ -118,25 +123,27 @@ func DefaultOptions(path string) Options {
 		// table.Nothing to not preload the tables.
 		MaxLevels:               7,
 		MaxTableSize:            64 << 20,
-		NumCompactors:           2, // Compactions can be expensive. Only run 2.
+		NumCompactors:           2, // Run at least 2 compactors. One is dedicated for L0.
 		NumLevelZeroTables:      5,
-		NumLevelZeroTablesStall: 10,
+		NumLevelZeroTablesStall: 15,
 		NumMemtables:            5,
 		BloomFalsePositive:      0.01,
 		BlockSize:               4 * 1024,
 		SyncWrites:              true,
 		NumVersionsToKeep:       1,
 		CompactL0OnClose:        true,
-		KeepL0InMemory:          true,
+		KeepL0InMemory:          false,
 		VerifyValueChecksum:     false,
 		Compression:             options.None,
-		MaxCacheSize:            0,
-		MaxBfCacheSize:          0,
+		BlockCacheSize:          0,
+		IndexCacheSize:          0,
 		LoadBloomsOnOpen:        true,
+
 		// The following benchmarks were done on a 4 KB block size (default block size). The
 		// compression is ratio supposed to increase with increasing compression level but since the
 		// input for compression algorithm is small (4 KB), we don't get significant benefit at
 		// level 3.
+		// NOTE: The benchmarks are with DataDog ZSTD that requires CGO. Hence, no longer valid.
 		// no_compression-16              10	 502848865 ns/op	 165.46 MB/s	-
 		// zstd_compression/level_1-16     7	 739037966 ns/op	 112.58 MB/s	2.93
 		// zstd_compression/level_3-16     7	 756950250 ns/op	 109.91 MB/s	2.72
@@ -151,18 +158,18 @@ func DefaultOptions(path string) Options {
 		ValueLogFileSize: 1<<30 - 1,
 
 		ValueLogMaxEntries:            1000000,
-		ValueThreshold:                32,
+		ValueThreshold:                1 << 10, // 1 KB.
 		Truncate:                      false,
 		Logger:                        defaultLogger(INFO),
 		LogRotatesToFlush:             2,
 		EncryptionKey:                 []byte{},
 		EncryptionKeyRotationDuration: 10 * 24 * time.Hour, // Default 10 days.
+		DetectConflicts:               true,
 	}
 }
 
 func buildTableOptions(opt Options) table.Options {
 	return table.Options{
-		TableSize:            uint64(opt.MaxTableSize),
 		BlockSize:            opt.BlockSize,
 		BloomFalsePositive:   opt.BloomFalsePositive,
 		LoadBloomsOnOpen:     opt.LoadBloomsOnOpen,
@@ -341,7 +348,7 @@ func (opt Options) WithMaxLevels(val int) Options {
 // ValueThreshold sets the threshold used to decide whether a value is stored directly in the LSM
 // tree or separately in the log value files.
 //
-// The default value of ValueThreshold is 32, but LSMOnlyOptions sets it to maxValueThreshold.
+// The default value of ValueThreshold is 1 KB, but LSMOnlyOptions sets it to maxValueThreshold.
 func (opt Options) WithValueThreshold(val int) Options {
 	opt.ValueThreshold = val
 	return opt
@@ -443,7 +450,7 @@ func (opt Options) WithValueLogMaxEntries(val uint32) Options {
 // NumCompactors sets the number of compaction workers to run concurrently.
 // Setting this to zero stops compactions, which could eventually cause writes to block forever.
 //
-// The default value of NumCompactors is 2.
+// The default value of NumCompactors is 2. One is dedicated just for L0.
 func (opt Options) WithNumCompactors(val int) Options {
 	opt.NumCompactors = val
 	return opt
@@ -454,6 +461,7 @@ func (opt Options) WithNumCompactors(val int) Options {
 // CompactL0OnClose determines whether Level 0 should be compacted before closing the DB.
 // This ensures that both reads and writes are efficient when the DB is opened later.
 // CompactL0OnClose is set to true if KeepL0InMemory is set to true.
+//
 // The default value of CompactL0OnClose is true.
 func (opt Options) WithCompactL0OnClose(val bool) Options {
 	opt.CompactL0OnClose = val
@@ -484,7 +492,7 @@ func (opt Options) WithEncryptionKey(key []byte) Options {
 	return opt
 }
 
-// WithEncryptionRotationDuration returns new Options value with the duration set to
+// WithEncryptionKeyRotationDuration returns new Options value with the duration set to
 // the given value.
 //
 // Key Registry will use this duration to create new keys. If the previous generated
@@ -501,7 +509,7 @@ func (opt Options) WithEncryptionKeyRotationDuration(d time.Duration) Options {
 // will take longer to complete since memtables and all level 0 tables will have to be recreated.
 // This option also sets CompactL0OnClose option to true.
 //
-// The default value of KeepL0InMemory is true.
+// The default value of KeepL0InMemory is false.
 func (opt Options) WithKeepL0InMemory(val bool) Options {
 	opt.KeepL0InMemory = val
 	return opt
@@ -543,18 +551,18 @@ func (opt Options) WithChecksumVerificationMode(cvMode options.ChecksumVerificat
 	return opt
 }
 
-// WithMaxCacheSize returns a new Options value with MaxCacheSize set to the given value.
+// WithBlockCacheSize returns a new Options value with BlockCacheSize set to the given value.
 //
-// This value specifies how much data cache should hold in memory. A small size of cache means lower
-// memory consumption and lookups/iterations would take longer.
-// It is recommended to use a cache if you're using compression or encryption.
+// This value specifies how much data cache should hold in memory. A small size
+// of cache means lower memory consumption and lookups/iterations would take
+// longer. It is recommended to use a cache if you're using compression or encryption.
 // If compression and encryption both are disabled, adding a cache will lead to
-// unnecessary overhead which will affect the read performance. Setting size to zero disables the
-// cache altogether.
+// unnecessary overhead which will affect the read performance. Setting size to
+// zero disables the cache altogether.
 //
-// Default value of MaxCacheSize is zero.
-func (opt Options) WithMaxCacheSize(size int64) Options {
-	opt.MaxCacheSize = size
+// Default value of BlockCacheSize is zero.
+func (opt Options) WithBlockCacheSize(size int64) Options {
+	opt.BlockCacheSize = size
 	return opt
 }
 
@@ -580,6 +588,7 @@ func (opt Options) WithInMemory(b bool) Options {
 // algorithm is small (4 KB), we don't get significant benefit at level 3. It is advised to write
 // your own benchmarks before choosing a compression algorithm or level.
 //
+// NOTE: The benchmarks are with DataDog ZSTD that requires CGO. Hence, no longer valid.
 // no_compression-16              10	 502848865 ns/op	 165.46 MB/s	-
 // zstd_compression/level_1-16     7	 739037966 ns/op	 112.58 MB/s	2.93
 // zstd_compression/level_3-16     7	 756950250 ns/op	 109.91 MB/s	2.72
@@ -603,31 +612,46 @@ func (opt Options) WithBypassLockGuard(b bool) Options {
 	return opt
 }
 
-// WithMaxBfCacheSize returns a new Options value with MaxBfCacheSize set to the given value.
-//
-// This value specifies how much memory should be used by the bloom filters.
-// Badger uses bloom filters to speed up lookups. Each table has its own bloom
-// filter and each bloom filter is approximately of 5 MB.
-//
-// Zero value for BfCacheSize means all the bloom filters will be kept in
-// memory and the cache is disabled.
-//
-// The default value of MaxBfCacheSize is 0 which means all bloom filters will
-// be kept in memory.
-func (opt Options) WithMaxBfCacheSize(size int64) Options {
-	opt.MaxBfCacheSize = size
-	return opt
-}
-
 // WithLoadBloomsOnOpen returns a new Options value with LoadBloomsOnOpen set to the given value.
 //
 // Badger uses bloom filters to speed up key lookups. When LoadBloomsOnOpen is set
-// to false, all bloom filters will be loaded on DB open. This is supposed to
-// improve the read speed but it will affect the time taken to open the DB. Set
-// this option to true to reduce the time taken to open the DB.
+// to false, bloom filters will be loaded lazily and not on DB open. Set this
+// option to false to reduce the time taken to open the DB.
 //
-// The default value of LoadBloomsOnOpen is false.
+// The default value of LoadBloomsOnOpen is true.
 func (opt Options) WithLoadBloomsOnOpen(b bool) Options {
 	opt.LoadBloomsOnOpen = b
+	return opt
+}
+
+// WithIndexCacheSize returns a new Options value with IndexCacheSize set to
+// the given value.
+//
+// This value specifies how much memory should be used by table indices. These
+// indices include the block offsets and the bloomfilters. Badger uses bloom
+// filters to speed up lookups. Each table has its own bloom
+// filter and each bloom filter is approximately of 5 MB.
+//
+// Zero value for IndexCacheSize means all the indices will be kept in
+// memory and the cache is disabled.
+//
+// The default value of IndexCacheSize is 0 which means all indices are kept in
+// memory.
+func (opt Options) WithIndexCacheSize(size int64) Options {
+	opt.IndexCacheSize = size
+	return opt
+}
+
+// WithDetectConflicts returns a new Options value with DetectConflicts set to the given value.
+//
+// Detect conflicts options determines if the transactions would be checked for
+// conflicts before committing them. When this option is set to false
+// (detectConflicts=false) badger can process transactions at a higher rate.
+// Setting this options to false might be useful when the user application
+// deals with conflict detection and resolution.
+//
+// The default value of Detect conflicts is True.
+func (opt Options) WithDetectConflicts(b bool) Options {
+	opt.DetectConflicts = b
 	return opt
 }

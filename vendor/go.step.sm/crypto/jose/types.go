@@ -1,15 +1,16 @@
-// Code generated (comment to force golint to ignore this file). DO NOT EDIT.
-
 // Package jose is a wrapper for gopkg.in/square/go-jose.v2 and implements
 // utilities to parse and generate JWT, JWK and JWKSets.
 package jose
 
 import (
+	"crypto"
 	"errors"
 	"strings"
 	"time"
 
+	"go.step.sm/crypto/x25519"
 	jose "gopkg.in/square/go-jose.v2"
+	"gopkg.in/square/go-jose.v2/cryptosigner"
 	"gopkg.in/square/go-jose.v2/jwt"
 )
 
@@ -20,9 +21,14 @@ const SupportsPBKDF2 = true
 // PBKDF2SaltSize is the default size of the salt for PBKDF2, 128-bit salt.
 const PBKDF2SaltSize = 16
 
-// PBKDF2Iterations is the default number of iterations for PBKDF2, 100k
-// iterations. Nist recommends at least 10k, 1Passsword uses 100k.
-const PBKDF2Iterations = 100000
+// PBKDF2Iterations is the default number of iterations for PBKDF2.
+//
+// 600k is the current OWASP recommendation (Dec 2022)
+// https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2
+//
+// Nist recommends at least 10k (800-63B), 1Password increased in 2023 the
+// number of iterations from 100k to 650k.
+const PBKDF2Iterations = 600000
 
 // JSONWebSignature represents a signed JWS object after parsing.
 type JSONWebSignature = jose.JSONWebSignature
@@ -88,6 +94,9 @@ type Expected = jwt.Expected
 // Signer represents a signer which takes a payload and produces a signed JWS object.
 type Signer = jose.Signer
 
+// OpaqueSigner represents a jose.Signer that wraps a crypto.Signer
+type OpaqueSigner = jose.OpaqueSigner
+
 // SigningKey represents an algorithm/key used to sign a message.
 type SigningKey = jose.SigningKey
 
@@ -119,7 +128,12 @@ var ErrInvalidSubject = jwt.ErrInvalidSubject
 // ErrInvalidID indicates invalid jti claim.
 var ErrInvalidID = jwt.ErrInvalidID
 
+// ErrIssuedInTheFuture indicates that the iat field is in the future.
+var ErrIssuedInTheFuture = jwt.ErrIssuedInTheFuture
+
 // Key management algorithms
+//
+//nolint:stylecheck,revive // use standard names in upper-case
 const (
 	RSA1_5             = KeyAlgorithm("RSA1_5")             // RSA-PKCS1v1.5
 	RSA_OAEP           = KeyAlgorithm("RSA-OAEP")           // RSA-OAEP-SHA1
@@ -142,22 +156,25 @@ const (
 
 // Signature algorithms
 const (
-	HS256 = "HS256" // HMAC using SHA-256
-	HS384 = "HS384" // HMAC using SHA-384
-	HS512 = "HS512" // HMAC using SHA-512
-	RS256 = "RS256" // RSASSA-PKCS-v1.5 using SHA-256
-	RS384 = "RS384" // RSASSA-PKCS-v1.5 using SHA-384
-	RS512 = "RS512" // RSASSA-PKCS-v1.5 using SHA-512
-	ES256 = "ES256" // ECDSA using P-256 and SHA-256
-	ES384 = "ES384" // ECDSA using P-384 and SHA-384
-	ES512 = "ES512" // ECDSA using P-521 and SHA-512
-	PS256 = "PS256" // RSASSA-PSS using SHA256 and MGF1-SHA256
-	PS384 = "PS384" // RSASSA-PSS using SHA384 and MGF1-SHA384
-	PS512 = "PS512" // RSASSA-PSS using SHA512 and MGF1-SHA512
-	EdDSA = "EdDSA" // Ed25591
+	HS256  = "HS256"  // HMAC using SHA-256
+	HS384  = "HS384"  // HMAC using SHA-384
+	HS512  = "HS512"  // HMAC using SHA-512
+	RS256  = "RS256"  // RSASSA-PKCS-v1.5 using SHA-256
+	RS384  = "RS384"  // RSASSA-PKCS-v1.5 using SHA-384
+	RS512  = "RS512"  // RSASSA-PKCS-v1.5 using SHA-512
+	ES256  = "ES256"  // ECDSA using P-256 and SHA-256
+	ES384  = "ES384"  // ECDSA using P-384 and SHA-384
+	ES512  = "ES512"  // ECDSA using P-521 and SHA-512
+	PS256  = "PS256"  // RSASSA-PSS using SHA256 and MGF1-SHA256
+	PS384  = "PS384"  // RSASSA-PSS using SHA384 and MGF1-SHA384
+	PS512  = "PS512"  // RSASSA-PSS using SHA512 and MGF1-SHA512
+	EdDSA  = "EdDSA"  // Ed25519 with EdDSA signature schema
+	XEdDSA = "XEdDSA" // X25519 with XEdDSA signature schema
 )
 
 // Content encryption algorithms
+//
+//nolint:revive,stylecheck // use standard names in upper-case
 const (
 	A128CBC_HS256 = ContentEncryption("A128CBC-HS256") // AES-CBC + HMAC-SHA256 (128)
 	A192CBC_HS384 = ContentEncryption("A192CBC-HS384") // AES-CBC + HMAC-SHA384 (192)
@@ -231,7 +248,27 @@ func UnixNumericDate(s int64) *NumericDate {
 
 // NewSigner creates an appropriate signer based on the key type
 func NewSigner(sig SigningKey, opts *SignerOptions) (Signer, error) {
+	if k, ok := sig.Key.(x25519.PrivateKey); ok {
+		sig.Key = X25519Signer(k)
+	}
+	if sig.Algorithm == "" {
+		sig.Algorithm = guessSignatureAlgorithm(sig.Key)
+	}
 	return jose.NewSigner(sig, opts)
+}
+
+// NewOpaqueSigner creates a new OpaqueSigner for JWT signing from a crypto.Signer
+func NewOpaqueSigner(signer crypto.Signer) OpaqueSigner {
+	return cryptosigner.Opaque(signer)
+}
+
+// Verify validates the token payload with the given public key and deserializes
+// the token into the destination.
+func Verify(token *JSONWebToken, publicKey interface{}, dest ...interface{}) error {
+	if k, ok := publicKey.(x25519.PublicKey); ok {
+		publicKey = X25519Verifier(k)
+	}
+	return token.Claims(publicKey, dest...)
 }
 
 // ParseSigned parses token from JWS form.

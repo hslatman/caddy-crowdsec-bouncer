@@ -2,6 +2,7 @@ package jose
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -9,13 +10,15 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	"go.step.sm/crypto/pemutil"
+	"go.step.sm/crypto/x25519"
 )
 
 type keyType int
@@ -30,7 +33,7 @@ const (
 // the prefix https://
 func read(filename string) ([]byte, error) {
 	if strings.HasPrefix(filename, "https://") {
-		resp, err := http.Get(filename)
+		resp, err := http.Get(filename) //nolint:gosec // no SSRF
 		if err != nil {
 			return nil, errors.Wrapf(err, "error retrieving %s", filename)
 		}
@@ -39,11 +42,11 @@ func read(filename string) ([]byte, error) {
 		if resp.StatusCode >= 400 {
 			return nil, errors.Errorf("error retrieving %s: status code %d", filename, resp.StatusCode)
 		}
-		b, err := ioutil.ReadAll(resp.Body)
+		b, err := io.ReadAll(resp.Body)
 		return b, errors.Wrapf(err, "error retrieving %s", filename)
 	}
 
-	b, err := ioutil.ReadFile(filename)
+	b, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error reading %s", filename)
 	}
@@ -69,6 +72,9 @@ func ParseKey(b []byte, opts ...Option) (*JSONWebKey, error) {
 	ctx, err := new(context).apply(opts...)
 	if err != nil {
 		return nil, err
+	}
+	if ctx.filename == "" {
+		ctx.filename = "key"
 	}
 
 	jwk := new(JSONWebKey)
@@ -105,7 +111,7 @@ func ParseKey(b []byte, opts ...Option) (*JSONWebKey, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(ctx.kid) == 0 {
+		if ctx.kid == "" {
 			if jwk.KeyID, err = Thumbprint(jwk); err != nil {
 				return nil, err
 			}
@@ -343,7 +349,27 @@ func guessJWKAlgorithm(ctx *context, jwk *JSONWebKey) {
 		// Ed25519 can only be used for signing operations
 		case ed25519.PrivateKey, ed25519.PublicKey:
 			jwk.Algorithm = EdDSA
+		case x25519.PrivateKey, x25519.PublicKey:
+			jwk.Algorithm = XEdDSA
 		}
+	}
+}
+
+// guessSignatureAlgorithm returns the signature algorithm for a given private key.
+func guessSignatureAlgorithm(key crypto.PrivateKey) SignatureAlgorithm {
+	switch k := key.(type) {
+	case []byte:
+		return DefaultOctSigAlgorithm
+	case *ecdsa.PrivateKey:
+		return SignatureAlgorithm(getECAlgorithm(k.Curve))
+	case *rsa.PrivateKey:
+		return DefaultRSASigAlgorithm
+	case ed25519.PrivateKey:
+		return EdDSA
+	case x25519.PrivateKey, X25519Signer:
+		return XEdDSA
+	default:
+		return ""
 	}
 }
 
@@ -358,6 +384,8 @@ func guessKnownJWKAlgorithm(ctx *context, jwk *JSONWebKey) {
 			jwk.Algorithm = getECAlgorithm(k.Curve)
 		case ed25519.PrivateKey, ed25519.PublicKey:
 			jwk.Algorithm = EdDSA
+		case x25519.PrivateKey, x25519.PublicKey:
+			jwk.Algorithm = XEdDSA
 		}
 	}
 }

@@ -21,10 +21,13 @@
 // implementing solvers and using the certificates. It DOES NOT manage
 // certificates, it only gets them from the ACME server.
 //
-// NOTE: This package's main function is to get a certificate, not manage it.
-// Most users will want to *manage* certificates over the lifetime of a
-// long-running program such as a HTTPS or TLS server, and should use CertMagic
+// NOTE: This package's primary purpose is to get a certificate, not manage it.
+// Most users actually want to *manage* certificates over the lifetime of
+// long-running programs such as HTTPS or TLS servers, and should use CertMagic
 // instead: https://github.com/caddyserver/certmagic.
+//
+// COMPATIBILITY: Exported identifiers that are related to draft specifications
+// are subject to change or removal without a major version bump.
 package acmez
 
 import (
@@ -47,10 +50,6 @@ import (
 	"golang.org/x/net/idna"
 )
 
-func init() {
-	weakrand.Seed(time.Now().UnixNano())
-}
-
 // Client is a high-level API for ACME operations. It wraps
 // a lower-level ACME client with useful functions to make
 // common flows easier, especially for the issuance of
@@ -60,50 +59,41 @@ type Client struct {
 
 	// Map of solvers keyed by name of the challenge type.
 	ChallengeSolvers map[string]Solver
-
-	// An optional logger. Default: no logs
-	Logger *zap.Logger
 }
 
-// ObtainCertificateUsingCSR obtains all resulting certificate chains using the given CSR, which
-// must be completely and properly filled out (particularly its DNSNames and Raw fields - this
-// usually involves creating a template CSR, then calling x509.CreateCertificateRequest, then
-// x509.ParseCertificateRequest on the output). The Subject CommonName is NOT considered.
+// CSRSource is an interface that provides users of this
+// package the ability to provide a CSR as part of the
+// ACME flow. This allows the final CSR to be provided
+// just before the Order is finalized.
+type CSRSource interface {
+	CSR(context.Context) (*x509.CertificateRequest, error)
+}
+
+// ObtainCertificateUsingCSRSource obtains all resulting certificate chains using the given
+// ACME Identifiers and the CSRSource. The CSRSource can be used to create and sign a final
+// CSR to be submitted to the ACME server just before finalization. The CSR  must be completely
+// and properly filled out, because the provided ACME Identifiers will be validated against
+// the Identifiers that can be extracted from the CSR. This package currently supports the
+// DNS, IP address, Permanent Identifier and Hardware Module Name identifiers. The Subject
+// CommonName is NOT considered.
 //
-// It implements every single part of the ACME flow described in RFC 8555 §7.1 with the exception
-// of "Create account" because this method signature does not have a way to return the udpated
-// account object. The account's status MUST be "valid" in order to succeed.
+// The CSR's Raw field containing the DER encoded signed certificate request must also be
+// set. This usually involves creating a template CSR, then calling x509.CreateCertificateRequest,
+// then x509.ParseCertificateRequest on the output.
 //
-// As far as SANs go, this method currently only supports DNSNames on the csr.
-func (c *Client) ObtainCertificateUsingCSR(ctx context.Context, account acme.Account, csr *x509.CertificateRequest) ([]acme.Certificate, error) {
+// The method implements every single part of the ACME flow described in RFC 8555 §7.1 with the
+// exception of "Create account" because this method signature does not have a way to return
+// the updated account object. The account's status MUST be "valid" in order to succeed.
+func (c *Client) ObtainCertificateUsingCSRSource(ctx context.Context, account acme.Account, identifiers []acme.Identifier, source CSRSource) ([]acme.Certificate, error) {
 	if account.Status != acme.StatusValid {
 		return nil, fmt.Errorf("account status is not valid: %s", account.Status)
 	}
-	if csr == nil {
-		return nil, fmt.Errorf("missing CSR")
+	if source == nil {
+		return nil, errors.New("missing CSR source")
 	}
 
-	var ids []acme.Identifier
-	for _, name := range csr.DNSNames {
-		// "The domain name MUST be encoded in the form in which it would appear
-		// in a certificate.  That is, it MUST be encoded according to the rules
-		// in Section 7 of [RFC5280]." §7.1.4
-		normalizedName, err := idna.ToASCII(name)
-		if err != nil {
-			return nil, fmt.Errorf("converting identifier '%s' to ASCII: %v", name, err)
-		}
-
-		ids = append(ids, acme.Identifier{
-			Type:  "dns",
-			Value: normalizedName,
-		})
-	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("no identifiers found")
-	}
-
-	order := acme.Order{Identifiers: ids}
 	var err error
+	order := acme.Order{Identifiers: identifiers}
 
 	// remember which challenge types failed for which identifiers
 	// so we can retry with other challenge types
@@ -136,16 +126,23 @@ func (c *Client) ObtainCertificateUsingCSR(ctx context.Context, account acme.Acc
 		// for some errors, we can retry with different challenge types
 		var problem acme.Problem
 		if errors.As(err, &problem) {
-			authz := problem.Resource.(acme.Authorization)
+			authz, haveAuthz := problem.Resource.(acme.Authorization)
 			if c.Logger != nil {
-				c.Logger.Error("validating authorization",
-					zap.String("identifier", authz.IdentifierValue()),
-					zap.Error(err),
+				l := c.Logger
+				if haveAuthz {
+					l = l.With(zap.String("identifier", authz.IdentifierValue()))
+				}
+				l.Error("validating authorization",
+					zap.Object("problem", problem),
 					zap.String("order", order.Location),
 					zap.Int("attempt", attempt),
 					zap.Int("max_attempts", maxAttempts))
 			}
-			err = fmt.Errorf("solving challenge: %s: %w", authz.IdentifierValue(), err)
+			errStr := "solving challenge"
+			if haveAuthz {
+				errStr += ": " + authz.IdentifierValue()
+			}
+			err = fmt.Errorf("%s: %w", errStr, err)
 			if errors.As(err, &retryableErr{}) {
 				continue
 			}
@@ -157,6 +154,20 @@ func (c *Client) ObtainCertificateUsingCSR(ctx context.Context, account acme.Acc
 
 	if c.Logger != nil {
 		c.Logger.Info("validations succeeded; finalizing order", zap.String("order", order.Location))
+	}
+
+	// get the CSR from its source
+	csr, err := source.CSR(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting CSR from source: %w", err)
+	}
+	if csr == nil {
+		return nil, errors.New("source did not provide CSR")
+	}
+
+	// validate the order identifiers
+	if err := validateOrderIdentifiers(&order, csr); err != nil {
+		return nil, fmt.Errorf("validating order identifiers: %w", err)
 	}
 
 	// finalize the order, which requests the CA to issue us a certificate
@@ -185,6 +196,80 @@ func (c *Client) ObtainCertificateUsingCSR(ctx context.Context, account acme.Acc
 	return certChains, nil
 }
 
+// validateOrderIdentifiers checks if the ACME identifiers provided for the
+// Order match the identifiers that are in the CSR. A mismatch between the two
+// should result the certificate not being issued by the ACME server, but
+// checking this on the client side is faster. Currently there's no way to
+// skip this validation.
+func validateOrderIdentifiers(order *acme.Order, csr *x509.CertificateRequest) error {
+	csrIdentifiers, err := createIdentifiersUsingCSR(csr)
+	if err != nil {
+		return fmt.Errorf("extracting identifiers from CSR: %w", err)
+	}
+	if len(csrIdentifiers) != len(order.Identifiers) {
+		return fmt.Errorf("number of identifiers in Order %v (%d) does not match the number of identifiers extracted from CSR %v (%d)", order.Identifiers, len(order.Identifiers), csrIdentifiers, len(csrIdentifiers))
+	}
+
+	identifiers := make([]acme.Identifier, 0, len(order.Identifiers))
+	for _, identifier := range order.Identifiers {
+		for _, csrIdentifier := range csrIdentifiers {
+			if csrIdentifier.Value == identifier.Value && csrIdentifier.Type == identifier.Type {
+				identifiers = append(identifiers, identifier)
+			}
+		}
+	}
+
+	if len(identifiers) != len(csrIdentifiers) {
+		return fmt.Errorf("identifiers in Order %v do not match the identifiers extracted from CSR %v", order.Identifiers, csrIdentifiers)
+	}
+
+	return nil
+}
+
+// csrSource implements the CSRSource interface and is used internally
+// to pass a CSR to ObtainCertificateUsingCSRSource from the existing
+// ObtainCertificateUsingCSR method.
+type csrSource struct {
+	csr *x509.CertificateRequest
+}
+
+func (i *csrSource) CSR(_ context.Context) (*x509.CertificateRequest, error) {
+	return i.csr, nil
+}
+
+var _ CSRSource = (*csrSource)(nil)
+
+// ObtainCertificateUsingCSR obtains all resulting certificate chains using the given CSR, which
+// must be completely and properly filled out (particularly its DNSNames and Raw fields - this
+// usually involves creating a template CSR, then calling x509.CreateCertificateRequest, then
+// x509.ParseCertificateRequest on the output). The Subject CommonName is NOT considered.
+//
+// It implements every single part of the ACME flow described in RFC 8555 §7.1 with the exception
+// of "Create account" because this method signature does not have a way to return the updated
+// account object. The account's status MUST be "valid" in order to succeed.
+//
+// As far as SANs go, this method currently only supports DNSNames, IPAddresses, Permanent
+// Identifiers and Hardware Module Names on the CSR.
+func (c *Client) ObtainCertificateUsingCSR(ctx context.Context, account acme.Account, csr *x509.CertificateRequest) ([]acme.Certificate, error) {
+	if csr == nil {
+		return nil, errors.New("missing CSR")
+	}
+
+	ids, err := createIdentifiersUsingCSR(csr)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, errors.New("no identifiers found")
+	}
+
+	csrSource := &csrSource{
+		csr: csr,
+	}
+
+	return c.ObtainCertificateUsingCSRSource(ctx, account, ids, csrSource)
+}
+
 // ObtainCertificate is the same as ObtainCertificateUsingCSR, except it is a slight wrapper
 // that generates the CSR for you. Doing so requires the private key you will be using for
 // the certificate (different from the account private key). It obtains a certificate for
@@ -206,7 +291,14 @@ func (c *Client) ObtainCertificate(ctx context.Context, account acme.Account, ce
 		} else if u, err := url.Parse(name); err == nil && strings.Contains(name, "/") {
 			csrTemplate.URIs = append(csrTemplate.URIs, u)
 		} else {
-			csrTemplate.DNSNames = append(csrTemplate.DNSNames, name)
+			// "The domain name MUST be encoded in the form in which it would appear
+			// in a certificate.  That is, it MUST be encoded according to the rules
+			// in Section 7 of [RFC5280]." §7.1.4
+			normalizedName, err := idna.ToASCII(name)
+			if err != nil {
+				return nil, fmt.Errorf("converting identifier '%s' to ASCII: %v", name, err)
+			}
+			csrTemplate.DNSNames = append(csrTemplate.DNSNames, normalizedName)
 		}
 	}
 
@@ -250,10 +342,12 @@ func (c *Client) getAuthzObjects(ctx context.Context, account acme.Account, orde
 			preferredChallenges.addUnique(chal.Type)
 		}
 		if preferredWasEmpty {
-			weakrand.Shuffle(len(preferredChallenges), func(i, j int) {
+			randomSourceMu.Lock()
+			randomSource.Shuffle(len(preferredChallenges), func(i, j int) {
 				preferredChallenges[i], preferredChallenges[j] =
 					preferredChallenges[j], preferredChallenges[i]
 			})
+			randomSourceMu.Unlock()
 		}
 		preferredChallengesMu.Unlock()
 
@@ -395,6 +489,11 @@ func (c *Client) presentForNextChallenge(ctx context.Context, authz *authzState)
 
 func (c *Client) initiateCurrentChallenge(ctx context.Context, authz *authzState) error {
 	if authz.Status != acme.StatusPending {
+		if c.Logger != nil {
+			c.Logger.Debug("skipping challenge initiation because authorization is not pending",
+				zap.String("identifier", authz.IdentifierValue()),
+				zap.String("authz_status", authz.Status))
+		}
 		return nil
 	}
 
@@ -404,10 +503,40 @@ func (c *Client) initiateCurrentChallenge(ctx context.Context, authz *authzState
 	// that's probably OK, since we can't finalize the order until the slow
 	// challenges are done too)
 	if waiter, ok := authz.currentSolver.(Waiter); ok {
+		if c.Logger != nil {
+			c.Logger.Debug("waiting for solver before continuing",
+				zap.String("identifier", authz.IdentifierValue()),
+				zap.String("challenge_type", authz.currentChallenge.Type))
+		}
 		err := waiter.Wait(ctx, authz.currentChallenge)
+		if c.Logger != nil {
+			c.Logger.Debug("done waiting for solver",
+				zap.String("identifier", authz.IdentifierValue()),
+				zap.String("challenge_type", authz.currentChallenge.Type))
+		}
 		if err != nil {
 			return fmt.Errorf("waiting for solver %T to be ready: %w", authz.currentSolver, err)
 		}
+	}
+
+	// for device-attest-01 challenges the client needs to present a payload
+	// that will be validated by the CA.
+	if payloader, ok := authz.currentSolver.(Payloader); ok {
+		if c.Logger != nil {
+			c.Logger.Debug("getting payload from solver before continuing",
+				zap.String("identifier", authz.IdentifierValue()),
+				zap.String("challenge_type", authz.currentChallenge.Type))
+		}
+		p, err := payloader.Payload(ctx, authz.currentChallenge)
+		if c.Logger != nil {
+			c.Logger.Debug("done getting payload from solver",
+				zap.String("identifier", authz.IdentifierValue()),
+				zap.String("challenge_type", authz.currentChallenge.Type))
+		}
+		if err != nil {
+			return fmt.Errorf("getting payload from solver %T failed: %w", authz.currentSolver, err)
+		}
+		authz.currentChallenge.Payload = p
 	}
 
 	// tell the server to initiate the challenge
@@ -487,7 +616,7 @@ func (c *Client) pollAuthorization(ctx context.Context, account acme.Account, au
 			c.Logger.Error("cleaning up solver",
 				zap.String("identifier", authz.IdentifierValue()),
 				zap.String("challenge_type", authz.currentChallenge.Type),
-				zap.Error(err))
+				zap.Error(cleanupErr))
 		}
 		authz.currentSolver = nil // avoid cleaning it up again later
 	}
@@ -500,26 +629,43 @@ func (c *Client) pollAuthorization(ctx context.Context, account acme.Account, au
 				c.Logger.Error("challenge failed",
 					zap.String("identifier", authz.IdentifierValue()),
 					zap.String("challenge_type", authz.currentChallenge.Type),
-					zap.Int("status_code", problem.Status),
-					zap.String("problem_type", problem.Type),
-					zap.String("error", problem.Detail))
+					zap.Object("problem", problem))
 			}
 
 			failedChallengeTypes.rememberFailedChallenge(authz)
 
-			switch problem.Type {
-			case acme.ProblemTypeConnection,
-				acme.ProblemTypeDNS,
-				acme.ProblemTypeServerInternal,
-				acme.ProblemTypeUnauthorized,
-				acme.ProblemTypeTLS:
-				// this error might be recoverable with another challenge type
-				return retryableErr{err}
+			if c.countAvailableChallenges(authz) > 0 {
+				switch problem.Type {
+				case acme.ProblemTypeConnection,
+					acme.ProblemTypeDNS,
+					acme.ProblemTypeServerInternal,
+					acme.ProblemTypeUnauthorized,
+					acme.ProblemTypeTLS:
+					// this error might be recoverable with another challenge type
+					return retryableErr{err}
+				}
 			}
 		}
 		return fmt.Errorf("[%s] %w", authz.Authorization.IdentifierValue(), err)
 	}
+
+	if c.Logger != nil {
+		c.Logger.Info("authorization finalized",
+			zap.String("identifier", authz.IdentifierValue()),
+			zap.String("authz_status", authz.Status))
+	}
+
 	return nil
+}
+
+func (c *Client) countAvailableChallenges(authz *authzState) int {
+	count := 0
+	for _, remainingChal := range authz.remainingChallenges {
+		if _, ok := c.ChallengeSolvers[remainingChal.Type]; ok {
+			count++
+		}
+	}
+	return count
 }
 
 func (c *Client) enabledChallengeTypes() []string {
@@ -648,9 +794,15 @@ type retryableErr struct{ error }
 
 func (re retryableErr) Unwrap() error { return re.error }
 
-// Keep a list of challenges we've seen offered by servers,
-// and prefer keep an ordered list of
+// Keep a list of challenges we've seen offered by servers, ordered by success rate.
 var (
 	preferredChallenges   challengeTypes
 	preferredChallengesMu sync.Mutex
+)
+
+// Best practice is to avoid the default RNG source and seed our own;
+// custom sources are not safe for concurrent use, hence the mutex.
+var (
+	randomSource   = weakrand.New(weakrand.NewSource(time.Now().UnixNano()))
+	randomSourceMu sync.Mutex
 )

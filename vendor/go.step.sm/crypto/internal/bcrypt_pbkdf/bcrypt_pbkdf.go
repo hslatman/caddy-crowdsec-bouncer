@@ -4,6 +4,8 @@
 
 // Package bcrypt_pbkdf implements password-based key derivation function based
 // on bcrypt compatible with bcrypt_pbkdf(3) from OpenBSD.
+//
+//nolint:revive,stylecheck // ignore underscore in package
 package bcrypt_pbkdf
 
 import (
@@ -13,7 +15,7 @@ import (
 	// NOTE! Requires blowfish package version from Aug 1, 2014 or later.
 	// Will produce incorrect results if the package is older.
 	// See commit message for details: http://goo.gl/wx6g8O
-	//nolint:deprecated
+	//nolint:staticcheck // needs insecure package
 	"golang.org/x/crypto/blowfish"
 )
 
@@ -23,7 +25,6 @@ import (
 // Remember to get a good random salt of at least 16 bytes.  Using a higher
 // rounds count will increase the cost of an exhaustive search but will also
 // make derivation proportionally slower.
-//nolint:errcheck
 func Key(password, salt []byte, rounds, keyLen int) ([]byte, error) {
 	if rounds < 1 {
 		return nil, errors.New("bcrypt_pbkdf: number of rounds is too small")
@@ -86,7 +87,7 @@ func bcryptHash(out, shapass, shasalt []byte) {
 		blowfish.ExpandKey(shasalt, c)
 		blowfish.ExpandKey(shapass, c)
 	}
-	copy(out[:], magic)
+	copy(out, magic)
 	for i := 0; i < 32; i += 8 {
 		for j := 0; j < 64; j++ {
 			c.Encrypt(out[i:i+8], out[i:i+8])

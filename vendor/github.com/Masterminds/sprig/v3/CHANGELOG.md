@@ -1,5 +1,54 @@
 # Changelog
 
+## Release 3.2.3 (2022-11-29)
+
+### Changed
+
+- Updated docs (thanks @book987 @aJetHorn @neelayu @pellizzetti @apricote @SaigyoujiYuyuko233 @AlekSi)
+- #348: Updated huandu/xstrings which fixed a snake case bug (thanks @yxxhero)
+- #353: Updated masterminds/semver which included bug fixes
+- #354: Updated golang.org/x/crypto which included bug fixes
+
+## Release 3.2.2 (2021-02-04)
+
+This is a re-release of 3.2.1 to satisfy something with the Go module system.
+
+## Release 3.2.1 (2021-02-04)
+
+### Changed
+
+- Upgraded `Masterminds/goutils` to `v1.1.1`. see the [Security Advisory](https://github.com/Masterminds/goutils/security/advisories/GHSA-xg2h-wx96-xgxr)
+
+## Release 3.2.0 (2020-12-14)
+
+### Added
+
+- #211: Added randInt function (thanks @kochurovro)
+- #223: Added fromJson and mustFromJson functions (thanks @mholt)
+- #242: Added a bcrypt function (thanks @robbiet480)
+- #253: Added randBytes function (thanks @MikaelSmith)
+- #254: Added dig function for dicts (thanks @nyarly)
+- #257: Added regexQuoteMeta for quoting regex metadata (thanks @rheaton)
+- #261: Added filepath functions osBase, osDir, osExt, osClean, osIsAbs (thanks @zugl)
+- #268: Added and and all functions for testing conditions (thanks @phuslu)
+- #181: Added float64 arithmetic addf, add1f, subf, divf, mulf, maxf, and minf
+  (thanks @andrewmostello)
+- #265: Added chunk function to split array into smaller arrays (thanks @karelbilek)
+- #270: Extend certificate functions to handle non-RSA keys + add support for
+  ed25519 keys (thanks @misberner)
+
+### Changed
+
+- Removed testing and support for Go 1.12. ed25519 support requires Go 1.13 or newer
+- Using semver 3.1.1 and mergo 0.3.11
+
+### Fixed
+
+- #249: Fix htmlDateInZone example (thanks @spawnia)
+
+NOTE: The dependency github.com/imdario/mergo reverted the breaking change in
+0.3.9 via 0.3.10 release.
+
 ## Release 3.1.0 (2020-04-16)
 
 NOTE: The dependency github.com/imdario/mergo made a behavior change in 0.3.9

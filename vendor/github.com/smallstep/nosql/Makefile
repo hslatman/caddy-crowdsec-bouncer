@@ -7,41 +7,26 @@ OUTPUT_ROOT=output/
 
 all: test lint
 
-travis: travis-test lint
+ci: ci-test
 
 .PHONY: all
+
+#########################################
+# Build
+#########################################
+
+build: ;
 
 #########################################
 # Bootstrapping
 #########################################
 
-bootstra%:
-	$Q GO111MODULE=on go get github.com/golangci/golangci-lint/cmd/golangci-lint@v1.24.0
+bootstrap:
+	$Q curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin latest
+	$Q go install golang.org/x/vuln/cmd/govulncheck@latest
+	$Q go install gotest.tools/gotestsum@latest
 
-.PHONY: bootstra%
-
-#################################################
-# Determine the type of `push` and `version`
-#################################################
-
-# Version flags to embed in the binaries
-VERSION ?= $(shell [ -d .git ] && git describe --tags --always --dirty="-dev")
-# If we are not in an active git dir then try reading the version from .VERSION.
-# .VERSION contains a slug populated by `git archive`.
-VERSION := $(or $(VERSION),$(shell ./.version.sh .VERSION))
-VERSION := $(shell echo $(VERSION) | sed 's/^v//')
-NOT_RC  := $(shell echo $(VERSION) | grep -v -e -rc)
-
-# If TRAVIS_TAG is set then we know this ref has been tagged.
-ifdef TRAVIS_TAG
-	ifeq ($(NOT_RC),)
-		PUSHTYPE=release-candidate
-	else
-		PUSHTYPE=release
-	endif
-else
-	PUSHTYPE=master
-endif
+.PHONY: bootstrap
 
 #########################################
 # Test
@@ -49,22 +34,24 @@ endif
 test:
 	$Q $(GOFLAGS) go test -short -coverprofile=coverage.out ./...
 
-travis-test:
-	$Q $(GOFLAGS) TRAVIS=1 go test -short -coverprofile=coverage.out ./...
+ci-test:
+	$Q $(GOFLAGS) CI=1 go test -short -coverprofile=coverage.out ./...
 
-.PHONY: test travis-test
+.PHONY: test ci-test
 
 #########################################
 # Linting
 #########################################
 
 fmt:
-	$Q gofmt -l -w $(SRC)
+	$Q goimports -local github.com/golangci/golangci-lint -l -w $(SRC)
 
+lint: SHELL:=/bin/bash
 lint:
-	$Q LOG_LEVEL=error golangci-lint run
+	$Q LOG_LEVEL=error golangci-lint run --config <(curl -s https://raw.githubusercontent.com/smallstep/workflows/master/.golangci.yml) --timeout=30m
+	$Q govulncheck ./...
 
-.PHONY: lint fmt
+.PHONY: fmt lint
 
 #########################################
 # Clean

@@ -15,9 +15,9 @@
 package ref
 
 import (
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
-	descpb "github.com/golang/protobuf/protoc-gen-go/descriptor"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
@@ -39,8 +39,6 @@ type TypeProvider interface {
 
 	// FieldFieldType returns the field type for a checked type value. Returns
 	// false if the field could not be found.
-	//
-	// Used during type-checking only.
 	FindFieldType(messageType string, fieldName string) (*FieldType, bool)
 
 	// NewValue creates a new type value from a qualified name and map of field
@@ -55,7 +53,7 @@ type TypeProvider interface {
 // TypeAdapter converts native Go values of varying type and complexity to equivalent CEL values.
 type TypeAdapter interface {
 	// NativeToValue converts the input `value` to a CEL `ref.Val`.
-	NativeToValue(value interface{}) Val
+	NativeToValue(value any) Val
 }
 
 // TypeRegistry allows third-parties to add custom types to CEL. Not all `TypeProvider`
@@ -67,7 +65,7 @@ type TypeRegistry interface {
 	TypeProvider
 
 	// RegisterDescriptor registers the contents of a protocol buffer `FileDescriptor`.
-	RegisterDescriptor(fileDesc *descpb.FileDescriptorProto) error
+	RegisterDescriptor(fileDesc protoreflect.FileDescriptor) error
 
 	// RegisterMessage registers a protocol buffer message and its dependencies.
 	RegisterMessage(message proto.Message) error
@@ -97,7 +95,7 @@ type FieldType struct {
 }
 
 // FieldTester is used to test field presence on an input object.
-type FieldTester func(target interface{}) bool
+type FieldTester func(target any) bool
 
 // FieldGetter is used to get the field value from an input object, if set.
-type FieldGetter func(target interface{}) (interface{}, error)
+type FieldGetter func(target any) (any, error)

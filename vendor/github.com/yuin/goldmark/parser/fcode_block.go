@@ -71,6 +71,7 @@ func (b *fencedCodeBlockParser) Open(parent ast.Node, reader text.Reader, pc Con
 func (b *fencedCodeBlockParser) Continue(node ast.Node, reader text.Reader, pc Context) State {
 	line, segment := reader.PeekLine()
 	fdata := pc.Get(fencedCodeBlockInfoKey).(*fenceData)
+
 	w, pos := util.IndentWidth(line, reader.LineOffset())
 	if w < 4 {
 		i := pos
@@ -82,13 +83,23 @@ func (b *fencedCodeBlockParser) Continue(node ast.Node, reader text.Reader, pc C
 			if line[len(line)-1] != '\n' {
 				newline = 0
 			}
-			reader.Advance(segment.Stop - segment.Start - newline - segment.Padding)
+			reader.Advance(segment.Stop - segment.Start - newline + segment.Padding)
 			return Close
 		}
 	}
-	pos, padding := util.DedentPositionPadding(line, reader.LineOffset(), segment.Padding, fdata.indent)
-
+	pos, padding := util.IndentPositionPadding(line, reader.LineOffset(), segment.Padding, fdata.indent)
+	if pos < 0 {
+		pos = util.FirstNonSpacePosition(line)
+		if pos < 0 {
+			pos = 0
+		}
+		padding = 0
+	}
 	seg := text.NewSegmentPadding(segment.Start+pos, segment.Stop, padding)
+	// if code block line starts with a tab, keep a tab as it is.
+	if padding != 0 {
+		preserveLeadingTabInCodeBlock(&seg, reader, fdata.indent)
+	}
 	node.Lines().Append(seg)
 	reader.AdvanceAndSetPadding(segment.Stop-segment.Start-pos-1, padding)
 	return Continue | NoChildren

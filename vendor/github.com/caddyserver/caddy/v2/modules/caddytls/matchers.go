@@ -16,13 +16,19 @@ package caddytls
 
 import (
 	"crypto/tls"
+	"fmt"
+	"net"
+	"net/netip"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/certmagic"
+	"go.uber.org/zap"
 )
 
 func init() {
 	caddy.RegisterModule(MatchServerName{})
+	caddy.RegisterModule(MatchRemoteIP{})
 }
 
 // MatchServerName matches based on SNI. Names in
@@ -48,5 +54,97 @@ func (m MatchServerName) Match(hello *tls.ClientHelloInfo) bool {
 	return false
 }
 
-// Interface guard
-var _ ConnectionMatcher = (*MatchServerName)(nil)
+// MatchRemoteIP matches based on the remote IP of the
+// connection. Specific IPs or CIDR ranges can be specified.
+//
+// Note that IPs can sometimes be spoofed, so do not rely
+// on this as a replacement for actual authentication.
+type MatchRemoteIP struct {
+	// The IPs or CIDR ranges to match.
+	Ranges []string `json:"ranges,omitempty"`
+
+	// The IPs or CIDR ranges to *NOT* match.
+	NotRanges []string `json:"not_ranges,omitempty"`
+
+	cidrs    []netip.Prefix
+	notCidrs []netip.Prefix
+	logger   *zap.Logger
+}
+
+// CaddyModule returns the Caddy module information.
+func (MatchRemoteIP) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "tls.handshake_match.remote_ip",
+		New: func() caddy.Module { return new(MatchRemoteIP) },
+	}
+}
+
+// Provision parses m's IP ranges, either from IP or CIDR expressions.
+func (m *MatchRemoteIP) Provision(ctx caddy.Context) error {
+	m.logger = ctx.Logger()
+	for _, str := range m.Ranges {
+		cidrs, err := m.parseIPRange(str)
+		if err != nil {
+			return err
+		}
+		m.cidrs = append(m.cidrs, cidrs...)
+	}
+	for _, str := range m.NotRanges {
+		cidrs, err := m.parseIPRange(str)
+		if err != nil {
+			return err
+		}
+		m.notCidrs = append(m.notCidrs, cidrs...)
+	}
+	return nil
+}
+
+// Match matches hello based on the connection's remote IP.
+func (m MatchRemoteIP) Match(hello *tls.ClientHelloInfo) bool {
+	remoteAddr := hello.Conn.RemoteAddr().String()
+	ipStr, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		ipStr = remoteAddr // weird; maybe no port?
+	}
+	ipAddr, err := netip.ParseAddr(ipStr)
+	if err != nil {
+		m.logger.Error("invalid client IP addresss", zap.String("ip", ipStr))
+		return false
+	}
+	return (len(m.cidrs) == 0 || m.matches(ipAddr, m.cidrs)) &&
+		(len(m.notCidrs) == 0 || !m.matches(ipAddr, m.notCidrs))
+}
+
+func (MatchRemoteIP) parseIPRange(str string) ([]netip.Prefix, error) {
+	var cidrs []netip.Prefix
+	if strings.Contains(str, "/") {
+		ipNet, err := netip.ParsePrefix(str)
+		if err != nil {
+			return nil, fmt.Errorf("parsing CIDR expression: %v", err)
+		}
+		cidrs = append(cidrs, ipNet)
+	} else {
+		ipAddr, err := netip.ParseAddr(str)
+		if err != nil {
+			return nil, fmt.Errorf("invalid IP address: '%s': %v", str, err)
+		}
+		ip := netip.PrefixFrom(ipAddr, ipAddr.BitLen())
+		cidrs = append(cidrs, ip)
+	}
+	return cidrs, nil
+}
+
+func (MatchRemoteIP) matches(ip netip.Addr, ranges []netip.Prefix) bool {
+	for _, ipRange := range ranges {
+		if ipRange.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// Interface guards
+var (
+	_ ConnectionMatcher = (*MatchServerName)(nil)
+	_ ConnectionMatcher = (*MatchRemoteIP)(nil)
+)

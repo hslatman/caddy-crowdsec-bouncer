@@ -1,3 +1,6 @@
+//go:build !nobbolt
+// +build !nobbolt
+
 package bolt
 
 import (
@@ -258,7 +261,7 @@ func (db *DB) deleteBucket(tx *bolt.Tx, name []byte) (err error) {
 		}
 	}
 	err = b.DeleteBucket(buckets[last])
-	if err == bolt.ErrBucketNotFound {
+	if errors.Is(err, bolt.ErrBucketNotFound) {
 		return errors.Wrapf(database.ErrNotFound, "bucket %s does not exist", name)
 	}
 	return
