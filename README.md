@@ -33,7 +33,7 @@ Get the module
 # get the http handler
 go get github.com/hslatman/caddy-crowdsec-bouncer/http
 
-# get the layer4 connection matcher
+# get the layer4 connection matcher (only required if you need support for TCP/UDP level blocking)
 go get github.com/hslatman/caddy-crowdsec-bouncer/layer4
 ```
 
@@ -79,6 +79,7 @@ localhost {
 ```
 
 Configuration using a Caddyfile is only supported for HTTP handlers.
+You'll also need to use a recent version of Caddy (i.e. 2.4.x and newer).
 In case you want to use the CrowdSec bouncer on TCP or UDP level, you'll need to configure Caddy using the native JSON format.
 An example configuration is shown below:
 
