@@ -59,6 +59,13 @@ type ACMEIssuer struct {
 	// other than ACME transactions.
 	Email string `json:"email,omitempty"`
 
+	// If you have an existing account with the ACME server, put
+	// the private key here in PEM format. The ACME client will
+	// look up your account information with this key first before
+	// trying to create a new one. You can use placeholders here,
+	// for example if you have it in an environment variable.
+	AccountKey string `json:"account_key,omitempty"`
+
 	// If using an ACME CA that requires an external account
 	// binding, specify the CA-provided credentials here.
 	ExternalAccount *acme.EAB `json:"external_account,omitempty"`
@@ -98,13 +105,24 @@ func (ACMEIssuer) CaddyModule() caddy.ModuleInfo {
 func (iss *ACMEIssuer) Provision(ctx caddy.Context) error {
 	iss.logger = ctx.Logger(iss)
 
+	repl := caddy.NewReplacer()
+
 	// expand email address, if non-empty
 	if iss.Email != "" {
-		email, err := caddy.NewReplacer().ReplaceOrErr(iss.Email, true, true)
+		email, err := repl.ReplaceOrErr(iss.Email, true, true)
 		if err != nil {
 			return fmt.Errorf("expanding email address '%s': %v", iss.Email, err)
 		}
 		iss.Email = email
+	}
+
+	// expand account key, if non-empty
+	if iss.AccountKey != "" {
+		accountKey, err := repl.ReplaceOrErr(iss.AccountKey, true, true)
+		if err != nil {
+			return fmt.Errorf("expanding account key PEM '%s': %v", iss.AccountKey, err)
+		}
+		iss.AccountKey = accountKey
 	}
 
 	// DNS providers
@@ -161,6 +179,7 @@ func (iss *ACMEIssuer) makeIssuerTemplate() (certmagic.ACMEManager, error) {
 		CA:                iss.CA,
 		TestCA:            iss.TestCA,
 		Email:             iss.Email,
+		AccountKeyPEM:     iss.AccountKey,
 		CertObtainTimeout: time.Duration(iss.ACMETimeout),
 		TrustedRoots:      iss.rootPool,
 		ExternalAccount:   iss.ExternalAccount,
@@ -233,7 +252,7 @@ func (iss *ACMEIssuer) GetACMEIssuer() *ACMEIssuer { return iss }
 
 // UnmarshalCaddyfile deserializes Caddyfile tokens into iss.
 //
-//     ... acme {
+//     ... acme [<directory_url>] {
 //         dir <directory_url>
 //         test_dir <test_directory_url>
 //         email <email>
@@ -246,13 +265,26 @@ func (iss *ACMEIssuer) GetACMEIssuer() *ACMEIssuer { return iss }
 //         trusted_roots <pem_files...>
 //         dns <provider_name> [<options>]
 //         resolvers <dns_servers...>
+//         preferred_chains [smallest] {
+//           root_common_name <common_names...>
+//           any_common_name  <common_names...>
+//         }
 //     }
 //
 func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
+		if d.NextArg() {
+			iss.CA = d.Val()
+			if d.NextArg() {
+				return d.ArgErr()
+			}
+		}
 		for nesting := d.Nesting(); d.NextBlock(nesting); {
 			switch d.Val() {
 			case "dir":
+				if iss.CA != "" {
+					return d.Errf("directory is already specified: %s", iss.CA)
+				}
 				if !d.AllArgs(&iss.CA) {
 					return d.ArgErr()
 				}
@@ -354,18 +386,27 @@ func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if iss.Challenges.DNS == nil {
 					iss.Challenges.DNS = new(DNSChallengeConfig)
 				}
-				dnsProvModule, err := caddy.GetModule("dns.providers." + provName)
+				unm, err := caddyfile.UnmarshalModule(d, "dns.providers."+provName)
 				if err != nil {
-					return d.Errf("getting DNS provider module named '%s': %v", provName, err)
+					return err
 				}
-				dnsProvModuleInstance := dnsProvModule.New()
-				if unm, ok := dnsProvModuleInstance.(caddyfile.Unmarshaler); ok {
-					err = unm.UnmarshalCaddyfile(d.NewFromNextSegment())
-					if err != nil {
-						return err
-					}
+				iss.Challenges.DNS.ProviderRaw = caddyconfig.JSONModuleObject(unm, "name", provName, nil)
+			case "propagation_timeout":
+				if !d.NextArg() {
+					return d.ArgErr()
 				}
-				iss.Challenges.DNS.ProviderRaw = caddyconfig.JSONModuleObject(dnsProvModuleInstance, "name", provName, nil)
+				timeoutStr := d.Val()
+				timeout, err := caddy.ParseDuration(timeoutStr)
+				if err != nil {
+					return d.Errf("invalid propagation_timeout duration %s: %v", timeoutStr, err)
+				}
+				if iss.Challenges == nil {
+					iss.Challenges = new(ChallengesConfig)
+				}
+				if iss.Challenges.DNS == nil {
+					iss.Challenges.DNS = new(DNSChallengeConfig)
+				}
+				iss.Challenges.DNS.PropagationTimeout = caddy.Duration(timeout)
 
 			case "resolvers":
 				if iss.Challenges == nil {
@@ -378,6 +419,13 @@ func (iss *ACMEIssuer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if len(iss.Challenges.DNS.Resolvers) == 0 {
 					return d.ArgErr()
 				}
+
+			case "preferred_chains":
+				chainPref, err := ParseCaddyfilePreferredChainsOptions(d)
+				if err != nil {
+					return err
+				}
+				iss.PreferredChains = chainPref
 
 			default:
 				return d.Errf("unrecognized ACME issuer property: %s", d.Val())
@@ -413,6 +461,57 @@ func onDemandAskRequest(ask string, name string) error {
 	}
 
 	return nil
+}
+
+func ParseCaddyfilePreferredChainsOptions(d *caddyfile.Dispenser) (*ChainPreference, error) {
+	chainPref := new(ChainPreference)
+	if d.NextArg() {
+		smallestOpt := d.Val()
+		if smallestOpt == "smallest" {
+			trueBool := true
+			chainPref.Smallest = &trueBool
+			if d.NextArg() { // Only one argument allowed
+				return nil, d.ArgErr()
+			}
+			if d.NextBlock(d.Nesting()) { // Don't allow other options when smallest == true
+				return nil, d.Err("No more options are accepted when using the 'smallest' option")
+			}
+		} else { // Smallest option should always be 'smallest' or unset
+			return nil, d.Errf("Invalid argument '%s'", smallestOpt)
+		}
+	}
+	for nesting := d.Nesting(); d.NextBlock(nesting); {
+		switch d.Val() {
+		case "root_common_name":
+			rootCommonNameOpt := d.RemainingArgs()
+			chainPref.RootCommonName = rootCommonNameOpt
+			if rootCommonNameOpt == nil {
+				return nil, d.ArgErr()
+			}
+			if chainPref.AnyCommonName != nil {
+				return nil, d.Err("Can't set root_common_name when any_common_name is already set")
+			}
+
+		case "any_common_name":
+			anyCommonNameOpt := d.RemainingArgs()
+			chainPref.AnyCommonName = anyCommonNameOpt
+			if anyCommonNameOpt == nil {
+				return nil, d.ArgErr()
+			}
+			if chainPref.RootCommonName != nil {
+				return nil, d.Err("Can't set any_common_name when root_common_name is already set")
+			}
+
+		default:
+			return nil, d.Errf("Received unrecognized parameter '%s'", d.Val())
+		}
+	}
+
+	if chainPref.Smallest == nil && chainPref.RootCommonName == nil && chainPref.AnyCommonName == nil {
+		return nil, d.Err("No options for preferred_chains received")
+	}
+
+	return chainPref, nil
 }
 
 // ChainPreference describes the client's preferred certificate chain,

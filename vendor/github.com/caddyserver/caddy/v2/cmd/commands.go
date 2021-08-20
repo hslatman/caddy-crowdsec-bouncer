@@ -74,11 +74,14 @@ func init() {
 	RegisterCommand(Command{
 		Name:  "start",
 		Func:  cmdStart,
-		Usage: "[--config <path> [--adapter <name>]] [--watch] [--pidfile <file>]",
+		Usage: "[--config <path> [--adapter <name>]] [--envfile <path>] [--watch] [--pidfile <file>]",
 		Short: "Starts the Caddy process in the background and then returns",
 		Long: `
 Starts the Caddy process, optionally bootstrapped with an initial config file.
 This command unblocks after the server starts running or fails to run.
+
+If --envfile is specified, an environment file with environment variables in
+the KEY=VALUE format will be loaded into the Caddy process.
 
 On Windows, the spawned child process will remain attached to the terminal, so
 closing the window will forcefully stop Caddy; to avoid forgetting this, try
@@ -86,6 +89,7 @@ using 'caddy run' instead to keep it in the foreground.`,
 		Flags: func() *flag.FlagSet {
 			fs := flag.NewFlagSet("start", flag.ExitOnError)
 			fs.String("config", "", "Configuration file")
+			fs.String("envfile", "", "Environment file to load")
 			fs.String("adapter", "", "Name of config adapter to apply")
 			fs.String("pidfile", "", "Path of file to which to write process ID")
 			fs.Bool("watch", false, "Reload changed config file automatically")
@@ -178,6 +182,7 @@ config file; otherwise the default is assumed.`,
 			fs.String("config", "", "Configuration file (required)")
 			fs.String("adapter", "", "Name of config adapter to apply")
 			fs.String("address", "", "Address of the administration listener, if different from config")
+			fs.Bool("force", false, "Force config reload, even if it is the same")
 			return fs
 		}(),
 	})
@@ -191,10 +196,11 @@ config file; otherwise the default is assumed.`,
 	RegisterCommand(Command{
 		Name:  "list-modules",
 		Func:  cmdListModules,
-		Usage: "[--versions]",
+		Usage: "[--packages] [--versions]",
 		Short: "Lists the installed Caddy modules",
 		Flags: func() *flag.FlagSet {
 			fs := flag.NewFlagSet("list-modules", flag.ExitOnError)
+			fs.Bool("packages", false, "Print package paths")
 			fs.Bool("versions", false, "Print version information")
 			return fs
 		}(),
@@ -274,6 +280,15 @@ is always printed to stdout.`,
 			fs.Bool("overwrite", false, "Overwrite the input file with the results")
 			return fs
 		}(),
+	})
+
+	RegisterCommand(Command{
+		Name:  "upgrade",
+		Func:  cmdUpgrade,
+		Short: "Upgrade Caddy (EXPERIMENTAL)",
+		Long: `
+Downloads an updated Caddy binary with the same modules/plugins at the
+latest versions. EXPERIMENTAL: May be changed or removed.`,
 	})
 
 }

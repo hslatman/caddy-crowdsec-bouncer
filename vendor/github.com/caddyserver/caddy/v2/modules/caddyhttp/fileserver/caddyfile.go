@@ -19,8 +19,10 @@ import (
 	"strings"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp/encode"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp/rewrite"
 )
 
@@ -33,10 +35,12 @@ func init() {
 // server and configures it with this syntax:
 //
 //    file_server [<matcher>] [browse] {
-//        root   <path>
-//	      hide   <files...>
-//	      index  <files...>
-//	      browse [<template_file>]
+//        root          <path>
+//        hide          <files...>
+//        index         <files...>
+//        browse        [<template_file>]
+//        precompressed <formats...>
+//        status        <status>
 //    }
 //
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
@@ -62,21 +66,52 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 				if len(fsrv.Hide) == 0 {
 					return nil, h.ArgErr()
 				}
+
 			case "index":
 				fsrv.IndexNames = h.RemainingArgs()
 				if len(fsrv.IndexNames) == 0 {
 					return nil, h.ArgErr()
 				}
+
 			case "root":
 				if !h.Args(&fsrv.Root) {
 					return nil, h.ArgErr()
 				}
+
 			case "browse":
 				if fsrv.Browse != nil {
 					return nil, h.Err("browsing is already configured")
 				}
 				fsrv.Browse = new(Browse)
 				h.Args(&fsrv.Browse.TemplateFile)
+
+			case "precompressed":
+				var order []string
+				for h.NextArg() {
+					modID := "http.precompressed." + h.Val()
+					mod, err := caddy.GetModule(modID)
+					if err != nil {
+						return nil, h.Errf("getting module named '%s': %v", modID, err)
+					}
+					inst := mod.New()
+					precompress, ok := inst.(encode.Precompressed)
+					if !ok {
+						return nil, h.Errf("module %s is not a precompressor; is %T", modID, inst)
+					}
+					if fsrv.PrecompressedRaw == nil {
+						fsrv.PrecompressedRaw = make(caddy.ModuleMap)
+					}
+					fsrv.PrecompressedRaw[h.Val()] = caddyconfig.JSON(precompress, nil)
+					order = append(order, h.Val())
+				}
+				fsrv.PrecompressedOrder = order
+
+			case "status":
+				if !h.NextArg() {
+					return nil, h.ArgErr()
+				}
+				fsrv.StatusCode = caddyhttp.WeakString(h.Val())
+
 			default:
 				return nil, h.Errf("unknown subdirective '%s'", h.Val())
 			}

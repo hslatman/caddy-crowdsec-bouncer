@@ -73,17 +73,7 @@ func NewCertificateRequest(signer crypto.Signer, opts ...Option) (*CertificateRe
 // Certificate.SignatureAlgorithm is set.
 func newCertificateRequest(cr *x509.CertificateRequest) *CertificateRequest {
 	// Set SubjectAltName extension as critical if Subject is empty.
-	if len(cr.Extensions) > 0 {
-		if asn1Subject, err := asn1.Marshal(cr.Subject.ToRDNSequence()); err == nil {
-			if bytes.Equal(asn1Subject, emptyASN1Subject) {
-				for i, ext := range cr.Extensions {
-					if ext.Id.Equal(oidExtensionSubjectAltName) {
-						cr.Extensions[i].Critical = true
-					}
-				}
-			}
-		}
-	}
+	fixSubjectAltName(cr)
 	return &CertificateRequest{
 		Version:            cr.Version,
 		Subject:            newSubject(cr.Subject),
@@ -180,4 +170,18 @@ func CreateCertificateRequest(commonName string, sans []string, signer crypto.Si
 	}
 	// This should not fail
 	return x509.ParseCertificateRequest(asn1Data)
+}
+
+// fixSubjectAltName makes sure to mark the SAN extension to critical if the
+// subject is empty.
+func fixSubjectAltName(cr *x509.CertificateRequest) {
+	if asn1Subject, err := asn1.Marshal(cr.Subject.ToRDNSequence()); err == nil {
+		if bytes.Equal(asn1Subject, emptyASN1Subject) {
+			for i, ext := range cr.Extensions {
+				if ext.Id.Equal(oidExtensionSubjectAltName) {
+					cr.Extensions[i].Critical = true
+				}
+			}
+		}
+	}
 }

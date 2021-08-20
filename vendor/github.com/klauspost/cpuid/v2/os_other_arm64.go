@@ -2,11 +2,16 @@
 
 // +build arm64
 // +build !linux
-// +build !android
 // +build !darwin
 
 package cpuid
 
+import "runtime"
+
 func detectOS(c *CPUInfo) bool {
+	c.PhysicalCores = runtime.NumCPU()
+	// For now assuming 1 thread per core...
+	c.ThreadsPerCore = 1
+	c.LogicalCores = c.PhysicalCores
 	return false
 }

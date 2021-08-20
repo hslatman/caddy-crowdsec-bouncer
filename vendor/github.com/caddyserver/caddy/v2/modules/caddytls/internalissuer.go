@@ -94,7 +94,7 @@ func (iss *InternalIssuer) Provision(ctx caddy.Context) error {
 // IssuerKey returns the unique issuer key for the
 // confgured CA endpoint.
 func (iss InternalIssuer) IssuerKey() string {
-	return iss.ca.ID()
+	return iss.ca.ID
 }
 
 // Issue issues a certificate to satisfy the CSR.
@@ -175,9 +175,7 @@ func (d customCertLifetime) Modify(cert *x509.Certificate, _ provisioner.SignOpt
 	return nil
 }
 
-const (
-	defaultInternalCertLifetime = 12 * time.Hour
-)
+const defaultInternalCertLifetime = 12 * time.Hour
 
 // Interface guards
 var (

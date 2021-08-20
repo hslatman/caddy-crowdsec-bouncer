@@ -5,16 +5,12 @@
 // license that can be found in the LICENSE file located
 // here https://github.com/golang/sys/blob/master/LICENSE
 
-//+build arm64
-//+build linux android
-
 package cpuid
 
 import (
 	"encoding/binary"
 	"io/ioutil"
 	"runtime"
-	_ "unsafe" //required for go:linkname
 )
 
 // HWCAP bits.
@@ -45,10 +41,11 @@ const (
 	hwcap_ASIMDFHM = 1 << 23
 )
 
-//go:linkname hwcap internal/cpu.HWCap
-var hwcap uint
-
 func detectOS(c *CPUInfo) bool {
+	// For now assuming no hyperthreading is reasonable.
+	c.LogicalCores = runtime.NumCPU()
+	c.PhysicalCores = c.LogicalCores
+	c.ThreadsPerCore = 1
 	if hwcap == 0 {
 		// We did not get values from the runtime.
 		// Try reading /proc/self/auxv

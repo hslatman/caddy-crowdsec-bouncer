@@ -16,36 +16,14 @@
 
 package badger
 
-// ManagedDB allows end users to manage the transactions themselves. Transaction
-// start and commit timestamps are set by end-user.
+// OpenManaged returns a new DB, which allows more control over setting
+// transaction timestamps, aka managed mode.
 //
 // This is only useful for databases built on top of Badger (like Dgraph), and
 // can be ignored by most users.
-//
-// WARNING: This is an experimental feature and may be changed significantly in
-// a future release. So please proceed with caution.
-type ManagedDB struct {
-	*DB
-}
-
-// OpenManaged returns a new ManagedDB, which allows more control over setting
-// transaction timestamps.
-//
-// This is only useful for databases built on top of Badger (like Dgraph), and
-// can be ignored by most users.
-func OpenManaged(opts Options) (*ManagedDB, error) {
+func OpenManaged(opts Options) (*DB, error) {
 	opts.managedTxns = true
-	db, err := Open(opts)
-	if err != nil {
-		return nil, err
-	}
-	return &ManagedDB{db}, nil
-}
-
-// NewTransaction overrides DB.NewTransaction() and panics when invoked. Use
-// NewTransactionAt() instead.
-func (db *ManagedDB) NewTransaction(update bool) {
-	panic("Cannot use NewTransaction() for ManagedDB. Use NewTransactionAt() instead.")
+	return Open(opts)
 }
 
 // NewTransactionAt follows the same logic as DB.NewTransaction(), but uses the
@@ -53,27 +31,51 @@ func (db *ManagedDB) NewTransaction(update bool) {
 //
 // This is only useful for databases built on top of Badger (like Dgraph), and
 // can be ignored by most users.
-func (db *ManagedDB) NewTransactionAt(readTs uint64, update bool) *Txn {
-	txn := db.DB.NewTransaction(update)
+func (db *DB) NewTransactionAt(readTs uint64, update bool) *Txn {
+	if !db.opt.managedTxns {
+		panic("Cannot use NewTransactionAt with managedDB=false. Use NewTransaction instead.")
+	}
+	txn := db.newTransaction(update, true)
 	txn.readTs = readTs
 	return txn
 }
 
+// NewWriteBatchAt is similar to NewWriteBatch but it allows user to set the commit timestamp.
+// NewWriteBatchAt is supposed to be used only in the managed mode.
+func (db *DB) NewWriteBatchAt(commitTs uint64) *WriteBatch {
+	if !db.opt.managedTxns {
+		panic("cannot use NewWriteBatchAt with managedDB=false. Use NewWriteBatch instead")
+	}
+
+	wb := db.newWriteBatch()
+	wb.commitTs = commitTs
+	wb.txn.commitTs = commitTs
+	return wb
+}
+
 // CommitAt commits the transaction, following the same logic as Commit(), but
-// at the given commit timestamp. This will panic if not used with ManagedDB.
+// at the given commit timestamp. This will panic if not used with managed transactions.
 //
 // This is only useful for databases built on top of Badger (like Dgraph), and
 // can be ignored by most users.
 func (txn *Txn) CommitAt(commitTs uint64, callback func(error)) error {
 	if !txn.db.opt.managedTxns {
-		return ErrManagedTxn
+		panic("Cannot use CommitAt with managedDB=false. Use Commit instead.")
 	}
 	txn.commitTs = commitTs
-	return txn.Commit(callback)
+	if callback == nil {
+		return txn.Commit()
+	}
+	txn.CommitWith(callback)
+	return nil
 }
 
-// GetSequence is not supported on ManagedDB. Calling this would result
-// in a panic.
-func (db *ManagedDB) GetSequence(_ []byte, _ uint64) (*Sequence, error) {
-	panic("Cannot use GetSequence for ManagedDB.")
+// SetDiscardTs sets a timestamp at or below which, any invalid or deleted
+// versions can be discarded from the LSM tree, and thence from the value log to
+// reclaim disk space. Can only be used with managed transactions.
+func (db *DB) SetDiscardTs(ts uint64) {
+	if !db.opt.managedTxns {
+		panic("Cannot use SetDiscardTs with managedDB=false.")
+	}
+	db.orc.setDiscardTs(ts)
 }

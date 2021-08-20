@@ -139,6 +139,11 @@ func (m *MatchFile) Provision(_ caddy.Context) error {
 	if m.Root == "" {
 		m.Root = "{http.vars.root}"
 	}
+	// if list of files to try was omitted entirely, assume URL path
+	// (use placeholder instead of r.URL.Path; see issue #4146)
+	if m.TryFiles == nil {
+		m.TryFiles = []string{"{http.request.uri.path}"}
+	}
 	return nil
 }
 
@@ -174,20 +179,13 @@ func (m MatchFile) selectFile(r *http.Request) (matched bool) {
 
 	root := repl.ReplaceAll(m.Root, ".")
 
-	// if list of files to try was omitted entirely,
-	// assume URL path
-	if m.TryFiles == nil {
-		// m is not a pointer, so this is safe
-		m.TryFiles = []string{r.URL.Path}
-	}
-
 	// common preparation of the file into parts
 	prepareFilePath := func(file string) (suffix, fullpath, remainder string) {
 		suffix, remainder = m.firstSplit(path.Clean(repl.ReplaceAll(file, "")))
 		if strings.HasSuffix(file, "/") {
 			suffix += "/"
 		}
-		fullpath = sanitizedPathJoin(root, suffix)
+		fullpath = caddyhttp.SanitizedPathJoin(root, suffix)
 		return
 	}
 

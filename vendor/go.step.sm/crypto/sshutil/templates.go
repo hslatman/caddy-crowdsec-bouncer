@@ -142,8 +142,8 @@ func (t TemplateData) SetCertificateRequest(cr CertificateRequest) {
 
 // DefaultTemplate is the default template for an SSH certificate.
 const DefaultTemplate = `{
-	"type": "{{ .Type }}",
-	"keyId": "{{ .KeyID }}",
+	"type": {{ toJson .Type }},
+	"keyId": {{ toJson .KeyID }},
 	"principals": {{ toJson .Principals }},
 	"extensions": {{ toJson .Extensions }},
 	"criticalOptions": {{ toJson .CriticalOptions }}
@@ -152,8 +152,8 @@ const DefaultTemplate = `{
 // DefaultAdminTemplate is the template used by an admin user in a OIDC
 // provisioner.
 const DefaultAdminTemplate = `{
-	"type": "{{ .Insecure.CR.Type }}",
-	"keyId": "{{ .Insecure.CR.KeyID }}",
+	"type": {{ toJson .Insecure.CR.Type }},
+	"keyId": {{ toJson .Insecure.CR.KeyID }},
 	"principals": {{ toJson .Insecure.CR.Principals }}
 {{- if eq .Insecure.CR.Type "user" }}
 	, "extensions": {{ toJson .Extensions }},
@@ -166,8 +166,8 @@ const DefaultAdminTemplate = `{
 // Principals will be only enforced by the provisioner if disableCustomSANs is
 // set to true.
 const DefaultIIDTemplate = `{
-	"type": "{{ .Type }}",
-	"keyId": "{{ .KeyID }}",
+	"type": {{ toJson .Type }},
+	"keyId": {{ toJson .KeyID }},
 {{- if .Insecure.CR.Principals }}
 	"principals": {{ toJson .Insecure.CR.Principals }},
 {{- else }}
@@ -180,8 +180,8 @@ const DefaultIIDTemplate = `{
 // any certificate request. The provisioner must validate that type, keyId and
 // principals are passed in the request.
 const CertificateRequestTemplate = `{
-	"type": "{{ .Insecure.CR.Type }}",
-	"keyId": "{{ .Insecure.CR.KeyID }}",
+	"type": {{ toJson .Insecure.CR.Type }},
+	"keyId": {{ toJson .Insecure.CR.KeyID }},
 	"principals": {{ toJson .Insecure.CR.Principals }}
 {{- if eq .Insecure.CR.Type "user" }}
 	, "extensions": {

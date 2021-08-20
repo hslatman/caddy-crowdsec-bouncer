@@ -15,7 +15,7 @@
 package encode
 
 import (
-	"fmt"
+	"strconv"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -40,52 +40,81 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 // UnmarshalCaddyfile sets up the handler from Caddyfile tokens. Syntax:
 //
 //     encode [<matcher>] <formats...> {
-//         gzip [<level>]
+//         gzip           [<level>]
 //         zstd
+//         minimum_length <length>
+//         # response matcher block
+//         match {
+//             status <code...>
+//             header <field> [<value>]
+//         }
+//         # or response matcher single line syntax
+//         match [header <field> [<value>]] | [status <code...>]
 //     }
 //
 // Specifying the formats on the first line will use those formats' defaults.
 func (enc *Encode) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	var prefer []string
+
+	responseMatchers := make(map[string]caddyhttp.ResponseMatcher)
+
 	for d.Next() {
 		for _, arg := range d.RemainingArgs() {
 			mod, err := caddy.GetModule("http.encoders." + arg)
 			if err != nil {
-				return fmt.Errorf("finding encoder module '%s': %v", mod, err)
+				return d.Errf("finding encoder module '%s': %v", mod, err)
 			}
 			encoding, ok := mod.New().(Encoding)
 			if !ok {
-				return fmt.Errorf("module %s is not an HTTP encoding", mod)
+				return d.Errf("module %s is not an HTTP encoding", mod)
 			}
 			if enc.EncodingsRaw == nil {
 				enc.EncodingsRaw = make(caddy.ModuleMap)
 			}
 			enc.EncodingsRaw[arg] = caddyconfig.JSON(encoding, nil)
+			prefer = append(prefer, arg)
 		}
 
 		for d.NextBlock(0) {
-			name := d.Val()
-			mod, err := caddy.GetModule("http.encoders." + name)
-			if err != nil {
-				return fmt.Errorf("getting encoder module '%s': %v", name, err)
+			switch d.Val() {
+			case "minimum_length":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				minLength, err := strconv.Atoi(d.Val())
+				if err != nil {
+					return err
+				}
+				enc.MinLength = minLength
+			case "match":
+				err := caddyhttp.ParseNamedResponseMatcher(d.NewFromNextSegment(), responseMatchers)
+				if err != nil {
+					return err
+				}
+				matcher := responseMatchers["match"]
+				enc.Matcher = &matcher
+			default:
+				name := d.Val()
+				modID := "http.encoders." + name
+				unm, err := caddyfile.UnmarshalModule(d, modID)
+				if err != nil {
+					return err
+				}
+				encoding, ok := unm.(Encoding)
+				if !ok {
+					return d.Errf("module %s is not an HTTP encoding; is %T", modID, unm)
+				}
+				if enc.EncodingsRaw == nil {
+					enc.EncodingsRaw = make(caddy.ModuleMap)
+				}
+				enc.EncodingsRaw[name] = caddyconfig.JSON(encoding, nil)
+				prefer = append(prefer, name)
 			}
-			unm, ok := mod.New().(caddyfile.Unmarshaler)
-			if !ok {
-				return fmt.Errorf("encoder module '%s' is not a Caddyfile unmarshaler", mod)
-			}
-			err = unm.UnmarshalCaddyfile(d.NewFromNextSegment())
-			if err != nil {
-				return err
-			}
-			encoding, ok := unm.(Encoding)
-			if !ok {
-				return fmt.Errorf("module %s is not an HTTP encoding", mod)
-			}
-			if enc.EncodingsRaw == nil {
-				enc.EncodingsRaw = make(caddy.ModuleMap)
-			}
-			enc.EncodingsRaw[name] = caddyconfig.JSON(encoding, nil)
 		}
 	}
+
+	// use the order in which the encoders were defined.
+	enc.Prefer = prefer
 
 	return nil
 }

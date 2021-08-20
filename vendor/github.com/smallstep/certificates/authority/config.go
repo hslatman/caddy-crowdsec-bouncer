@@ -9,6 +9,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/smallstep/certificates/authority/provisioner"
+	cas "github.com/smallstep/certificates/cas/apiv1"
 	"github.com/smallstep/certificates/db"
 	kms "github.com/smallstep/certificates/kms/apiv1"
 	"github.com/smallstep/certificates/templates"
@@ -76,8 +77,11 @@ type ASN1DN struct {
 	CommonName         string `json:"commonName,omitempty" step:"commonName"`
 }
 
-// AuthConfig represents the configuration options for the authority.
+// AuthConfig represents the configuration options for the authority. An
+// underlaying registration authority can also be configured using the
+// cas.Options.
 type AuthConfig struct {
+	*cas.Options
 	Provisioners         provisioner.List      `json:"provisioners"`
 	Template             *ASN1DN               `json:"template,omitempty"`
 	Claims               *provisioner.Claims   `json:"claims,omitempty"`
@@ -179,17 +183,22 @@ func (c *Config) Validate() error {
 	case c.Address == "":
 		return errors.New("address cannot be empty")
 
-	case c.Root.HasEmpties():
-		return errors.New("root cannot be empty")
-
-	case c.IntermediateCert == "":
-		return errors.New("crt cannot be empty")
-
-	case c.IntermediateKey == "":
-		return errors.New("key cannot be empty")
-
 	case len(c.DNSNames) == 0:
 		return errors.New("dnsNames cannot be empty")
+	}
+
+	// Options holds the RA/CAS configuration.
+	ra := c.AuthorityConfig.Options
+	// The default RA/CAS requires root, crt and key.
+	if ra.Is(cas.SoftCAS) {
+		switch {
+		case c.Root.HasEmpties():
+			return errors.New("root cannot be empty")
+		case c.IntermediateCert == "":
+			return errors.New("crt cannot be empty")
+		case c.IntermediateKey == "":
+			return errors.New("key cannot be empty")
+		}
 	}
 
 	// Validate address (a port is required)
@@ -217,6 +226,11 @@ func (c *Config) Validate() error {
 
 	// Validate KMS options, nil is ok.
 	if err := c.KMS.Validate(); err != nil {
+		return err
+	}
+
+	// Validate RA/CAS options, nil is ok.
+	if err := ra.Validate(); err != nil {
 		return err
 	}
 

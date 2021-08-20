@@ -112,7 +112,7 @@ const DefaultLeafTemplate = `{
 // can be provided to force only the verified domains, if the option is true
 // `.SANs` will be set with the verified domains.
 const DefaultIIDLeafTemplate = `{
-	"subject": {"commonName":"{{ .Insecure.CR.Subject.CommonName }}"},
+	"subject": {"commonName": {{ toJson .Insecure.CR.Subject.CommonName }}},
 {{- if .SANs }}
 	"sans": {{ toJson .SANs }},
 {{- else }}
@@ -121,6 +121,23 @@ const DefaultIIDLeafTemplate = `{
 	"ipAddresses": {{ toJson .Insecure.CR.IPAddresses }},
 	"uris": {{ toJson .Insecure.CR.URIs }},
 {{- end }}
+{{- if typeIs "*rsa.PublicKey" .Insecure.CR.PublicKey }}
+	"keyUsage": ["keyEncipherment", "digitalSignature"],
+{{- else }}
+	"keyUsage": ["digitalSignature"],
+{{- end }}
+	"extKeyUsage": ["serverAuth", "clientAuth"]
+}`
+
+// DefaultAdminLeafTemplate is a template used by default by K8sSA and
+// admin-OIDC provisioners. This template takes all the SANs and subject from
+// the certificate request.
+const DefaultAdminLeafTemplate = `{
+	"subject": {{ toJson .Insecure.CR.Subject }},
+	"dnsNames": {{ toJson .Insecure.CR.DNSNames }},
+	"emailAddresses": {{ toJson .Insecure.CR.EmailAddresses }},
+	"ipAddresses": {{ toJson .Insecure.CR.IPAddresses }},
+	"uris": {{ toJson .Insecure.CR.URIs }},
 {{- if typeIs "*rsa.PublicKey" .Insecure.CR.PublicKey }}
 	"keyUsage": ["keyEncipherment", "digitalSignature"],
 {{- else }}

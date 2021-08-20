@@ -15,22 +15,20 @@
 package fileserver
 
 import (
-	"bytes"
 	"fmt"
-	"html/template"
-	"io"
 	weakrand "math/rand"
 	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp/encode"
 	"go.uber.org/zap"
 )
 
@@ -74,10 +72,26 @@ type FileServer struct {
 	// remove trailing slash from URIs for files. Default is true.
 	CanonicalURIs *bool `json:"canonical_uris,omitempty"`
 
+	// Override the status code written when successfully serving a file.
+	// Particularly useful when explicitly serving a file as display for
+	// an error, like a 404 page. A placeholder may be used. By default,
+	// the status code will typically be 200, or 206 for partial content.
+	StatusCode caddyhttp.WeakString `json:"status_code,omitempty"`
+
 	// If pass-thru mode is enabled and a requested file is not found,
 	// it will invoke the next handler in the chain instead of returning
 	// a 404 error. By default, this is false (disabled).
 	PassThru bool `json:"pass_thru,omitempty"`
+
+	// Selection of encoders to use to check for precompressed files.
+	PrecompressedRaw caddy.ModuleMap `json:"precompressed,omitempty" caddy:"namespace=http.precompressed"`
+
+	// If the client has no strong preference (q-factor), choose these encodings in order.
+	// If no order specified here, the first encoding from the Accept-Encoding header
+	// that both client and server support is used
+	PrecompressedOrder []string `json:"precompressed_order,omitempty"`
+
+	precompressors map[string]encode.Precompressed
 
 	logger *zap.Logger
 }
@@ -102,23 +116,6 @@ func (fsrv *FileServer) Provision(ctx caddy.Context) error {
 		fsrv.IndexNames = defaultIndexNames
 	}
 
-	if fsrv.Browse != nil {
-		var tpl *template.Template
-		var err error
-		if fsrv.Browse.TemplateFile != "" {
-			tpl, err = template.ParseFiles(fsrv.Browse.TemplateFile)
-			if err != nil {
-				return fmt.Errorf("parsing browse template file: %v", err)
-			}
-		} else {
-			tpl, err = template.New("default_listing").Parse(defaultBrowseTemplate)
-			if err != nil {
-				return fmt.Errorf("parsing default browse template: %v", err)
-			}
-		}
-		fsrv.Browse.template = tpl
-	}
-
 	// for hide paths that are static (i.e. no placeholders), we can transform them into
 	// absolute paths before the server starts for very slight performance improvement
 	for i, h := range fsrv.Hide {
@@ -127,6 +124,32 @@ func (fsrv *FileServer) Provision(ctx caddy.Context) error {
 				fsrv.Hide[i] = abs
 			}
 		}
+	}
+
+	mods, err := ctx.LoadModule(fsrv, "PrecompressedRaw")
+	if err != nil {
+		return fmt.Errorf("loading encoder modules: %v", err)
+	}
+	for modName, modIface := range mods.(map[string]interface{}) {
+		p, ok := modIface.(encode.Precompressed)
+		if !ok {
+			return fmt.Errorf("module %s is not precompressor", modName)
+		}
+		ae := p.AcceptEncoding()
+		if ae == "" {
+			return fmt.Errorf("precompressor does not specify an Accept-Encoding value")
+		}
+		suffix := p.Suffix()
+		if suffix == "" {
+			return fmt.Errorf("precompressor does not specify a Suffix value")
+		}
+		if _, ok := fsrv.precompressors[ae]; ok {
+			return fmt.Errorf("precompressor already added: %s", ae)
+		}
+		if fsrv.precompressors == nil {
+			fsrv.precompressors = make(map[string]encode.Precompressed)
+		}
+		fsrv.precompressors[ae] = p
 	}
 
 	return nil
@@ -138,12 +161,11 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	filesToHide := fsrv.transformHidePaths(repl)
 
 	root := repl.ReplaceAll(fsrv.Root, ".")
-	suffix := repl.ReplaceAll(r.URL.Path, "")
-	filename := sanitizedPathJoin(root, suffix)
+	filename := caddyhttp.SanitizedPathJoin(root, r.URL.Path)
 
 	fsrv.logger.Debug("sanitized path join",
 		zap.String("site_root", root),
-		zap.String("request_path", suffix),
+		zap.String("request_path", r.URL.Path),
 		zap.String("result", filename))
 
 	// get information about the file
@@ -155,7 +177,6 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		} else if os.IsPermission(err) {
 			return caddyhttp.Error(http.StatusForbidden, err)
 		}
-		// TODO: treat this as resource exhaustion like with os.Open? Or unnecessary here?
 		return caddyhttp.Error(http.StatusInternalServerError, err)
 	}
 
@@ -164,7 +185,7 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	var implicitIndexFile bool
 	if info.IsDir() && len(fsrv.IndexNames) > 0 {
 		for _, indexPage := range fsrv.IndexNames {
-			indexPath := sanitizedPathJoin(filename, indexPage)
+			indexPath := caddyhttp.SanitizedPathJoin(filename, indexPage)
 			if fileHidden(indexPath, filesToHide) {
 				// pretend this file doesn't exist
 				fsrv.logger.Debug("hiding index file",
@@ -206,8 +227,6 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		return fsrv.notFound(w, r, next)
 	}
 
-	// TODO: content negotiation (brotli sidecar files, etc...)
-
 	// one last check to ensure the file isn't hidden (we might
 	// have changed the filename from when we last checked)
 	if fileHidden(filename, filesToHide) {
@@ -222,27 +241,74 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	// trailing slash - not enforcing this can break relative hrefs
 	// in HTML (see https://github.com/caddyserver/caddy/issues/2741)
 	if fsrv.CanonicalURIs == nil || *fsrv.CanonicalURIs {
-		if implicitIndexFile && !strings.HasSuffix(r.URL.Path, "/") {
-			fsrv.logger.Debug("redirecting to canonical URI (adding trailing slash for directory)", zap.String("path", r.URL.Path))
-			return redirect(w, r, r.URL.Path+"/")
-		} else if !implicitIndexFile && strings.HasSuffix(r.URL.Path, "/") {
-			fsrv.logger.Debug("redirecting to canonical URI (removing trailing slash for file)", zap.String("path", r.URL.Path))
-			return redirect(w, r, r.URL.Path[:len(r.URL.Path)-1])
+		// Only redirect if the last element of the path (the filename) was not
+		// rewritten; if the admin wanted to rewrite to the canonical path, they
+		// would have, and we have to be very careful not to introduce unwanted
+		// redirects and especially redirect loops!
+		// See https://github.com/caddyserver/caddy/issues/4205.
+		origReq := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request)
+		if path.Base(origReq.URL.Path) == path.Base(r.URL.Path) {
+			if implicitIndexFile && !strings.HasSuffix(origReq.URL.Path, "/") {
+				to := origReq.URL.Path + "/"
+				fsrv.logger.Debug("redirecting to canonical URI (adding trailing slash for directory)",
+					zap.String("from_path", origReq.URL.Path),
+					zap.String("to_path", to))
+				return redirect(w, r, to)
+			} else if !implicitIndexFile && strings.HasSuffix(origReq.URL.Path, "/") {
+				to := origReq.URL.Path[:len(origReq.URL.Path)-1]
+				fsrv.logger.Debug("redirecting to canonical URI (removing trailing slash for file)",
+					zap.String("from_path", origReq.URL.Path),
+					zap.String("to_path", to))
+				return redirect(w, r, to)
+			}
 		}
 	}
 
-	fsrv.logger.Debug("opening file", zap.String("filename", filename))
+	var file *os.File
 
-	// open the file
-	file, err := fsrv.openFile(filename, w)
-	if err != nil {
-		if herr, ok := err.(caddyhttp.HandlerError); ok &&
-			herr.StatusCode == http.StatusNotFound {
-			return fsrv.notFound(w, r, next)
+	// check for precompressed files
+	for _, ae := range encode.AcceptedEncodings(r, fsrv.PrecompressedOrder) {
+		precompress, ok := fsrv.precompressors[ae]
+		if !ok {
+			continue
 		}
-		return err // error is already structured
+		compressedFilename := filename + precompress.Suffix()
+		compressedInfo, err := os.Stat(compressedFilename)
+		if err != nil || compressedInfo.IsDir() {
+			fsrv.logger.Debug("precompressed file not accessible", zap.String("filename", compressedFilename), zap.Error(err))
+			continue
+		}
+		fsrv.logger.Debug("opening compressed sidecar file", zap.String("filename", compressedFilename), zap.Error(err))
+		file, err = fsrv.openFile(compressedFilename, w)
+		if err != nil {
+			fsrv.logger.Warn("opening precompressed file failed", zap.String("filename", compressedFilename), zap.Error(err))
+			if caddyErr, ok := err.(caddyhttp.HandlerError); ok && caddyErr.StatusCode == http.StatusServiceUnavailable {
+				return err
+			}
+			continue
+		}
+		defer file.Close()
+		w.Header().Set("Content-Encoding", ae)
+		w.Header().Del("Accept-Ranges")
+		w.Header().Add("Vary", "Accept-Encoding")
+		break
 	}
-	defer file.Close()
+
+	// no precompressed file found, use the actual file
+	if file == nil {
+		fsrv.logger.Debug("opening file", zap.String("filename", filename))
+
+		// open the file
+		file, err = fsrv.openFile(filename, w)
+		if err != nil {
+			if herr, ok := err.(caddyhttp.HandlerError); ok &&
+				herr.StatusCode == http.StatusNotFound {
+				return fsrv.notFound(w, r, next)
+			}
+			return err // error is already structured
+		}
+		defer file.Close()
+	}
 
 	// set the ETag - note that a conditional If-None-Match request is handled
 	// by http.ServeContent below, which checks against this ETag value
@@ -260,22 +326,33 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		}
 	}
 
-	// if this handler exists in an error context (i.e. is
-	// part of a handler chain that is supposed to handle
-	// a previous error), we have to serve the content
-	// manually in order to write the correct status code
+	var statusCodeOverride int
+
+	// if this handler exists in an error context (i.e. is part of a
+	// handler chain that is supposed to handle a previous error),
+	// we should set status code to the one from the error instead
+	// of letting http.ServeContent set the default (usually 200)
 	if reqErr, ok := r.Context().Value(caddyhttp.ErrorCtxKey).(error); ok {
-		statusCode := http.StatusInternalServerError
+		statusCodeOverride = http.StatusInternalServerError
 		if handlerErr, ok := reqErr.(caddyhttp.HandlerError); ok {
 			if handlerErr.StatusCode > 0 {
-				statusCode = handlerErr.StatusCode
+				statusCodeOverride = handlerErr.StatusCode
 			}
 		}
-		w.WriteHeader(statusCode)
-		if r.Method != http.MethodHead {
-			_, _ = io.Copy(w, file)
+	}
+
+	// if a status code override is configured, run the replacer on it
+	if codeStr := fsrv.StatusCode.String(); codeStr != "" {
+		statusCodeOverride, err = strconv.Atoi(repl.ReplaceAll(codeStr, ""))
+		if err != nil {
+			return caddyhttp.Error(http.StatusInternalServerError, err)
 		}
-		return nil
+	}
+
+	// if we do have an override from the previous two parts, then
+	// we wrap the response writer to intercept the WriteHeader call
+	if statusCodeOverride > 0 {
+		w = statusOverrideResponseWriter{ResponseWriter: w, code: statusCodeOverride}
 	}
 
 	// let the standard library do what it does best; note, however,
@@ -296,8 +373,10 @@ func (fsrv *FileServer) openFile(filename string, w http.ResponseWriter) (*os.Fi
 	if err != nil {
 		err = mapDirOpenError(err, filename)
 		if os.IsNotExist(err) {
+			fsrv.logger.Debug("file not found", zap.String("filename", filename), zap.Error(err))
 			return nil, caddyhttp.Error(http.StatusNotFound, err)
 		} else if os.IsPermission(err) {
+			fsrv.logger.Debug("permission denied", zap.String("filename", filename), zap.Error(err))
 			return nil, caddyhttp.Error(http.StatusForbidden, err)
 		}
 		// maybe the server is under load and ran out of file descriptors?
@@ -305,6 +384,7 @@ func (fsrv *FileServer) openFile(filename string, w http.ResponseWriter) (*os.Fi
 		//nolint:gosec
 		backoff := weakrand.Intn(maxBackoff-minBackoff) + minBackoff
 		w.Header().Set("Retry-After", strconv.Itoa(backoff))
+		fsrv.logger.Debug("retry after backoff", zap.String("filename", filename), zap.Int("backoff", backoff), zap.Error(err))
 		return nil, caddyhttp.Error(http.StatusServiceUnavailable, err)
 	}
 	return file, nil
@@ -353,42 +433,6 @@ func (fsrv *FileServer) transformHidePaths(repl *caddy.Replacer) []string {
 		}
 	}
 	return hide
-}
-
-// sanitizedPathJoin performs filepath.Join(root, reqPath) that
-// is safe against directory traversal attacks. It uses logic
-// similar to that in the Go standard library, specifically
-// in the implementation of http.Dir. The root is assumed to
-// be a trusted path, but reqPath is not.
-func sanitizedPathJoin(root, reqPath string) string {
-	// TODO: Caddy 1 uses this:
-	// prevent absolute path access on Windows, e.g. http://localhost:5000/C:\Windows\notepad.exe
-	// if runtime.GOOS == "windows" && len(reqPath) > 0 && filepath.IsAbs(reqPath[1:]) {
-	// TODO.
-	// }
-
-	// TODO: whereas std lib's http.Dir.Open() uses this:
-	// if filepath.Separator != '/' && strings.ContainsRune(name, filepath.Separator) {
-	// 	return nil, errors.New("http: invalid character in file path")
-	// }
-
-	// TODO: see https://play.golang.org/p/oh77BiVQFti for another thing to consider
-
-	if root == "" {
-		root = "."
-	}
-
-	path := filepath.Join(root, filepath.Clean("/"+reqPath))
-
-	// filepath.Join also cleans the path, and cleaning strips
-	// the trailing slash, so we need to re-add it afterwards.
-	// if the length is 1, then it's a path to the root,
-	// and that should return ".", so we don't append the separator.
-	if strings.HasSuffix(reqPath, "/") && len(reqPath) > 1 {
-		path += separator
-	}
-
-	return path
 }
 
 // fileHidden returns true if filename is hidden according to the hide list.
@@ -471,13 +515,21 @@ func redirect(w http.ResponseWriter, r *http.Request, to string) error {
 	return nil
 }
 
-var defaultIndexNames = []string{"index.html", "index.txt"}
-
-var bufPool = sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
+// statusOverrideResponseWriter intercepts WriteHeader calls
+// to instead write the HTTP status code we want instead
+// of the one http.ServeContent will use by default (usually 200)
+type statusOverrideResponseWriter struct {
+	http.ResponseWriter
+	code int
 }
+
+// WriteHeader intercepts calls by the stdlib to WriteHeader
+// to instead write the HTTP status code we want.
+func (wr statusOverrideResponseWriter) WriteHeader(int) {
+	wr.ResponseWriter.WriteHeader(wr.code)
+}
+
+var defaultIndexNames = []string{"index.html", "index.txt"}
 
 const (
 	minBackoff, maxBackoff = 2, 5
