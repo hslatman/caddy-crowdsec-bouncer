@@ -79,7 +79,7 @@ localhost {
 ```
 
 Configuration using a Caddyfile is only supported for HTTP handlers.
-You'll also need to use a recent version of Caddy (i.e. 2.4.x and newer).
+You'll also need to use a recent version of Caddy (i.e. 2.4.x and newer) and Go 1.16 (or newer).
 In case you want to use the CrowdSec bouncer on TCP or UDP level, you'll need to configure Caddy using the native JSON format.
 An example configuration is shown below:
 
