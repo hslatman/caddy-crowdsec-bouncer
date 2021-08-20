@@ -102,48 +102,65 @@ func (s *levelHandler) deleteTables(toDel []*table.Table) error {
 
 // replaceTables will replace tables[left:right] with newTables. Note this EXCLUDES tables[right].
 // You must call decr() to delete the old tables _after_ writing the update to the manifest.
-func (s *levelHandler) replaceTables(newTables []*table.Table) error {
+func (s *levelHandler) replaceTables(toDel, toAdd []*table.Table) error {
 	// Need to re-search the range of tables in this level to be replaced as other goroutines might
 	// be changing it as well.  (They can't touch our tables, but if they add/remove other tables,
 	// the indices get shifted around.)
-	if len(newTables) == 0 {
-		return nil
-	}
-
 	s.Lock() // We s.Unlock() below.
 
+	toDelMap := make(map[uint64]struct{})
+	for _, t := range toDel {
+		toDelMap[t.ID()] = struct{}{}
+	}
+	var newTables []*table.Table
+	for _, t := range s.tables {
+		_, found := toDelMap[t.ID()]
+		if !found {
+			newTables = append(newTables, t)
+			continue
+		}
+		s.totalSize -= t.Size()
+	}
+
 	// Increase totalSize first.
-	for _, tbl := range newTables {
-		s.totalSize += tbl.Size()
-		tbl.IncrRef()
+	for _, t := range toAdd {
+		s.totalSize += t.Size()
+		t.IncrRef()
+		newTables = append(newTables, t)
 	}
 
-	kr := keyRange{
-		left:  newTables[0].Smallest(),
-		right: newTables[len(newTables)-1].Biggest(),
-	}
-	left, right := s.overlappingTables(levelHandlerRLocked{}, kr)
-
-	toDecr := make([]*table.Table, right-left)
-	// Update totalSize and reference counts.
-	for i := left; i < right; i++ {
-		tbl := s.tables[i]
-		s.totalSize -= tbl.Size()
-		toDecr[i-left] = tbl
-	}
-
-	// To be safe, just make a copy. TODO: Be more careful and avoid copying.
-	numDeleted := right - left
-	numAdded := len(newTables)
-	tables := make([]*table.Table, len(s.tables)-numDeleted+numAdded)
-	y.AssertTrue(left == copy(tables, s.tables[:left]))
-	t := tables[left:]
-	y.AssertTrue(numAdded == copy(t, newTables))
-	t = t[numAdded:]
-	y.AssertTrue(len(s.tables[right:]) == copy(t, s.tables[right:]))
-	s.tables = tables
+	// Assign tables.
+	s.tables = newTables
+	sort.Slice(s.tables, func(i, j int) bool {
+		return y.CompareKeys(s.tables[i].Smallest(), s.tables[j].Smallest()) < 0
+	})
 	s.Unlock() // s.Unlock before we DecrRef tables -- that can be slow.
-	return decrRefs(toDecr)
+	return decrRefs(toDel)
+}
+
+// addTable adds toAdd table to levelHandler. Normally when we add tables to levelHandler, we sort
+// tables based on table.Smallest. This is required for correctness of the system. But in case of
+// stream writer this can be avoided. We can just add tables to levelHandler's table list
+// and after all addTable calls, we can sort table list(check sortTable method).
+// NOTE: levelHandler.sortTables() should be called after call addTable calls are done.
+func (s *levelHandler) addTable(t *table.Table) {
+	s.Lock()
+	defer s.Unlock()
+
+	s.totalSize += t.Size() // Increase totalSize first.
+	t.IncrRef()
+	s.tables = append(s.tables, t)
+}
+
+// sortTables sorts tables of levelHandler based on table.Smallest.
+// Normally it should be called after all addTable calls.
+func (s *levelHandler) sortTables() {
+	s.RLock()
+	defer s.RUnlock()
+
+	sort.Slice(s.tables, func(i, j int) bool {
+		return y.CompareKeys(s.tables[i].Smallest(), s.tables[j].Smallest()) < 0
+	})
 }
 
 func decrRefs(tables []*table.Table) error {
@@ -266,16 +283,28 @@ func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
 
 // appendIterators appends iterators to an array of iterators, for merging.
 // Note: This obtains references for the table handlers. Remember to close these iterators.
-func (s *levelHandler) appendIterators(iters []y.Iterator, reversed bool) []y.Iterator {
+func (s *levelHandler) appendIterators(iters []y.Iterator, opt *IteratorOptions) []y.Iterator {
 	s.RLock()
 	defer s.RUnlock()
 
 	if s.level == 0 {
 		// Remember to add in reverse order!
 		// The newer table at the end of s.tables should be added first as it takes precedence.
-		return appendIteratorsReversed(iters, s.tables, reversed)
+		// Level 0 tables are not in key sorted order, so we need to consider them one by one.
+		var out []*table.Table
+		for _, t := range s.tables {
+			if opt.pickTable(t) {
+				out = append(out, t)
+			}
+		}
+		return appendIteratorsReversed(iters, out, opt.Reverse)
 	}
-	return append(iters, table.NewConcatIterator(s.tables, reversed))
+
+	tables := opt.pickTables(s.tables)
+	if len(tables) == 0 {
+		return iters
+	}
+	return append(iters, table.NewConcatIterator(tables, opt.Reverse))
 }
 
 type levelHandlerRLocked struct{}
@@ -284,6 +313,9 @@ type levelHandlerRLocked struct{}
 // This function should already have acquired a read lock, and this is so important the caller must
 // pass an empty parameter declaring such.
 func (s *levelHandler) overlappingTables(_ levelHandlerRLocked, kr keyRange) (int, int) {
+	if len(kr.left) == 0 || len(kr.right) == 0 {
+		return 0, 0
+	}
 	left := sort.Search(len(s.tables), func(i int) bool {
 		return y.CompareKeys(kr.left, s.tables[i].Biggest()) <= 0
 	})

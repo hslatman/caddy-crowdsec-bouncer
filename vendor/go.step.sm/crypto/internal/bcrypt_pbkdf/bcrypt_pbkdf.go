@@ -13,7 +13,7 @@ import (
 	// NOTE! Requires blowfish package version from Aug 1, 2014 or later.
 	// Will produce incorrect results if the package is older.
 	// See commit message for details: http://goo.gl/wx6g8O
-	//nolint:deprecated
+	//nolint:staticcheck
 	"golang.org/x/crypto/blowfish"
 )
 

@@ -17,6 +17,7 @@ package httpcaddyfile
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"reflect"
 	"regexp"
 	"sort"
@@ -27,11 +28,23 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/caddyserver/caddy/v2/modules/caddypki"
 	"github.com/caddyserver/caddy/v2/modules/caddytls"
 )
 
 func init() {
 	caddyconfig.RegisterAdapter("caddyfile", caddyfile.Adapter{ServerType: ServerType{}})
+}
+
+// App represents the configuration for a non-standard
+// Caddy app module (e.g. third-party plugin) which was
+// parsed from a global options block.
+type App struct {
+	// The JSON key for the app being configured
+	Name string
+
+	// The raw app config as JSON
+	Value json.RawMessage
 }
 
 // ServerType can set up a config from an HTTP Caddyfile.
@@ -207,9 +220,10 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 
 	// now that each server is configured, make the HTTP app
 	httpApp := caddyhttp.App{
-		HTTPPort:  tryInt(options["http_port"], &warnings),
-		HTTPSPort: tryInt(options["https_port"], &warnings),
-		Servers:   servers,
+		HTTPPort:    tryInt(options["http_port"], &warnings),
+		HTTPSPort:   tryInt(options["https_port"], &warnings),
+		GracePeriod: tryDuration(options["grace_period"], &warnings),
+		Servers:     servers,
 	}
 
 	// then make the TLS app
@@ -218,23 +232,38 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 		return nil, warnings, err
 	}
 
+	// then make the PKI app
+	pkiApp, warnings, err := st.buildPKIApp(pairings, options, warnings)
+	if err != nil {
+		return nil, warnings, err
+	}
+
 	// extract any custom logs, and enforce configured levels
 	var customLogs []namedCustomLog
 	var hasDefaultLog bool
+	addCustomLog := func(ncl namedCustomLog) {
+		if ncl.name == "" {
+			return
+		}
+		if ncl.name == "default" {
+			hasDefaultLog = true
+		}
+		if _, ok := options["debug"]; ok && ncl.log.Level == "" {
+			ncl.log.Level = "DEBUG"
+		}
+		customLogs = append(customLogs, ncl)
+	}
+	// Apply global log options, when set
+	if options["log"] != nil {
+		for _, logValue := range options["log"].([]ConfigValue) {
+			addCustomLog(logValue.Value.(namedCustomLog))
+		}
+	}
+	// Apply server-specific log options
 	for _, p := range pairings {
 		for _, sb := range p.serverBlocks {
 			for _, clVal := range sb.pile["custom_log"] {
-				ncl := clVal.Value.(namedCustomLog)
-				if ncl.name == "" {
-					continue
-				}
-				if ncl.name == "default" {
-					hasDefaultLog = true
-				}
-				if _, ok := options["debug"]; ok && ncl.log.Level == "" {
-					ncl.log.Level = "DEBUG"
-				}
-				customLogs = append(customLogs, ncl)
+				addCustomLog(clVal.Value.(namedCustomLog))
 			}
 		}
 	}
@@ -252,11 +281,25 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 
 	// annnd the top-level config, then we're done!
 	cfg := &caddy.Config{AppsRaw: make(caddy.ModuleMap)}
+
+	// loop through the configured options, and if any of
+	// them are an httpcaddyfile App, then we insert them
+	// into the config as raw Caddy apps
+	for _, opt := range options {
+		if app, ok := opt.(App); ok {
+			cfg.AppsRaw[app.Name] = app.Value
+		}
+	}
+
+	// insert the standard Caddy apps into the config
 	if len(httpApp.Servers) > 0 {
 		cfg.AppsRaw["http"] = caddyconfig.JSON(httpApp, &warnings)
 	}
 	if !reflect.DeepEqual(tlsApp, &caddytls.TLS{CertificatesRaw: make(caddy.ModuleMap)}) {
 		cfg.AppsRaw["tls"] = caddyconfig.JSON(tlsApp, &warnings)
+	}
+	if !reflect.DeepEqual(pkiApp, &caddypki.PKI{CAs: make(map[string]*caddypki.CA)}) {
+		cfg.AppsRaw["pki"] = caddyconfig.JSON(pkiApp, &warnings)
 	}
 	if storageCvtr, ok := options["storage"].(caddy.StorageConverter); ok {
 		cfg.StorageRaw = caddyconfig.JSONModuleObject(storageCvtr,
@@ -280,7 +323,7 @@ func (st ServerType) Setup(inputServerBlocks []caddyfile.ServerBlock,
 			// most users seem to prefer not writing access logs
 			// to the default log when they are directed to a
 			// file or have any other special customization
-			if len(ncl.log.Include) > 0 {
+			if ncl.name != "default" && len(ncl.log.Include) > 0 {
 				defaultLog, ok := cfg.Logging.Logs["default"]
 				if !ok {
 					defaultLog = new(caddy.CustomLog)
@@ -315,7 +358,7 @@ func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options
 			return nil, fmt.Errorf("%s:%d: unrecognized global option: %s", tkn.File, tkn.Line, opt)
 		}
 
-		val, err = optFunc(disp)
+		val, err = optFunc(disp, options[opt])
 		if err != nil {
 			return nil, fmt.Errorf("parsing caddyfile tokens for '%s': %v", opt, err)
 		}
@@ -329,9 +372,23 @@ func (ServerType) evaluateGlobalOptionsBlock(serverBlocks []serverBlock, options
 			}
 			serverOpts, ok := val.(serverOptions)
 			if !ok {
-				return nil, fmt.Errorf("unexpected type from 'servers' global options")
+				return nil, fmt.Errorf("unexpected type from 'servers' global options: %T", val)
 			}
 			options[opt] = append(existingOpts, serverOpts)
+			continue
+		}
+		// Additionally, fold multiple "log" options together into an
+		// array so that multiple loggers can be configured.
+		if opt == "log" {
+			existingOpts, ok := options[opt].([]ConfigValue)
+			if !ok {
+				existingOpts = []ConfigValue{}
+			}
+			logOpts, ok := val.([]ConfigValue)
+			if !ok {
+				return nil, fmt.Errorf("unexpected type from 'log' global options: %T", val)
+			}
+			options[opt] = append(existingOpts, logOpts...)
 			continue
 		}
 
@@ -395,6 +452,9 @@ func (st *ServerType) serversFromPairings(
 			if autoHTTPS == "disable_redirects" {
 				srv.AutoHTTPS.DisableRedir = true
 			}
+			if autoHTTPS == "ignore_loaded_certs" {
+				srv.AutoHTTPS.IgnoreLoadedCerts = true
+			}
 		}
 
 		// sort server blocks by their keys; this is important because
@@ -409,7 +469,7 @@ func (st *ServerType) serversFromPairings(
 			var iLongestHost, jLongestHost string
 			var iWildcardHost, jWildcardHost bool
 			for _, addr := range p.serverBlocks[i].keys {
-				if strings.Contains(addr.Host, "*.") {
+				if strings.Contains(addr.Host, "*") || addr.Host == "" {
 					iWildcardHost = true
 				}
 				if specificity(addr.Host) > specificity(iLongestHost) {
@@ -420,7 +480,7 @@ func (st *ServerType) serversFromPairings(
 				}
 			}
 			for _, addr := range p.serverBlocks[j].keys {
-				if strings.Contains(addr.Host, "*.") {
+				if strings.Contains(addr.Host, "*") || addr.Host == "" {
 					jWildcardHost = true
 				}
 				if specificity(addr.Host) > specificity(jLongestHost) {
@@ -430,9 +490,12 @@ func (st *ServerType) serversFromPairings(
 					jLongestPath = addr.Path
 				}
 			}
+			// catch-all blocks (blocks with no hostname) should always go
+			// last, even after blocks with wildcard hosts
+			if specificity(iLongestHost) == 0 {
+				return false
+			}
 			if specificity(jLongestHost) == 0 {
-				// catch-all blocks (blocks with no hostname) should always go
-				// last, even after blocks with wildcard hosts
 				return true
 			}
 			if iWildcardHost != jWildcardHost {
@@ -468,6 +531,13 @@ func (st *ServerType) serversFromPairings(
 
 			hosts := sblock.hostsFromKeys(false)
 
+			// emit warnings if user put unspecified IP addresses; they probably want the bind directive
+			for _, h := range hosts {
+				if h == "0.0.0.0" || h == "::" {
+					log.Printf("[WARNING] Site block has unspecified IP address %s which only matches requests having that Host header; you probably want the 'bind' directive to configure the socket", h)
+				}
+			}
+
 			// tls: connection policies
 			if cpVals, ok := sblock.pile["tls.connection_policy"]; ok {
 				// tls connection policies
@@ -500,16 +570,20 @@ func (st *ServerType) serversFromPairings(
 			}
 
 			for _, addr := range sblock.keys {
-				// exclude any hosts that were defined explicitly with "http://"
-				// in the key from automated cert management (issue #2998)
-				if addr.Scheme == "http" && addr.Host != "" {
-					if srv.AutoHTTPS == nil {
-						srv.AutoHTTPS = new(caddyhttp.AutoHTTPSConfig)
-					}
-					if !sliceContains(srv.AutoHTTPS.Skip, addr.Host) {
-						srv.AutoHTTPS.Skip = append(srv.AutoHTTPS.Skip, addr.Host)
+				// if server only uses HTTPS port, auto-HTTPS will not apply
+				if listenersUseAnyPortOtherThan(srv.Listen, httpPort) {
+					// exclude any hosts that were defined explicitly with "http://"
+					// in the key from automated cert management (issue #2998)
+					if addr.Scheme == "http" && addr.Host != "" {
+						if srv.AutoHTTPS == nil {
+							srv.AutoHTTPS = new(caddyhttp.AutoHTTPSConfig)
+						}
+						if !sliceContains(srv.AutoHTTPS.Skip, addr.Host) {
+							srv.AutoHTTPS.Skip = append(srv.AutoHTTPS.Skip, addr.Host)
+						}
 					}
 				}
+
 				// we'll need to remember if the address qualifies for auto-HTTPS, so we
 				// can add a TLS conn policy if necessary
 				if addr.Scheme == "https" ||
@@ -1173,10 +1247,38 @@ func tryString(val interface{}, warnings *[]caddyconfig.Warning) string {
 	return stringVal
 }
 
+func tryDuration(val interface{}, warnings *[]caddyconfig.Warning) caddy.Duration {
+	durationVal, ok := val.(caddy.Duration)
+	if val != nil && !ok && warnings != nil {
+		*warnings = append(*warnings, caddyconfig.Warning{Message: "not a duration type"})
+	}
+	return durationVal
+}
+
 // sliceContains returns true if needle is in haystack.
 func sliceContains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// listenersUseAnyPortOtherThan returns true if there are any
+// listeners in addresses that use a port which is not otherPort.
+// Mostly borrowed from unexported method in caddyhttp package.
+func listenersUseAnyPortOtherThan(addresses []string, otherPort string) bool {
+	otherPortInt, err := strconv.Atoi(otherPort)
+	if err != nil {
+		return false
+	}
+	for _, lnAddr := range addresses {
+		laddrs, err := caddy.ParseNetworkAddress(lnAddr)
+		if err != nil {
+			continue
+		}
+		if uint(otherPortInt) > laddrs.EndPort || uint(otherPortInt) < laddrs.StartPort {
 			return true
 		}
 	}

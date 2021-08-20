@@ -149,3 +149,24 @@ func CreateCertificate(template, parent *x509.Certificate, pub crypto.PublicKey,
 	}
 	return cert, nil
 }
+
+// CreateCertificateTemplate creates a X.509 certificate template from the given certificate request.
+func CreateCertificateTemplate(cr *x509.CertificateRequest) (*x509.Certificate, error) {
+	if err := cr.CheckSignature(); err != nil {
+		return nil, errors.Wrap(err, "error validating certificate request")
+	}
+	// Set SubjectAltName extension as critical if Subject is empty.
+	fixSubjectAltName(cr)
+
+	return &x509.Certificate{
+		Subject:            cr.Subject,
+		DNSNames:           cr.DNSNames,
+		EmailAddresses:     cr.EmailAddresses,
+		IPAddresses:        cr.IPAddresses,
+		URIs:               cr.URIs,
+		ExtraExtensions:    cr.Extensions,
+		PublicKey:          cr.PublicKey,
+		PublicKeyAlgorithm: cr.PublicKeyAlgorithm,
+		SignatureAlgorithm: 0,
+	}, nil
+}

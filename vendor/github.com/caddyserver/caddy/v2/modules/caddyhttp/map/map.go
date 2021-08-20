@@ -48,7 +48,7 @@ type Handler struct {
 
 	// If no mappings match or if the mapped output is null/nil, the associated
 	// default output will be applied (optional).
-	Defaults []string
+	Defaults []string `json:"defaults,omitempty"`
 }
 
 // CaddyModule returns the Caddy module information.
@@ -136,6 +136,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 					if output := m.Outputs[destIdx]; output == nil {
 						continue
 					} else {
+						output = m.re.ReplaceAllString(input, m.Outputs[destIdx].(string))
 						return output, true
 					}
 				}

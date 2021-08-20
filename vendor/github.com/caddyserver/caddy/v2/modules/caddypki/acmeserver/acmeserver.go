@@ -29,6 +29,7 @@ import (
 	"github.com/go-chi/chi"
 	"github.com/smallstep/certificates/acme"
 	acmeAPI "github.com/smallstep/certificates/acme/api"
+	acmeNoSQL "github.com/smallstep/certificates/acme/db/nosql"
 	"github.com/smallstep/certificates/authority"
 	"github.com/smallstep/certificates/authority/provisioner"
 	"github.com/smallstep/certificates/db"
@@ -65,6 +66,13 @@ type Handler struct {
 	// limitations in the underlying library. Do not rely
 	// on this property long-term; check release notes.
 	PathPrefix string `json:"path_prefix,omitempty"`
+
+	// If true, the CA's root will be the issuer instead of
+	// the intermediate. This is NOT recommended and should
+	// only be used when devices/clients do not properly
+	// validate certificate chains. EXPERIMENTAL: Might be
+	// changed or removed in the future.
+	SignWithRoot bool `json:"sign_with_root,omitempty"`
 
 	acmeEndpoints http.Handler
 	logger        *zap.Logger
@@ -109,6 +117,7 @@ func (ash *Handler) Provision(ctx caddy.Context) error {
 	}
 
 	authorityConfig := caddypki.AuthorityConfig{
+		SignWithRoot: ash.SignWithRoot,
 		AuthConfig: &authority.AuthConfig{
 			Provisioners: provisioner.List{
 				&provisioner.ACME{
@@ -130,17 +139,23 @@ func (ash *Handler) Provision(ctx caddy.Context) error {
 		return err
 	}
 
-	acmeAuth, err := acme.New(auth, acme.AuthorityOptions{
-		DB:     auth.GetDatabase().(nosql.DB),     // stores all the server state
-		DNS:    ash.Host,                          // used for directory links; TODO: not needed
-		Prefix: strings.Trim(ash.PathPrefix, "/"), // used for directory links
-	})
-	if err != nil {
-		return err
+	var acmeDB acme.DB
+	if authorityConfig.DB != nil {
+		acmeDB, err = acmeNoSQL.New(auth.GetDatabase().(nosql.DB))
+		if err != nil {
+			return fmt.Errorf("configuring ACME DB: %v", err)
+		}
 	}
 
 	// create the router for the ACME endpoints
-	acmeRouterHandler := acmeAPI.New(acmeAuth)
+	acmeRouterHandler := acmeAPI.NewHandler(acmeAPI.HandlerOptions{
+		CA:     auth,
+		DB:     acmeDB,         // stores all the server state
+		DNS:    ash.Host,       // used for directory links; TODO: not needed (follow-up upstream with step-ca)
+		Prefix: ash.PathPrefix, // used for directory links
+	})
+
+	// extract its http.Handler so we can use it directly
 	r := chi.NewRouter()
 	r.Route(ash.PathPrefix, func(r chi.Router) {
 		acmeRouterHandler.Route(r)

@@ -25,7 +25,7 @@ func (db *DB) Open(dir string, opt ...database.Option) (err error) {
 		}
 	}
 
-	bo := badger.DefaultOptions
+	bo := badger.DefaultOptions(dir)
 
 	// Set the Table and Value LoadingMode - default is MemoryMap. Low memory/RAM
 	// systems may want to use FileIO.
@@ -40,7 +40,6 @@ func (db *DB) Open(dir string, opt ...database.Option) (err error) {
 		return badger.ErrInvalidLoadingMode
 	}
 
-	bo.Dir = dir
 	if opts.ValueDir != "" {
 		bo.ValueDir = opts.ValueDir
 	} else {
@@ -135,14 +134,11 @@ func badgerGet(txn *badger.Txn, key []byte) ([]byte, error) {
 	case err != nil:
 		return nil, errors.Wrapf(err, "failed to get key %s", key)
 	default:
-		val, err := item.Value()
+		val, err := item.ValueCopy(nil)
 		if err != nil {
 			return nil, errors.Wrap(err, "error accessing value returned by database")
 		}
-
-		// Make sure to return a copy as val is only valid during the
-		// transaction.
-		return cloneBytes(val), nil
+		return val, nil
 	}
 }
 
@@ -209,14 +205,14 @@ func (db *DB) List(bucket []byte) ([]*database.Entry, error) {
 				return errors.Errorf("bucket names do not match; want %v, but got %v",
 					bucket, _bucket)
 			}
-			v, err := item.Value()
+			v, err := item.ValueCopy(nil)
 			if err != nil {
 				return errors.Wrap(err, "error retrieving contents from database value")
 			}
 			entries = append(entries, &database.Entry{
 				Bucket: _bucket,
 				Key:    key,
-				Value:  cloneBytes(v),
+				Value:  v,
 			})
 		}
 		if !tableExists {
@@ -243,7 +239,7 @@ func (db *DB) CmpAndSwap(bucket, key, oldValue, newValue []byte) ([]byte, bool, 
 	case err != nil:
 		return nil, false, err
 	case swapped:
-		if err := badgerTxn.Commit(nil); err != nil {
+		if err := badgerTxn.Commit(); err != nil {
 			return nil, false, errors.Wrapf(err, "failed to commit badger transaction")
 		}
 		return val, swapped, nil
@@ -400,11 +396,4 @@ func parseBadgerEncode(bk []byte) (value, rest []byte) {
 	default:
 		return bk[start:end], bk[end:]
 	}
-}
-
-// cloneBytes returns a copy of a given slice.
-func cloneBytes(v []byte) []byte {
-	var clone = make([]byte, len(v))
-	copy(clone, v)
-	return clone
 }

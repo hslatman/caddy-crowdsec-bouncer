@@ -47,8 +47,11 @@ type Certificate struct {
 	// The hex-encoded hash of this cert's chain's bytes.
 	hash string
 
-	// Whether this certificate is under our management
+	// Whether this certificate is under our management.
 	managed bool
+
+	// The unique string identifying the issuer of this certificate.
+	issuerKey string
 }
 
 // NeedsRenewal returns true if the certificate is
@@ -126,6 +129,7 @@ func (cfg *Config) loadManagedCertificate(domain string) (Certificate, error) {
 		return cert, err
 	}
 	cert.managed = true
+	cert.issuerKey = certRes.issuerKey
 	return cert, nil
 }
 
@@ -155,7 +159,7 @@ func (cfg *Config) CacheUnmanagedTLSCertificate(tlsCert tls.Certificate, tags []
 	if err != nil {
 		return err
 	}
-	_, err = stapleOCSP(cfg.Storage, &cert, nil)
+	_, err = stapleOCSP(cfg.OCSP, cfg.Storage, &cert, nil)
 	if err != nil && cfg.Logger != nil {
 		cfg.Logger.Warn("stapling OCSP", zap.Error(err))
 	}
@@ -203,7 +207,7 @@ func (cfg Config) makeCertificateWithOCSP(certPEMBlock, keyPEMBlock []byte) (Cer
 	if err != nil {
 		return cert, err
 	}
-	_, err = stapleOCSP(cfg.Storage, &cert, certPEMBlock)
+	_, err = stapleOCSP(cfg.OCSP, cfg.Storage, &cert, certPEMBlock)
 	if err != nil && cfg.Logger != nil {
 		cfg.Logger.Warn("stapling OCSP", zap.Error(err))
 	}
@@ -335,8 +339,9 @@ func SubjectQualifiesForCert(subj string) bool {
 		!strings.HasPrefix(subj, ".") &&
 		!strings.HasSuffix(subj, ".") &&
 
-		// if it has a wildcard, must be a left-most label
-		(!strings.Contains(subj, "*") || strings.HasPrefix(subj, "*.")) &&
+		// if it has a wildcard, must be a left-most label (or exactly "*"
+		// which won't be trusted by browsers but still technically works)
+		(!strings.Contains(subj, "*") || strings.HasPrefix(subj, "*.") || subj == "*") &&
 
 		// must not contain other common special characters
 		!strings.ContainsAny(subj, "()[]{}<> \t\n\"\\!@#$%^&|;'+=")
@@ -360,9 +365,10 @@ func SubjectQualifiesForPublicCert(subj string) bool {
 		// https://community.letsencrypt.org/t/certificate-for-static-ip/84/2?u=mholt
 		!SubjectIsIP(subj) &&
 
-		// only one wildcard label allowed, and it must be left-most
+		// only one wildcard label allowed, and it must be left-most, with 3+ labels
 		(!strings.Contains(subj, "*") ||
 			(strings.Count(subj, "*") == 1 &&
+				strings.Count(subj, ".") > 1 &&
 				len(subj) > 2 &&
 				strings.HasPrefix(subj, "*.")))
 }
@@ -382,7 +388,12 @@ func SubjectIsInternal(subj string) bool {
 
 // MatchWildcard returns true if subject (a candidate DNS name)
 // matches wildcard (a reference DNS name), mostly according to
-// RFC6125-compliant wildcard rules.
+// RFC 6125-compliant wildcard rules. See also RFC 2818 which
+// states that IP addresses must match exactly, but this function
+// does not attempt to distinguish IP addresses from internal or
+// external DNS names that happen to look like IP addresses.
+// It uses DNS wildcard matching logic.
+// https://tools.ietf.org/html/rfc2818#section-3.1
 func MatchWildcard(subject, wildcard string) bool {
 	if subject == wildcard {
 		return true

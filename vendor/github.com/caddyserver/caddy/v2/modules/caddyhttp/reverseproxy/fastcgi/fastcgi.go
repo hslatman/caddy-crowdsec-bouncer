@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -218,12 +217,7 @@ func (t Transport) buildEnv(r *http.Request) (map[string]string, error) {
 	}
 
 	// SCRIPT_FILENAME is the absolute path of SCRIPT_NAME
-	scriptFilename := filepath.Join(root, scriptName)
-
-	// Add vhost path prefix to scriptName. Otherwise, some PHP software will
-	// have difficulty discovering its URL.
-	pathPrefix, _ := r.Context().Value(caddy.CtxKey("path_prefix")).(string)
-	scriptName = path.Join(pathPrefix, scriptName)
+	scriptFilename := caddyhttp.SanitizedPathJoin(root, scriptName)
 
 	// Ensure the SCRIPT_NAME has a leading slash for compliance with RFC3875
 	// Info: https://tools.ietf.org/html/rfc3875#section-4.1.13
@@ -236,13 +230,7 @@ func (t Transport) buildEnv(r *http.Request) (map[string]string, error) {
 	// original URI in as the value of REQUEST_URI (the user can overwrite this
 	// if desired). Most PHP apps seem to want the original URI. Besides, this is
 	// how nginx defaults: http://stackoverflow.com/a/12485156/1048862
-	origReq, ok := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request)
-	if !ok {
-		// some requests, like active health checks, don't add this to
-		// the request context, so we can just use the current URL
-		origReq = *r
-	}
-	reqURL := origReq.URL
+	origReq := r.Context().Value(caddyhttp.OriginalRequestCtxKey).(http.Request)
 
 	requestScheme := "http"
 	if r.TLS != nil {
@@ -285,7 +273,7 @@ func (t Transport) buildEnv(r *http.Request) (map[string]string, error) {
 		"DOCUMENT_ROOT":   root,
 		"DOCUMENT_URI":    docURI,
 		"HTTP_HOST":       r.Host, // added here, since not always part of headers
-		"REQUEST_URI":     reqURL.RequestURI(),
+		"REQUEST_URI":     origReq.URL.RequestURI(),
 		"SCRIPT_FILENAME": scriptFilename,
 		"SCRIPT_NAME":     scriptName,
 	}
@@ -294,7 +282,7 @@ func (t Transport) buildEnv(r *http.Request) (map[string]string, error) {
 	// PATH_TRANSLATED should only exist if PATH_INFO is defined.
 	// Info: https://www.ietf.org/rfc/rfc3875 Page 14
 	if env["PATH_INFO"] != "" {
-		env["PATH_TRANSLATED"] = filepath.Join(root, pathInfo) // Info: http://www.oreilly.com/openbook/cgi/ch02_04.html
+		env["PATH_TRANSLATED"] = caddyhttp.SanitizedPathJoin(root, pathInfo) // Info: http://www.oreilly.com/openbook/cgi/ch02_04.html
 	}
 
 	// compliance with the CGI specification requires that

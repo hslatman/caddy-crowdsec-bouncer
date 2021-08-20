@@ -55,11 +55,6 @@ var (
 	// reserved for internal usage.
 	ErrInvalidKey = errors.New("Key is using a reserved !badger! prefix")
 
-	// ErrRetry is returned when a log file containing the value is not found.
-	// This usually indicates that it may have been garbage collected, and the
-	// operation needs to be retried.
-	ErrRetry = errors.New("Unable to find log file. Please retry")
-
 	// ErrThresholdZero is returned if threshold is set to zero, and value log GC is called.
 	// In such a case, GC can't be run.
 	ErrThresholdZero = errors.New(
@@ -98,6 +93,9 @@ var (
 	// ErrWindowsNotSupported is returned when opt.ReadOnly is used on Windows
 	ErrWindowsNotSupported = errors.New("Read-only mode is not supported on Windows")
 
+	// ErrPlan9NotSupported is returned when opt.ReadOnly is used on Plan 9
+	ErrPlan9NotSupported = errors.New("Read-only mode is not supported on Plan 9")
+
 	// ErrTruncateNeeded is returned when the value log gets corrupt, and requires truncation of
 	// corrupt data to allow Badger to run properly.
 	ErrTruncateNeeded = errors.New(
@@ -117,8 +115,12 @@ var (
 	// ErrInvalidDataKeyID is returned if the datakey id is invalid.
 	ErrInvalidDataKeyID = errors.New("Invalid datakey id")
 
+	// ErrInvalidEncryptionKey is returned if length of encryption keys is invalid.
 	ErrInvalidEncryptionKey = errors.New("Encryption key's length should be" +
 		"either 16, 24, or 32 bytes")
-
+	// ErrGCInMemoryMode is returned when db.RunValueLogGC is called in in-memory mode.
 	ErrGCInMemoryMode = errors.New("Cannot run value log GC when DB is opened in InMemory mode")
+
+	// ErrDBClosed is returned when a get operation is performed after closing the DB.
+	ErrDBClosed = errors.New("DB Closed")
 )

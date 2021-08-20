@@ -8,7 +8,7 @@ You can access the CPU information by accessing the shared CPU variable of the c
 
 Package home: https://github.com/klauspost/cpuid
 
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/klauspost/cpuid)](https://pkg.go.dev/github.com/klauspost/cpuid)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/klauspost/cpuid)](https://pkg.go.dev/github.com/klauspost/cpuid/v2)
 [![Build Status][3]][4]
 
 [3]: https://travis-ci.org/klauspost/cpuid.svg?branch=master
@@ -74,7 +74,8 @@ We have Streaming SIMD 2 Extensions
 
 # usage
 
-The `cpuid.CPU` provides access to CPU features. Use `cpuid.CPU.Supports()` to access CPU features.
+The `cpuid.CPU` provides access to CPU features. Use `cpuid.CPU.Supports()` to check for CPU features.
+A faster `cpuid.CPU.Has()` is provided which will usually be inlined by the gc compiler.  
 
 Note that for some cpu/os combinations some features will not be detected.
 `amd64` has rather good support and should work reliably on all platforms.

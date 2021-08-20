@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/binary"
 	"expvar"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -36,6 +37,7 @@ import (
 	"github.com/dgraph-io/badger/v2/table"
 	"github.com/dgraph-io/badger/v2/y"
 	"github.com/dgraph-io/ristretto"
+	"github.com/dgraph-io/ristretto/z"
 	humanize "github.com/dustin/go-humanize"
 	"github.com/pkg/errors"
 )
@@ -44,17 +46,20 @@ var (
 	badgerPrefix      = []byte("!badger!")        // Prefix for internal keys used by badger.
 	head              = []byte("!badger!head")    // For storing value offset for replay.
 	txnKey            = []byte("!badger!txn")     // For indicating end of entries in txn.
-	badgerMove        = []byte("!badger!move")    // For key-value pairs which got moved during GC.
 	lfDiscardStatsKey = []byte("!badger!discard") // For storing lfDiscardStats
 )
 
+const (
+	maxNumSplits = 128
+)
+
 type closers struct {
-	updateSize *y.Closer
-	compactors *y.Closer
-	memtable   *y.Closer
-	writes     *y.Closer
-	valueGC    *y.Closer
-	pub        *y.Closer
+	updateSize *z.Closer
+	compactors *z.Closer
+	memtable   *z.Closer
+	writes     *z.Closer
+	valueGC    *z.Closer
+	pub        *z.Closer
 }
 
 // DB provides the various functions required to interact with Badger.
@@ -84,13 +89,14 @@ type DB struct {
 	logRotates int32
 
 	blockWrites int32
+	isClosed    uint32
 
 	orc *oracle
 
 	pub        *publisher
 	registry   *KeyRegistry
 	blockCache *ristretto.Cache
-	bfCache    *ristretto.Cache
+	indexCache *ristretto.Cache
 }
 
 const (
@@ -137,6 +143,10 @@ func (db *DB) replayFunction() func(Entry, valuePointer) error {
 			nv = vp.Encode()
 			meta = meta | bitValuePointer
 		}
+		// Update vhead. If the crash happens while replay was in progess
+		// and the head is not updated, we will end up replaying all the
+		// files starting from file zero, again.
+		db.updateHead([]valuePointer{vp})
 
 		v := y.ValueStruct{
 			Value:     nv,
@@ -175,7 +185,7 @@ func (db *DB) replayFunction() func(Entry, valuePointer) error {
 			txn = append(txn, te)
 
 		default:
-			// This entry is from a rewrite.
+			// This entry is from a rewrite or via SetEntryAt(..).
 			toLSM(nk, v)
 
 			// We shouldn't get this entry in the middle of a transaction.
@@ -186,38 +196,45 @@ func (db *DB) replayFunction() func(Entry, valuePointer) error {
 	}
 }
 
-// Open returns a new DB object.
-func Open(opt Options) (db *DB, err error) {
+func checkAndSetOptions(opt *Options) error {
+	// It's okay to have zero compactors which will disable all compactions but
+	// we cannot have just one compactor otherwise we will end up with all data
+	// on level 2.
+	if opt.NumCompactors == 1 {
+		return errors.New("Cannot have 1 compactor. Need at least 2")
+	}
 	if opt.InMemory && (opt.Dir != "" || opt.ValueDir != "") {
-		return nil, errors.New("Cannot use badger in Disk-less mode with Dir or ValueDir set")
+		return errors.New("Cannot use badger in Disk-less mode with Dir or ValueDir set")
 	}
 	opt.maxBatchSize = (15 * opt.MaxTableSize) / 100
 	opt.maxBatchCount = opt.maxBatchSize / int64(skl.MaxNodeSize)
 
 	// We are limiting opt.ValueThreshold to maxValueThreshold for now.
 	if opt.ValueThreshold > maxValueThreshold {
-		return nil, errors.Errorf("Invalid ValueThreshold, must be less or equal to %d",
+		return errors.Errorf("Invalid ValueThreshold, must be less or equal to %d",
 			maxValueThreshold)
 	}
 
 	// If ValueThreshold is greater than opt.maxBatchSize, we won't be able to push any data using
 	// the transaction APIs. Transaction batches entries into batches of size opt.maxBatchSize.
 	if int64(opt.ValueThreshold) > opt.maxBatchSize {
-		return nil, errors.Errorf("Valuethreshold greater than max batch size of %d. Either "+
+		return errors.Errorf("Valuethreshold greater than max batch size of %d. Either "+
 			"reduce opt.ValueThreshold or increase opt.MaxTableSize.", opt.maxBatchSize)
 	}
 	if !(opt.ValueLogFileSize <= 2<<30 && opt.ValueLogFileSize >= 1<<20) {
-		return nil, ErrValueLogSize
+		return ErrValueLogSize
 	}
 	if !(opt.ValueLogLoadingMode == options.FileIO ||
 		opt.ValueLogLoadingMode == options.MemoryMap) {
-		return nil, ErrInvalidLoadingMode
+		return ErrInvalidLoadingMode
 	}
 
 	// Return error if badger is built without cgo and compression is set to ZSTD.
 	if opt.Compression == options.ZSTD && !y.CgoEnabled {
-		return nil, y.ErrZstdCgo
+		return y.ErrZstdCgo
 	}
+	// Keep L0 in memory if either KeepL0InMemory is set or if InMemory is set.
+	opt.KeepL0InMemory = opt.KeepL0InMemory || opt.InMemory
 
 	// Compact L0 on close if either it is set or if KeepL0InMemory is set. When
 	// keepL0InMemory is set we need to compact L0 on close otherwise we might lose data.
@@ -228,6 +245,20 @@ func Open(opt Options) (db *DB, err error) {
 		opt.Truncate = false
 		// Do not perform compaction in read only mode.
 		opt.CompactL0OnClose = false
+	}
+
+	needCache := (opt.Compression != options.None) || (len(opt.EncryptionKey) > 0)
+	if needCache && opt.BlockCacheSize == 0 {
+		opt.Warningf("BlockCacheSize should be set " +
+			"since compression/encryption are enabled")
+	}
+	return nil
+}
+
+// Open returns a new DB object.
+func Open(opt Options) (db *DB, err error) {
+	if err := checkAndSetOptions(&opt); err != nil {
+		return nil, err
 	}
 	var dirLockGuard, valueDirLockGuard *directoryLockGuard
 
@@ -291,14 +322,23 @@ func Open(opt Options) (db *DB, err error) {
 		orc:           newOracle(opt),
 		pub:           newPublisher(),
 	}
+	// Cleanup all the goroutines started by badger in case of an error.
+	defer func() {
+		if err != nil {
+			db.cleanup()
+			db = nil
+		}
+	}()
 
-	if opt.MaxCacheSize > 0 {
+	if opt.BlockCacheSize > 0 {
+		numInCache := opt.BlockCacheSize / int64(opt.BlockSize)
+
 		config := ristretto.Config{
-			// Use 5% of cache memory for storing counters.
-			NumCounters: int64(float64(opt.MaxCacheSize) * 0.05 * 2),
-			MaxCost:     int64(float64(opt.MaxCacheSize) * 0.95),
+			NumCounters: numInCache * 8,
+			MaxCost:     opt.BlockCacheSize,
 			BufferItems: 64,
 			Metrics:     true,
+			OnExit:      table.BlockEvictHandler,
 		}
 		db.blockCache, err = ristretto.NewCache(&config)
 		if err != nil {
@@ -306,20 +346,22 @@ func Open(opt Options) (db *DB, err error) {
 		}
 	}
 
-	if opt.MaxBfCacheSize > 0 {
+	if opt.IndexCacheSize > 0 {
+		// Index size is around 5% of the table size.
+		indexSz := int64(float64(opt.MaxTableSize) * 0.05)
+		numInCache := opt.IndexCacheSize / indexSz
+
 		config := ristretto.Config{
-			// Use 5% of cache memory for storing counters.
-			NumCounters: int64(float64(opt.MaxBfCacheSize) * 0.05 * 2),
-			MaxCost:     int64(float64(opt.MaxBfCacheSize) * 0.95),
+			NumCounters: numInCache * 8,
+			MaxCost:     opt.IndexCacheSize,
 			BufferItems: 64,
 			Metrics:     true,
 		}
-		db.blockCache, err = ristretto.NewCache(&config)
+		db.indexCache, err = ristretto.NewCache(&config)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create bf cache")
 		}
 	}
-
 	if db.opt.InMemory {
 		db.opt.SyncWrites = false
 		// If badger is running in memory mode, push everything into the LSM Tree.
@@ -334,47 +376,38 @@ func Open(opt Options) (db *DB, err error) {
 	}
 
 	if db.registry, err = OpenKeyRegistry(krOpt); err != nil {
-		return nil, err
+		return db, err
 	}
 	db.calculateSize()
-	db.closers.updateSize = y.NewCloser(1)
+	db.closers.updateSize = z.NewCloser(1)
 	go db.updateSize(db.closers.updateSize)
 	db.mt = skl.NewSkiplist(arenaSize(opt))
 
 	// newLevelsController potentially loads files in directory.
 	if db.lc, err = newLevelsController(db, &manifest); err != nil {
-		return nil, err
+		return db, err
 	}
 
 	// Initialize vlog struct.
 	db.vlog.init(db)
 
 	if !opt.ReadOnly {
-		db.closers.compactors = y.NewCloser(1)
+		db.closers.compactors = z.NewCloser(1)
 		db.lc.startCompact(db.closers.compactors)
 
-		db.closers.memtable = y.NewCloser(1)
+		db.closers.memtable = z.NewCloser(1)
 		go func() {
 			_ = db.flushMemtable(db.closers.memtable) // Need levels controller to be up.
 		}()
 	}
+	vptr, version := db.getHead()
+	db.orc.nextTxnTs = version
 
-	headKey := y.KeyWithTs(head, math.MaxUint64)
-	// Need to pass with timestamp, lsm get removes the last 8 bytes and compares key
-	vs, err := db.get(headKey)
-	if err != nil {
-		return nil, errors.Wrap(err, "Retrieving head")
-	}
-	db.orc.nextTxnTs = vs.Version
-	var vptr valuePointer
-	if len(vs.Value) > 0 {
-		vptr.Decode(vs.Value)
-	}
-
-	replayCloser := y.NewCloser(1)
+	replayCloser := z.NewCloser(1)
 	go db.doWrites(replayCloser)
 
 	if err = db.vlog.open(db, vptr, db.replayFunction()); err != nil {
+		replayCloser.SignalAndWait()
 		return db, y.Wrapf(err, "During db.vlog.open")
 	}
 	replayCloser.SignalAndWait() // Wait for replay to be applied first.
@@ -387,16 +420,15 @@ func Open(opt Options) (db *DB, err error) {
 	db.orc.readMark.Done(db.orc.nextTxnTs)
 	db.orc.incrementNextTs()
 
-	db.writeCh = make(chan *request, kvWriteChCapacity)
-	db.closers.writes = y.NewCloser(1)
+	db.closers.writes = z.NewCloser(1)
 	go db.doWrites(db.closers.writes)
 
 	if !db.opt.InMemory {
-		db.closers.valueGC = y.NewCloser(1)
+		db.closers.valueGC = z.NewCloser(1)
 		go db.vlog.waitOnGC(db.closers.valueGC)
 	}
 
-	db.closers.pub = y.NewCloser(1)
+	db.closers.pub = z.NewCloser(1)
 	go db.pub.listenForUpdates(db.closers.pub)
 
 	valueDirLockGuard = nil
@@ -405,18 +437,94 @@ func Open(opt Options) (db *DB, err error) {
 	return db, nil
 }
 
-// DataCacheMetrics returns the metrics for the underlying data cache.
-func (db *DB) DataCacheMetrics() *ristretto.Metrics {
+// getHead prints all the head pointer in the DB and return the max value.
+func (db *DB) getHead() (valuePointer, uint64) {
+	// This is a hack. If we use newTransaction(..) we'll end up in deadlock
+	// since txnmark is not initialized when this function is called.
+	txn := Txn{
+		db:     db,
+		readTs: math.MaxUint64, // Show all versions.
+	}
+	var vptr valuePointer
+	iopt := DefaultIteratorOptions
+	iopt.AllVersions = true
+	iopt.InternalAccess = true
+	// Do not prefetch values. This could cause a race condition since
+	// prefetching is done via goroutines.
+	iopt.PrefetchValues = false
+	iopt.Reverse = true
+
+	it := txn.NewKeyIterator(head, iopt)
+	defer it.Close()
+
+	it.Rewind()
+	if !it.Valid() {
+		db.opt.Infof("No head keys found")
+		return vptr, 0
+	}
+
+	var maxVersion uint64
+	db.opt.Infof("Found the following head pointers")
+	for ; it.Valid(); it.Next() {
+		item := it.Item()
+		err := item.Value(func(val []byte) error {
+			vptr.Decode(val)
+			db.opt.Infof("Fid: %d Len: %d Offset: %d Version: %d\n",
+				vptr.Fid, vptr.Len, vptr.Offset, item.Version())
+			return nil
+		})
+		// This shouldn't happen.
+		y.Check(err)
+		// We're iterating in the reverse order so the last item would be the
+		// one with the biggest version.
+		maxVersion = item.Version()
+	}
+	// If we have reached here it means there were some head key and so the
+	// version should never be zero.
+	y.AssertTrue(maxVersion != 0)
+	return vptr, maxVersion
+}
+
+// cleanup stops all the goroutines started by badger. This is used in open to
+// cleanup goroutines in case of an error.
+func (db *DB) cleanup() {
+	db.stopMemoryFlush()
+	db.stopCompactions()
+
+	db.blockCache.Close()
+	db.indexCache.Close()
+	if db.closers.updateSize != nil {
+		db.closers.updateSize.Signal()
+	}
+	if db.closers.valueGC != nil {
+		db.closers.valueGC.Signal()
+	}
+	if db.closers.writes != nil {
+		db.closers.writes.Signal()
+	}
+	if db.closers.pub != nil {
+		db.closers.pub.Signal()
+	}
+
+	db.orc.Stop()
+
+	// Do not use vlog.Close() here. vlog.Close truncates the files. We don't
+	// want to truncate files unless the user has specified the truncate flag.
+	db.vlog.stopFlushDiscardStats()
+}
+
+// BlockCacheMetrics returns the metrics for the underlying block cache.
+func (db *DB) BlockCacheMetrics() *ristretto.Metrics {
 	if db.blockCache != nil {
 		return db.blockCache.Metrics
 	}
 	return nil
 }
 
-// BfCacheMetrics returns the metrics for the underlying bloom filter cache.
-func (db *DB) BfCacheMetrics() *ristretto.Metrics {
-	if db.bfCache != nil {
-		return db.bfCache.Metrics
+// IndexCacheMetrics returns the metrics for the underlying index cache.
+func (db *DB) IndexCacheMetrics() *ristretto.Metrics {
+	if db.indexCache != nil {
+		return db.indexCache.Metrics
 	}
 	return nil
 }
@@ -429,6 +537,12 @@ func (db *DB) Close() error {
 		err = db.close()
 	})
 	return err
+}
+
+// IsClosed denotes if the badger DB is closed or not. A DB instance should not
+// be used after closing it.
+func (db *DB) IsClosed() bool {
+	return atomic.LoadUint32(&db.isClosed) == 1
 }
 
 func (db *DB) close() (err error) {
@@ -491,7 +605,7 @@ func (db *DB) close() (err error) {
 	// Force Compact L0
 	// We don't need to care about cstatus since no parallel compaction is running.
 	if db.opt.CompactL0OnClose {
-		err := db.lc.doCompact(compactionPriority{level: 0, score: 1.73})
+		err := db.lc.doCompact(173, compactionPriority{level: 0, score: 1.73})
 		switch err {
 		case errFillTables:
 			// This error only means that there might be enough tables to do a compaction. So, we
@@ -510,7 +624,9 @@ func (db *DB) close() (err error) {
 	db.closers.updateSize.SignalAndWait()
 	db.orc.Stop()
 	db.blockCache.Close()
-	db.bfCache.Close()
+	db.indexCache.Close()
+
+	atomic.StoreUint32(&db.isClosed, 1)
 
 	if db.opt.InMemory {
 		return
@@ -595,26 +711,20 @@ func (db *DB) getMemTables() ([]*skl.Skiplist, func()) {
 // that all versions of a key are always present in the same table from level 1, because compaction
 // can push any table down.
 //
-// Update (Sep 22, 2018): To maintain the above invariant, and to allow keys to be moved from one
-// value log to another (while reclaiming space during value log GC), we have logically moved this
-// need to write "old versions after new versions" to the badgerMove keyspace. Thus, for normal
-// gets, we can stop going down the LSM tree once we find any version of the key (note however that
-// we will ALWAYS skip versions with ts greater than the key version).  However, if that key has
-// been moved, then for the corresponding movekey, we'll look through all the levels of the tree
-// to ensure that we pick the highest version of the movekey present.
+// Update(23/09/2020) - We have dropped the move key implementation. Earlier we
+// were inserting move keys to fix the invalid value pointers but we no longer
+// do that. For every get("fooX") call where X is the version, we will search
+// for "fooX" in all the levels of the LSM tree. This is expensive but it
+// removes the overhead of handling move keys completely.
 func (db *DB) get(key []byte) (y.ValueStruct, error) {
+	if db.IsClosed() {
+		return y.ValueStruct{}, ErrDBClosed
+	}
 	tables, decr := db.getMemTables() // Lock should be released.
 	defer decr()
 
-	var maxVs *y.ValueStruct
-	var version uint64
-	if bytes.HasPrefix(key, badgerMove) {
-		// If we are checking badgerMove key, we should look into all the
-		// levels, so we can pick up the newer versions, which might have been
-		// compacted down the tree.
-		maxVs = &y.ValueStruct{}
-		version = y.ParseTs(key)
-	}
+	var maxVs y.ValueStruct
+	version := y.ParseTs(key)
 
 	y.NumGets.Add(1)
 	for i := 0; i < len(tables); i++ {
@@ -623,18 +733,19 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 		if vs.Meta == 0 && vs.Value == nil {
 			continue
 		}
-		// Found a version of the key. For user keyspace, return immediately. For move keyspace,
-		// continue iterating, unless we found a version == given key version.
-		if maxVs == nil || vs.Version == version {
+		// Found the required version of the key, return immediately.
+		if vs.Version == version {
 			return vs, nil
 		}
 		if maxVs.Version < vs.Version {
-			*maxVs = vs
+			maxVs = vs
 		}
 	}
 	return db.lc.get(key, maxVs, 0)
 }
 
+// updateHead should not be called without the db.Lock() since db.vhead is used
+// by the writer go routines and memtable flushing goroutine.
 func (db *DB) updateHead(ptrs []valuePointer) {
 	var ptr valuePointer
 	for i := len(ptrs) - 1; i >= 0; i-- {
@@ -648,8 +759,6 @@ func (db *DB) updateHead(ptrs []valuePointer) {
 		return
 	}
 
-	db.Lock()
-	defer db.Unlock()
 	y.AssertTrue(!ptr.Less(db.vhead))
 	db.vhead = ptr
 }
@@ -679,8 +788,12 @@ func (db *DB) writeToLSM(b *request) error {
 		if db.shouldWriteValueToLSM(*entry) { // Will include deletion / tombstone case.
 			db.mt.Put(entry.Key,
 				y.ValueStruct{
-					Value:     entry.Value,
-					Meta:      entry.meta,
+					Value: entry.Value,
+					// Ensure value pointer flag is removed. Otherwise, the value will fail
+					// to be retrieved during iterator prefetch. `bitValuePointer` is only
+					// known to be set in write to LSM when the entry is loaded from a backup
+					// with lower ValueThreshold and its value was stored in the value log.
+					Meta:      entry.meta &^ bitValuePointer,
 					UserMeta:  entry.UserMeta,
 					ExpiresAt: entry.ExpiresAt,
 				})
@@ -744,7 +857,9 @@ func (db *DB) writeRequests(reqs []*request) error {
 			done(err)
 			return errors.Wrap(err, "writeRequests")
 		}
+		db.Lock()
 		db.updateHead(b.Ptrs)
+		db.Unlock()
 	}
 	done(nil)
 	db.opt.Debugf("%d entries written", count)
@@ -777,7 +892,7 @@ func (db *DB) sendToWriteCh(entries []*Entry) (*request, error) {
 	return req, nil
 }
 
-func (db *DB) doWrites(lc *y.Closer) {
+func (db *DB) doWrites(lc *z.Closer) {
 	defer lc.Done()
 	pendingCh := make(chan struct{}, 1)
 
@@ -931,9 +1046,10 @@ func buildL0Table(ft flushTask, bopts table.Options) []byte {
 	defer iter.Close()
 	b := table.NewTableBuilder(bopts)
 	defer b.Close()
+
 	var vp valuePointer
 	for iter.SeekToFirst(); iter.Valid(); iter.Next() {
-		if len(ft.dropPrefix) > 0 && bytes.HasPrefix(iter.Key(), ft.dropPrefix) {
+		if len(ft.dropPrefixes) > 0 && hasAnyPrefixes(iter.Key(), ft.dropPrefixes) {
 			continue
 		}
 		vs := iter.Value()
@@ -942,13 +1058,36 @@ func buildL0Table(ft flushTask, bopts table.Options) []byte {
 		}
 		b.Add(iter.Key(), iter.Value(), vp.Len)
 	}
-	return b.Finish()
+	return b.Finish(true)
 }
 
 type flushTask struct {
-	mt         *skl.Skiplist
-	vptr       valuePointer
-	dropPrefix []byte
+	mt           *skl.Skiplist
+	vptr         valuePointer
+	dropPrefixes [][]byte
+}
+
+func (db *DB) pushHead(ft flushTask) error {
+	// We don't need to store head pointer in the in-memory mode since we will
+	// never be replay anything.
+	if db.opt.InMemory {
+		return nil
+	}
+	// Ensure we never push a zero valued head pointer.
+	if ft.vptr.IsZero() {
+		return errors.New("Head should not be zero")
+	}
+
+	// Store badger head even if vptr is zero, need it for readTs
+	db.opt.Infof("Storing value log head: %+v\n", ft.vptr)
+	val := ft.vptr.Encode()
+
+	// Pick the max commit ts, so in case of crash, our read ts would be higher than all the
+	// commits.
+	headTs := y.KeyWithTs(head, db.orc.nextTs())
+	ft.mt.Put(headTs, y.ValueStruct{Value: val})
+
+	return nil
 }
 
 // handleFlushTask must be run serially.
@@ -959,15 +1098,9 @@ func (db *DB) handleFlushTask(ft flushTask) error {
 		return nil
 	}
 
-	// Store badger head even if vptr is zero, need it for readTs
-	db.opt.Debugf("Storing value log head: %+v\n", ft.vptr)
-	db.opt.Debugf("Storing offset: %+v\n", ft.vptr)
-	val := ft.vptr.Encode()
-
-	// Pick the max commit ts, so in case of crash, our read ts would be higher than all the
-	// commits.
-	headTs := y.KeyWithTs(head, db.orc.nextTs())
-	ft.mt.Put(headTs, y.ValueStruct{Value: val})
+	if err := db.pushHead(ft); err != nil {
+		return err
+	}
 
 	dk, err := db.registry.latestDataKey()
 	if err != nil {
@@ -976,8 +1109,8 @@ func (db *DB) handleFlushTask(ft flushTask) error {
 	bopts := buildTableOptions(db.opt)
 	bopts.DataKey = dk
 	// Builder does not need cache but the same options are used for opening table.
-	bopts.Cache = db.blockCache
-	bopts.BfCache = db.bfCache
+	bopts.BlockCache = db.blockCache
+	bopts.IndexCache = db.indexCache
 	tableData := buildL0Table(ft, bopts)
 
 	fileID := db.lc.reserveFileID()
@@ -1020,7 +1153,7 @@ func (db *DB) handleFlushTask(ft flushTask) error {
 
 // flushMemtable must keep running until we send it an empty flushTask. If there
 // are errors during handling the flush task, we'll retry indefinitely.
-func (db *DB) flushMemtable(lc *y.Closer) error {
+func (db *DB) flushMemtable(lc *z.Closer) error {
 	defer lc.Done()
 
 	for ft := range db.flushChan {
@@ -1106,7 +1239,7 @@ func (db *DB) calculateSize() {
 	y.VlogSize.Set(db.opt.ValueDir, newInt(vlogSize))
 }
 
-func (db *DB) updateSize(lc *y.Closer) {
+func (db *DB) updateSize(lc *z.Closer) {
 	defer lc.Done()
 	if db.opt.InMemory {
 		return
@@ -1171,7 +1304,7 @@ func (db *DB) RunValueLogGC(discardRatio float64) error {
 	// Find head on disk
 	headKey := y.KeyWithTs(head, math.MaxUint64)
 	// Need to pass with timestamp, lsm get removes the last 8 bytes and compares key
-	val, err := db.lc.get(headKey, nil, startLevel)
+	val, err := db.lc.get(headKey, y.ValueStruct{}, startLevel)
 	if err != nil {
 		return errors.Wrap(err, "Retrieving head from on-disk LSM")
 	}
@@ -1325,15 +1458,81 @@ func (db *DB) Tables(withKeysCount bool) []TableInfo {
 // the DB.
 func (db *DB) KeySplits(prefix []byte) []string {
 	var splits []string
+	tables := db.Tables(false)
+
 	// We just want table ranges here and not keys count.
-	for _, ti := range db.Tables(false) {
+	for _, ti := range tables {
 		// We don't use ti.Left, because that has a tendency to store !badger
 		// keys.
 		if bytes.HasPrefix(ti.Right, prefix) {
 			splits = append(splits, string(ti.Right))
 		}
 	}
+
+	// If the number of splits is low, look at the offsets inside the
+	// tables to generate more splits.
+	if len(splits) < 32 {
+		numTables := len(tables)
+		if numTables == 0 {
+			numTables = 1
+		}
+		numPerTable := 32 / numTables
+		if numPerTable == 0 {
+			numPerTable = 1
+		}
+		splits = db.lc.keySplits(numPerTable, prefix)
+	}
+
+	// If the number of splits is still < 32, then look at the memtables.
+	if len(splits) < 32 {
+		maxPerSplit := 10000
+		mtSplits := func(mt *skl.Skiplist) {
+			count := 0
+			iter := mt.NewIterator()
+			for iter.SeekToFirst(); iter.Valid(); iter.Next() {
+				if count%maxPerSplit == 0 {
+					// Add a split every maxPerSplit keys.
+					if bytes.HasPrefix(iter.Key(), prefix) {
+						splits = append(splits, string(iter.Key()))
+					}
+				}
+				count += 1
+			}
+			_ = iter.Close()
+		}
+
+		db.Lock()
+		defer db.Unlock()
+		memtables := make([]*skl.Skiplist, 0)
+		memtables = append(memtables, db.imm...)
+		for _, mt := range memtables {
+			mtSplits(mt)
+		}
+		mtSplits(db.mt)
+	}
+
 	sort.Strings(splits)
+
+	// Limit the maximum number of splits returned by this function. We check against
+	// maxNumberSplits * 2 so that the jump variable has a value of at least two.
+	// Otherwise, the entire list would be returned without any reduction in size.
+	if len(splits) > maxNumSplits*2 {
+		newSplits := make([]string, 0)
+		jump := len(splits) / maxNumSplits
+		if jump < 2 {
+			jump = 2
+		}
+
+		for i := 0; i < len(splits); i += jump {
+			if i >= len(splits) {
+				i = len(splits) - 1
+			}
+			newSplits = append(newSplits, splits[i])
+		}
+
+		splits = newSplits
+	}
+
 	return splits
 }
 
@@ -1365,7 +1564,7 @@ func (db *DB) stopCompactions() {
 func (db *DB) startCompactions() {
 	// Resume compactions.
 	if db.closers.compactors != nil {
-		db.closers.compactors = y.NewCloser(1)
+		db.closers.compactors = z.NewCloser(1)
 		db.lc.startCompact(db.closers.compactors)
 	}
 }
@@ -1374,7 +1573,7 @@ func (db *DB) startMemoryFlush() {
 	// Start memory fluhser.
 	if db.closers.memtable != nil {
 		db.flushChan = make(chan flushTask, db.opt.NumMemtables)
-		db.closers.memtable = y.NewCloser(1)
+		db.closers.memtable = z.NewCloser(1)
 		go func() {
 			_ = db.flushMemtable(db.closers.memtable)
 		}()
@@ -1395,7 +1594,7 @@ func (db *DB) Flatten(workers int) error {
 		errCh := make(chan error, 1)
 		for i := 0; i < workers; i++ {
 			go func() {
-				errCh <- db.lc.doCompact(cp)
+				errCh <- db.lc.doCompact(175, cp)
 			}()
 		}
 		var success int
@@ -1452,31 +1651,36 @@ func (db *DB) Flatten(workers int) error {
 	}
 }
 
-func (db *DB) blockWrite() {
+func (db *DB) blockWrite() error {
 	// Stop accepting new writes.
-	atomic.StoreInt32(&db.blockWrites, 1)
+	if !atomic.CompareAndSwapInt32(&db.blockWrites, 0, 1) {
+		return ErrBlockedWrites
+	}
 
 	// Make all pending writes finish. The following will also close writeCh.
 	db.closers.writes.SignalAndWait()
 	db.opt.Infof("Writes flushed. Stopping compactions now...")
+	return nil
 }
 
 func (db *DB) unblockWrite() {
-	db.closers.writes = y.NewCloser(1)
+	db.closers.writes = z.NewCloser(1)
 	go db.doWrites(db.closers.writes)
 
 	// Resume writes.
 	atomic.StoreInt32(&db.blockWrites, 0)
 }
 
-func (db *DB) prepareToDrop() func() {
+func (db *DB) prepareToDrop() (func(), error) {
 	if db.opt.ReadOnly {
 		panic("Attempting to drop data in read-only mode.")
 	}
 	// In order prepare for drop, we need to block the incoming writes and
 	// write it to db. Then, flush all the pending flushtask. So that, we
 	// don't miss any entries.
-	db.blockWrite()
+	if err := db.blockWrite(); err != nil {
+		return nil, err
+	}
 	reqs := make([]*request, 0, 10)
 	for {
 		select {
@@ -1491,7 +1695,7 @@ func (db *DB) prepareToDrop() func() {
 				db.opt.Infof("Resuming writes")
 				db.startMemoryFlush()
 				db.unblockWrite()
-			}
+			}, nil
 		}
 	}
 }
@@ -1509,16 +1713,18 @@ func (db *DB) prepareToDrop() func() {
 // writes are paused before running DropAll, and resumed after it is finished.
 func (db *DB) DropAll() error {
 	f, err := db.dropAll()
-	defer f()
-	if err != nil {
-		return err
+	if f != nil {
+		f()
 	}
-	return nil
+	return err
 }
 
 func (db *DB) dropAll() (func(), error) {
 	db.opt.Infof("DropAll called. Blocking writes...")
-	f := db.prepareToDrop()
+	f, err := db.prepareToDrop()
+	if err != nil {
+		return f, err
+	}
 	// prepareToDrop will stop all the incomming write and flushes any pending flush tasks.
 	// Before we drop, we'll stop the compaction because anyways all the datas are going to
 	// be deleted.
@@ -1553,7 +1759,7 @@ func (db *DB) dropAll() (func(), error) {
 	db.lc.nextFileID = 1
 	db.opt.Infof("Deleted %d value log files. DropAll done.\n", num)
 	db.blockCache.Clear()
-	db.bfCache.Clear()
+	db.indexCache.Clear()
 
 	return resume, nil
 }
@@ -1569,8 +1775,12 @@ func (db *DB) dropAll() (func(), error) {
 // - Compact L0->L1, skipping over Kp.
 // - Compact rest of the levels, Li->Li, picking tables which have Kp.
 // - Resume memtable flushes, compactions and writes.
-func (db *DB) DropPrefix(prefix []byte) error {
-	f := db.prepareToDrop()
+func (db *DB) DropPrefix(prefixes ...[]byte) error {
+	db.opt.Infof("DropPrefix Called")
+	f, err := db.prepareToDrop()
+	if err != nil {
+		return err
+	}
 	defer f()
 	// Block all foreign interactions with memory tables.
 	db.Lock()
@@ -1585,8 +1795,8 @@ func (db *DB) DropPrefix(prefix []byte) error {
 		task := flushTask{
 			mt: memtable,
 			// Ensure that the head of value log gets persisted to disk.
-			vptr:       db.vhead,
-			dropPrefix: prefix,
+			vptr:         db.vhead,
+			dropPrefixes: prefixes,
 		}
 		db.opt.Debugf("Flushing memtable")
 		if err := db.handleFlushTask(task); err != nil {
@@ -1601,7 +1811,7 @@ func (db *DB) DropPrefix(prefix []byte) error {
 	db.mt = skl.NewSkiplist(arenaSize(db.opt))
 
 	// Drop prefixes from the levels.
-	if err := db.lc.dropPrefix(prefix); err != nil {
+	if err := db.lc.dropPrefixes(prefixes); err != nil {
 		return err
 	}
 	db.opt.Infof("DropPrefix done")
@@ -1622,7 +1832,7 @@ func (db *DB) Subscribe(ctx context.Context, cb func(kv *KVList) error, prefixes
 		return ErrNilCallback
 	}
 
-	c := y.NewCloser(1)
+	c := z.NewCloser(1)
 	recvCh, id := db.pub.newSubscriber(c, prefixes...)
 	slurp := func(batch *pb.KVList) error {
 		for {
@@ -1686,11 +1896,88 @@ func createDirs(opt Options) error {
 				return errors.Errorf("Cannot find directory %q for read-only open", path)
 			}
 			// Try to create the directory
-			err = os.Mkdir(path, 0700)
+			err = os.MkdirAll(path, 0700)
 			if err != nil {
 				return y.Wrapf(err, "Error Creating Dir: %q", path)
 			}
 		}
 	}
 	return nil
+}
+
+// GCVlog will GC all the .vlog files that have more than 50% stale data. GC is
+// an expensive process and the GCVlog call could take some time to finish.
+func (db *DB) GCVlog() error {
+	return db.vlog.cleanVlog()
+}
+
+// SampleVlog can be used to collect information about the amount of stale data
+// in all the vlog files.
+func (db *DB) SampleVlog() ([]sampleResult, error) {
+	return db.vlog.getDiscardStats()
+}
+
+// Stream the contents of this DB to a new DB with options outOptions that will be
+// created in outDir.
+func (db *DB) StreamDB(outOptions Options) error {
+	outDir := outOptions.Dir
+
+	// Open output DB.
+	outDB, err := OpenManaged(outOptions)
+	if err != nil {
+		return errors.Wrapf(err, "cannot open out DB at %s", outDir)
+	}
+	defer outDB.Close()
+	writer := outDB.NewStreamWriter()
+	if err := writer.Prepare(); err != nil {
+		errors.Wrapf(err, "cannot create stream writer in out DB at %s", outDir)
+	}
+
+	// Stream contents of DB to the output DB.
+	stream := db.NewStreamAt(math.MaxUint64)
+	stream.LogPrefix = fmt.Sprintf("Streaming DB to new DB at %s", outDir)
+	stream.Send = func(kvs *pb.KVList) error {
+		return writer.Write(kvs)
+	}
+	if err := stream.Orchestrate(context.Background()); err != nil {
+		return errors.Wrapf(err, "cannot stream DB to out DB at %s", outDir)
+	}
+	if err := writer.Flush(); err != nil {
+		return errors.Wrapf(err, "cannot flush writer")
+	}
+	return nil
+}
+
+// Opts returns a copy of the DB options.
+func (db *DB) Opts() Options {
+	return db.opt
+}
+
+// MaxVersion returns the maximum commited version across all keys in the DB. It
+// uses the stream framework to find the maximum version.
+func (db *DB) MaxVersion() (uint64, error) {
+	maxVersion := uint64(0)
+	var mu sync.Mutex
+	var stream *Stream
+	if db.opt.managedTxns {
+		stream = db.NewStreamAt(math.MaxUint64)
+	} else {
+		stream = db.NewStream()
+	}
+
+	stream.ChooseKey = func(item *Item) bool {
+		mu.Lock()
+		if item.Version() > maxVersion {
+			maxVersion = item.Version()
+		}
+		mu.Unlock()
+		return false
+	}
+	stream.KeyToList = nil
+	stream.Send = nil
+	if err := stream.Orchestrate(context.Background()); err != nil {
+		return 0, err
+	}
+	return maxVersion, nil
+
 }

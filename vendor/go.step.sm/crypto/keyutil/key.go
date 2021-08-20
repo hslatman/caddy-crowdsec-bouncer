@@ -81,7 +81,13 @@ func GenerateKeyPair(kty, crv string, size int) (crypto.PublicKey, crypto.Privat
 	return signer.Public(), signer, nil
 }
 
-// GenerateSigner creates an asymentric crypto key that implements
+// GenerateDefaultSigner returns an asymmetric crypto key that implements
+// crypto.Signer using sane defaults.
+func GenerateDefaultSigner() (crypto.Signer, error) {
+	return GenerateSigner(DefaultKeyType, DefaultKeyCurve, DefaultKeySize)
+}
+
+// GenerateSigner creates an asymmetric crypto key that implements
 // crypto.Signer.
 func GenerateSigner(kty, crv string, size int) (crypto.Signer, error) {
 	switch kty {
