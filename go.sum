@@ -235,8 +235,8 @@ github.com/buger/jsonparser v1.1.1 h1:2PnMjfWD7wBILjqQbt530v576A/cAbQvEW9gGIpYMU
 github.com/buger/jsonparser v1.1.1/go.mod h1:6RYKKt7H4d4+iWqouImQ9R2FZql3VbhNgx27UK13J/0=
 github.com/caarlos0/ctrlc v1.0.0/go.mod h1:CdXpj4rmq0q/1Eb44M9zi2nKB0QraNKuRGYGrrHhcQw=
 github.com/caddyserver/caddy/v2 v2.2.1/go.mod h1:5Fz/g7UtLz5NORoT/MdlZRAEqoLH4wrxgPUd7Wg58yU=
-github.com/caddyserver/caddy/v2 v2.7.1 h1:HmTW5UPWhU4t3+HxBSX2d1hDAdVOQas5IVDP5zH2DhE=
-github.com/caddyserver/caddy/v2 v2.7.1/go.mod h1:IINHHxgo1nMHU7sITDyJZNvFco6DYRuDNJmPJfyA1/U=
+github.com/caddyserver/caddy/v2 v2.7.2 h1:QqThyoyUFAv1B7A2NMeaWlz7xmgKqU49PXBX08A+6xg=
+github.com/caddyserver/caddy/v2 v2.7.2/go.mod h1:IINHHxgo1nMHU7sITDyJZNvFco6DYRuDNJmPJfyA1/U=
 github.com/caddyserver/certmagic v0.12.0/go.mod h1:tr26xh+9fY5dN0J6IPAlMj07qpog22PJKa7Nw7j835U=
 github.com/caddyserver/certmagic v0.19.1 h1:4jyOYm2DHvQI8YM0sk6qm62Gl5XznHxiMBMWjMTlQkw=
 github.com/caddyserver/certmagic v0.19.1/go.mod h1:fsL01NomQ6N+kE2j37ZCnig2MFosG+MIO4ztnmG/zz8=
