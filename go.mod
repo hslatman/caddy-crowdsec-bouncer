@@ -3,7 +3,7 @@ module github.com/hslatman/caddy-crowdsec-bouncer
 go 1.20
 
 require (
-	github.com/caddyserver/caddy/v2 v2.7.0
+	github.com/caddyserver/caddy/v2 v2.7.1
 	github.com/caddyserver/format-encoder v0.0.0-20201124212233-c10acf81b981
 	github.com/crowdsecurity/crowdsec v1.0.2
 	github.com/crowdsecurity/go-cs-bouncer v0.0.0-20201130114000-e5b8016e5bf3
@@ -72,7 +72,7 @@ require (
 	github.com/google/go-tspi v0.3.0 // indirect
 	github.com/google/pprof v0.0.0-20230728192033-2ba5b33183c6 // indirect
 	github.com/google/uuid v1.3.0 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.7.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.11.3 // indirect
 	github.com/hslatman/cidranger v1.0.3-0.20210102151717-b2292da972c3 // indirect
 	github.com/huandu/xstrings v1.4.0 // indirect
 	github.com/imdario/mergo v0.3.16 // indirect
