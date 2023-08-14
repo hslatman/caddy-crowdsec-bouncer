@@ -79,7 +79,7 @@ localhost {
 ```
 
 Configuration using a Caddyfile is only supported for HTTP handlers.
-You'll also need to use a recent version of Caddy (i.e. 2.4.x and newer) and Go 1.16 (or newer).
+You'll also need to use a recent version of Caddy (i.e. 2.7.3 and newer) and Go 1.20 (or newer).
 In case you want to use the CrowdSec bouncer on TCP or UDP level, you'll need to configure Caddy using the native JSON format.
 An example configuration is shown below:
 
@@ -207,14 +207,16 @@ The latter is an example of using the [Layer 4 App](https://github.com/mholt/cad
 
 ## Remote IPs
 
-The Caddy HTTP handler relies on the `RemoteAddr` of the `*http.Request` to determine the source IP address. 
+The Caddy HTTP handler relies on the `RemoteAddr` of the `*http.Request` to determine the source IP address.
 That IP is then used to check against the CrowdSec decisions to see if it's allowed in or not.
 These days many systems actually sit behind a proxy, a CDN or something different, which means that the IP of the client requesting a resource is masked by the system that sits between the client and the server.
 
-To ensure that the actual client IP is used to (dis)allow access, you can use the https://github.com/kirsch33/realip Caddy module.
-It can be configured to replace the `RemoteAddr` of the incoming request with a value from a header (such as the `X-Forwarded-For` header), resulting in the actual client IP being set in the RemoteAddr property. 
-The `realip` handler should be configured to execute before the `crowdsec` handler, so that the `RemoteAddr` has been updated before the `crowdsec` handler executes.
-Your exact configuration depends on the (configuration of the) system that exists between the client and your server.
+TODO: make getting the real client IP up-to-date with Caddy v2.7.x and verify it works as expected.
+
+~~To ensure that the actual client IP is used to (dis)allow access, you can use the https://github.com/kirsch33/realip Caddy module.~~
+~~It can be configured to replace the `RemoteAddr` of the incoming request with a value from a header (such as the `X-Forwarded-For` header), resulting in the actual client IP being set in the RemoteAddr property.~~
+~~The `realip` handler should be configured to execute before the `crowdsec` handler, so that the `RemoteAddr` has been updated before the `crowdsec` handler executes.~~
+~~Your exact configuration depends on the (configuration of the) system that exists between the client and your server.~~
 
 ## Things That Can Be Done
 
