@@ -2,12 +2,12 @@ package bouncer
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
-	"github.com/pkg/errors"
 )
 
 // StreamBouncer is a bouncer that polls the CrowdSec Local API
@@ -36,7 +36,7 @@ func (b *StreamBouncer) Init() error {
 
 	apiURL, err = url.Parse(b.APIUrl)
 	if err != nil {
-		return errors.Wrapf(err, "local API Url '%s'", b.APIUrl)
+		return fmt.Errorf("local API Url %q: %w", b.APIUrl, err)
 	}
 	t := &apiclient.APIKeyTransport{
 		APIKey: b.APIKey,
@@ -44,12 +44,12 @@ func (b *StreamBouncer) Init() error {
 
 	b.APIClient, err = apiclient.NewDefaultClient(apiURL, "v1", b.UserAgent, t.Client())
 	if err != nil {
-		return errors.Wrapf(err, "api client init")
+		return fmt.Errorf("api client init: %w", err)
 	}
 
 	b.TickerIntervalDuration, err = time.ParseDuration(b.TickerInterval)
 	if err != nil {
-		return errors.Wrapf(err, "unable to parse duration '%s'", b.TickerInterval)
+		return fmt.Errorf("unable to parse duration %q: %w", b.TickerInterval, err)
 	}
 
 	b.Errors = make(chan error)
@@ -61,7 +61,10 @@ func (b *StreamBouncer) Init() error {
 func (b *StreamBouncer) Run() {
 	ticker := time.NewTicker(b.TickerIntervalDuration)
 
-	data, _, err := b.APIClient.Decisions.GetStream(context.Background(), true) // true means we just started the bouncer
+	opts := apiclient.DecisionsStreamOpts{
+		Startup: true,
+	}
+	data, _, err := b.APIClient.Decisions.GetStream(context.Background(), opts) // true means we just started the bouncer
 	if err != nil {
 		b.Errors <- err
 	}
@@ -70,8 +73,11 @@ func (b *StreamBouncer) Run() {
 		b.Stream <- data
 	}
 
+	opts = apiclient.DecisionsStreamOpts{
+		Startup: false,
+	}
 	for range ticker.C {
-		data, _, err := b.APIClient.Decisions.GetStream(context.Background(), false)
+		data, _, err := b.APIClient.Decisions.GetStream(context.Background(), opts)
 		if err != nil {
 			b.Errors <- err
 		}
