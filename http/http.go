@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -147,32 +146,29 @@ func writeThrottleResponse(w http.ResponseWriter, duration string) error {
 	return nil
 }
 
-// determineIPFromRequest returns the IP of the client based on its RemoteAddr
-// property. In case a proxy, a CDN or some other (usually trusted) server sits
-// between the client and Caddy, the real IP of the client is different from
-// the one recorded here. To get the actual IP of the client, we propose to
-// use the https://github.com/kirsch33/realip Caddy module, which can be
-// configured to replace the RemoteAddr of the incoming request with a value
-// from a header (i.e. the X-Forwarded-For header), resulting in the actual
-// client IP being set in the RemoteAddr property. The `realip` handler should
-// be configured before this `crowdsec` handler to work as expected.
+// determineIPFromRequest returns the IP of the client based on the value that
+// Caddy extracts from the original request and stores in the request context.
+// Support for setting the real client IP in case a proxy sits in front of
+// Caddy was added, so the client IP reported here is the actual client IP.
 func determineIPFromRequest(r *http.Request) (net.IP, error) {
-
-	var remoteIP string
-	var err error
-	if strings.ContainsRune(r.RemoteAddr, ':') {
-		// TODO: does this work correctly with (all) IPv6 addresses?
-		remoteIP, _, err = net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		remoteIP = r.RemoteAddr
+	clientIPVar := caddyhttp.GetVar(r.Context(), caddyhttp.ClientIPVarKey)
+	if clientIPVar == nil {
+		return nil, errors.New("failed getting client IP from context")
 	}
 
-	ip := net.ParseIP(remoteIP)
+	var clientIP string
+	var ok bool
+	if clientIP, ok = clientIPVar.(string); !ok {
+		return nil, fmt.Errorf("client IP from request context is invalid type %T", clientIPVar)
+	}
+
+	if clientIP == "" {
+		return nil, errors.New("client IP from request context is empty")
+	}
+
+	ip := net.ParseIP(clientIP)
 	if ip == nil {
-		return nil, fmt.Errorf("could not parse %s into net.IP", remoteIP)
+		return nil, fmt.Errorf("could not parse %q into net.IP", clientIP)
 	}
 
 	return ip, nil

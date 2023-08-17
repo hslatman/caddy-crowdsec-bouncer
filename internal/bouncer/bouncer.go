@@ -36,7 +36,7 @@ type Bouncer struct {
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := "caddy-cs-bouncer/v0.1.0"
+	userAgent := "caddy-cs-bouncer/v0.3.1"
 	return &Bouncer{
 		streamingBouncer: &StreamBouncer{
 			APIKey:         apiKey,

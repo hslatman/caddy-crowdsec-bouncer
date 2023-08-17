@@ -205,18 +205,14 @@ $ docker-compose logs -tf
 You can then access https://localhost:9443 and https://localhost:8443.
 The latter is an example of using the [Layer 4 App](https://github.com/mholt/caddy-l4) and will simply proxy to port 9443 in this case. 
 
-## Remote IPs
+## Client IP
 
-The Caddy HTTP handler relies on the `RemoteAddr` of the `*http.Request` to determine the source IP address.
-That IP is then used to check against the CrowdSec decisions to see if it's allowed in or not.
-These days many systems actually sit behind a proxy, a CDN or something different, which means that the IP of the client requesting a resource is masked by the system that sits between the client and the server.
+If your Caddy server with this bouncer is deployed behind a proxy, a CDN or another system fronting the web server, the IP of the client requesting a resource is masked by the system that sits between the client and your server.
+Starting with `v0.3.1`, the HTTP handler relies on Caddy to determine the actual client IP of the system performing the HTTP request. 
+The new logic was implemented as part of [caddy#5104](https://github.com/caddyserver/caddy/pull/5104), and released with Caddy `v2.7.0`.
+The IP that Caddy determines is used to check against the CrowdSec decisions to see if it's allowed in or not.
 
-TODO: make getting the real client IP up-to-date with Caddy v2.7.x and verify it works as expected.
-
-~~To ensure that the actual client IP is used to (dis)allow access, you can use the https://github.com/kirsch33/realip Caddy module.~~
-~~It can be configured to replace the `RemoteAddr` of the incoming request with a value from a header (such as the `X-Forwarded-For` header), resulting in the actual client IP being set in the RemoteAddr property.~~
-~~The `realip` handler should be configured to execute before the `crowdsec` handler, so that the `RemoteAddr` has been updated before the `crowdsec` handler executes.~~
-~~Your exact configuration depends on the (configuration of the) system that exists between the client and your server.~~
+For older versions of this Caddy module, and for older versions of Caddy (up to `v2.4.6`), the [realip](https://github.com/kirsch33/realip) module can be used instead.
 
 ## Things That Can Be Done
 
