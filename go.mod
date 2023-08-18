@@ -11,6 +11,7 @@ require (
 	github.com/hslatman/ipstore v0.0.0-20210131120430-64b55d649887
 	github.com/jarcoal/httpmock v1.1.0
 	github.com/mholt/caddy-l4 v0.0.0-20230619193542-38bd80163b43
+	github.com/sirupsen/logrus v1.9.3
 	go.uber.org/zap v1.25.0
 )
 
@@ -120,7 +121,6 @@ require (
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shopspring/decimal v1.3.1 // indirect
 	github.com/shurcooL/sanitized_anchor_name v1.0.0 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/slackhq/nebula v1.7.2 // indirect
 	github.com/smallstep/certificates v0.24.3-rc1 // indirect
 	github.com/smallstep/go-attestation v0.4.4-0.20230509120429-e17291421738 // indirect

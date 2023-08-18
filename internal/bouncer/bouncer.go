@@ -15,18 +15,21 @@
 package bouncer
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	"github.com/sirupsen/logrus"
 
 	"go.uber.org/zap"
 )
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
-	streamingBouncer    *StreamBouncer
+	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	store               *crowdSecStore
 	logger              *zap.Logger
@@ -34,20 +37,40 @@ type Bouncer struct {
 	shouldFailHard      bool
 }
 
+type logrusErrorHook struct {
+	fn func(entry *logrus.Entry) error
+}
+
+func (lh *logrusErrorHook) Levels() []logrus.Level {
+	return []logrus.Level{logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}
+}
+
+func (lh *logrusErrorHook) Fire(entry *logrus.Entry) error {
+	if lh.fn == nil {
+		return nil
+	}
+	return lh.fn(entry)
+}
+
+var _ logrus.Hook = (*logrusErrorHook)(nil)
+
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := "caddy-cs-bouncer/v0.3.1"
+	userAgent := "caddy-cs-bouncer/v0.3.2"
+	insecureSkipVerify := false
 	return &Bouncer{
-		streamingBouncer: &StreamBouncer{
-			APIKey:         apiKey,
-			APIUrl:         apiURL,
-			TickerInterval: tickerInterval,
-			UserAgent:      userAgent,
+		streamingBouncer: &csbouncer.StreamBouncer{
+			APIKey:             apiKey,
+			APIUrl:             apiURL,
+			InsecureSkipVerify: &insecureSkipVerify,
+			TickerInterval:     tickerInterval,
+			UserAgent:          userAgent,
 		},
 		liveBouncer: &csbouncer.LiveBouncer{
-			APIKey:    apiKey,
-			APIUrl:    apiURL,
-			UserAgent: userAgent,
+			APIKey:             apiKey,
+			APIUrl:             apiURL,
+			InsecureSkipVerify: &insecureSkipVerify,
+			UserAgent:          userAgent,
 		},
 		store:  newStore(),
 		logger: logger,
@@ -69,6 +92,30 @@ func (b *Bouncer) EnableHardFails() {
 func (b *Bouncer) Init() error {
 
 	if b.useStreamingBouncer {
+		// silence the default CrowdSec logrus logging
+		logrus.SetOutput(io.Discard)
+
+		// catch error log entries and log them using the *zap.Logger instead
+		errorHook := &logrusErrorHook{
+			fn: func(entry *logrus.Entry) error {
+				// TODO: extract from entry.Data? But doesn't seem to be used by CrowdSec today.
+				if entry == nil {
+					return nil
+				}
+				msg := entry.Message
+				if b.shouldFailHard {
+					b.logger.Fatal(msg, zap.String("address", b.streamingBouncer.APIUrl))
+				} else {
+					b.logger.Error(msg, zap.String("address", b.streamingBouncer.APIUrl))
+				}
+				return nil
+			},
+		}
+		logrus.AddHook(errorHook)
+
+		// TODO: catch other logrus levels too?
+
+		// initialize the CrowdSec streaming bouncer
 		return b.streamingBouncer.Init()
 	}
 
@@ -112,18 +159,7 @@ func (b *Bouncer) Run() {
 		}
 	}()
 
-	go func() {
-		b.logger.Info("start processing crowdsec api errors")
-		for err := range b.streamingBouncer.Errors {
-			if b.shouldFailHard {
-				b.logger.Fatal(err.Error(), zap.String("address", b.streamingBouncer.APIUrl))
-			} else {
-				b.logger.Error(err.Error(), zap.String("address", b.streamingBouncer.APIUrl))
-			}
-		}
-	}()
-
-	go b.streamingBouncer.Run()
+	go b.streamingBouncer.Run(context.Background()) // TODO: pass context from top?
 }
 
 // ShutDown stops the Bouncer
