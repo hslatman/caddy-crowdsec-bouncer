@@ -56,8 +56,6 @@ func new(t *testing.T) (*Bouncer, error) {
 		return nil, fmt.Errorf("unable to parse duration %q: %w", bouncer.streamingBouncer.TickerInterval, err)
 	}
 
-	bouncer.streamingBouncer.Errors = make(chan error)
-
 	// initialization of the bouncer finished; running is responsibility of the caller
 
 	return bouncer, err
