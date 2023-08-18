@@ -212,6 +212,9 @@ Starting with `v0.3.1`, the HTTP handler relies on Caddy to determine the actual
 The new logic was implemented as part of [caddy#5104](https://github.com/caddyserver/caddy/pull/5104), and released with Caddy `v2.7.0`.
 The IP that Caddy determines is used to check against the CrowdSec decisions to see if it's allowed in or not.
 
+Caddy determines the actual client IP from the `X-Forwarded-For` header by default, but it is possible to change this using the [client_ip_headers](https://caddyserver.com/docs/json/apps/http/servers/#client_ip_headers) directive in the global settings.
+The setting depends on the [trusted_proxies](https://caddyserver.com/docs/json/apps/http/servers/#trusted_proxies) directive to be set, so that the IP reported in the `X-Forwarded-For` (or one of the headers you configure as override) can be trusted.
+
 For older versions of this Caddy module, and for older versions of Caddy (up to `v2.4.6`), the [realip](https://github.com/kirsch33/realip) module can be used instead.
 
 ## Things That Can Be Done
