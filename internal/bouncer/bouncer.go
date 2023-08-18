@@ -16,7 +16,6 @@ package bouncer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,6 +28,8 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+const maxNumberOfDecisionsToLog = 10
+
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
@@ -38,62 +39,6 @@ type Bouncer struct {
 	useStreamingBouncer bool
 	shouldFailHard      bool
 }
-
-type zapAdapterHook struct {
-	logger         *zap.Logger
-	shouldFailHard bool
-	address        string
-}
-
-func (zh *zapAdapterHook) Levels() []logrus.Level {
-	return logrus.AllLevels
-}
-
-func (zh *zapAdapterHook) Fire(entry *logrus.Entry) error {
-	if zh == nil || zh.logger == nil {
-		return nil
-	}
-
-	if entry == nil {
-		return nil
-	}
-
-	// TODO: extract details from entry.Data? But doesn't seem to be used by CrowdSec today.
-
-	msg := entry.Message
-	fields := []zapcore.Field{zap.String("address", zh.address)}
-	switch {
-	case entry.Level <= logrus.ErrorLevel: // error, fatal, panic
-		fields = append(fields, zap.Error(errors.New(msg)))
-		if zh.shouldFailHard {
-			// TODO: if we keep this Fatal and the "shouldFailhard" around, ensure we
-			// shut the bouncer down nicely
-			zh.logger.Fatal(msg, fields...)
-		} else {
-			zh.logger.Error(msg, fields...)
-		}
-	default:
-		level := zapcore.DebugLevel
-		if l, ok := levelAdapter[entry.Level]; ok {
-			level = l
-		}
-		zh.logger.Log(level, msg, fields...)
-	}
-
-	return nil
-}
-
-var levelAdapter = map[logrus.Level]zapcore.Level{
-	logrus.TraceLevel: zapcore.DebugLevel, // no trace level in zap
-	logrus.DebugLevel: zapcore.DebugLevel,
-	logrus.InfoLevel:  zapcore.InfoLevel,
-	logrus.WarnLevel:  zapcore.WarnLevel,
-	logrus.ErrorLevel: zapcore.ErrorLevel,
-	logrus.FatalLevel: zapcore.FatalLevel,
-	logrus.PanicLevel: zapcore.PanicLevel,
-}
-
-var _ logrus.Hook = (*zapAdapterHook)(nil)
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 // TODO: take a configuration struct instead, because more options will be added.
@@ -137,7 +82,7 @@ func (b *Bouncer) Init() error {
 		// silence the default CrowdSec logrus logging
 		logrus.SetOutput(io.Discard)
 
-		// catch error log entries and log them using the *zap.Logger instead
+		// catch log entries and log them using the *zap.Logger instead
 		logrus.AddHook(&zapAdapterHook{
 			logger:         b.logger,
 			shouldFailHard: b.shouldFailHard,
@@ -159,6 +104,18 @@ func (b *Bouncer) Run() {
 		return
 	}
 
+	// TODO: pass context from top, so that it can influence the running
+	// bouncer, and possibly reload/restart it?
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		b.streamingBouncer.Run(ctx)
+		cancel()
+	}()
+
+	// TODO: close the stream nicely when the bouncer needs to quit. This is not done
+	// in the csbouncer package itself when canceling.
 	// TODO: wait with processing until we know we're successfully connected to
 	// the CrowdSec API? The bouncer/client doesn't seem to give us that information
 	// directly, but we could use the heartbeat service before starting to run?
@@ -166,35 +123,46 @@ func (b *Bouncer) Run() {
 	go func() {
 		b.logger.Info("start processing new and deleted decisions")
 		for decisions := range b.streamingBouncer.Stream {
-			if len(decisions.Deleted) > 0 {
-				b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
-			}
 			// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 			// TODO: process in separate goroutines/waitgroup?
-			for _, decision := range decisions.Deleted {
-				if err := b.delete(decision); err != nil {
-					b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", *decision.Value, err))
-				} else {
-					b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", *decision.Value, *decision.Scope))
+			if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
+				b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions))
+				for _, decision := range decisions.Deleted {
+					if err := b.delete(decision); err != nil {
+						b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", *decision.Value, err))
+					} else {
+						if numberOfDeletedDecisions <= maxNumberOfDecisionsToLog {
+							b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", *decision.Value, *decision.Scope))
+						}
+					}
 				}
+				if numberOfDeletedDecisions > maxNumberOfDecisionsToLog {
+					b.logger.Debug(fmt.Sprintf("skipped logging for %d deleted decisions", numberOfDeletedDecisions))
+				}
+				b.logger.Debug(fmt.Sprintf("finished processing %d deleted decisions", numberOfDeletedDecisions))
 			}
-			if len(decisions.New) > 0 {
-				b.logger.Debug(fmt.Sprintf("processing %d new decisions", len(decisions.New)))
-			}
+
 			// TODO: process in separate goroutines/waitgroup?
-			// TODO: don't log all additions separately when there's a large number "X" of them to not
-			// clutter the logs
-			for _, decision := range decisions.New {
-				if err := b.add(decision); err != nil {
-					b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", *decision.Value, err))
-				} else {
-					b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", *decision.Value, *decision.Scope, *decision.Duration))
+			if numberOfNewDecisions := len(decisions.New); numberOfNewDecisions > 0 {
+				b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions))
+				for _, decision := range decisions.New {
+					if err := b.add(decision); err != nil {
+						b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", *decision.Value, err))
+					} else {
+						if numberOfNewDecisions <= maxNumberOfDecisionsToLog {
+							b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", *decision.Value, *decision.Scope, *decision.Duration))
+						}
+					}
 				}
+				if numberOfNewDecisions > maxNumberOfDecisionsToLog {
+					b.logger.Debug(fmt.Sprintf("skipped logging for %d new decisions", numberOfNewDecisions))
+				}
+				b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions))
 			}
 		}
-	}()
 
-	go b.streamingBouncer.Run(context.Background()) // TODO: pass context from top?
+		b.logger.Info("processing new and deleted decisions stopped")
+	}()
 }
 
 // ShutDown stops the Bouncer
