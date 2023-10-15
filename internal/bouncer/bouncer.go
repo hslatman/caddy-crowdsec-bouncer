@@ -15,6 +15,7 @@
 package bouncer
 
 import (
+	"context"
 	"fmt"
 	"net"
 
@@ -22,11 +23,14 @@ import (
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+const maxNumberOfDecisionsToLog = 10
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
 type Bouncer struct {
-	streamingBouncer    *StreamBouncer
+	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	store               *crowdSecStore
 	logger              *zap.Logger
@@ -35,19 +39,23 @@ type Bouncer struct {
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
+// TODO: take a configuration struct instead, because more options will be added.
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := "caddy-cs-bouncer/v0.3.1"
+	userAgent := "caddy-cs-bouncer/v0.3.2"
+	insecureSkipVerify := false
 	return &Bouncer{
-		streamingBouncer: &StreamBouncer{
-			APIKey:         apiKey,
-			APIUrl:         apiURL,
-			TickerInterval: tickerInterval,
-			UserAgent:      userAgent,
+		streamingBouncer: &csbouncer.StreamBouncer{
+			APIKey:             apiKey,
+			APIUrl:             apiURL,
+			InsecureSkipVerify: &insecureSkipVerify,
+			TickerInterval:     tickerInterval,
+			UserAgent:          userAgent,
 		},
 		liveBouncer: &csbouncer.LiveBouncer{
-			APIKey:    apiKey,
-			APIUrl:    apiURL,
-			UserAgent: userAgent,
+			APIKey:             apiKey,
+			APIUrl:             apiURL,
+			InsecureSkipVerify: &insecureSkipVerify,
+			UserAgent:          userAgent,
 		},
 		store:  newStore(),
 		logger: logger,
@@ -67,68 +75,90 @@ func (b *Bouncer) EnableHardFails() {
 
 // Init initializes the Bouncer
 func (b *Bouncer) Init() error {
+	// override CrowdSec's default logrus logging
+	b.overrideLogrusLogger()
 
+	// initialize the CrowdSec streaming bouncer
 	if b.useStreamingBouncer {
 		return b.streamingBouncer.Init()
 	}
 
+	// initialize the CrowdSec live bouncer
 	return b.liveBouncer.Init()
 }
 
 // Run starts the Bouncer processes
 func (b *Bouncer) Run() {
-
+	// the LiveBouncer has nothing to run in the background; return early
 	if !b.useStreamingBouncer {
-		// the LiveBouncer has nothing to run in the background; return early
 		return
 	}
 
+	// TODO: pass context from top, so that it can influence the running
+	// bouncer, and possibly reload/restart it?
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		b.streamingBouncer.Run(ctx)
+		cancel()
+	}()
+
+	// TODO: close the stream nicely when the bouncer needs to quit. This is not done
+	// in the csbouncer package itself when canceling.
+	// TODO: wait with processing until we know we're successfully connected to
+	// the CrowdSec API? The bouncer/client doesn't seem to give us that information
+	// directly, but we could use the heartbeat service before starting to run?
+	// That can also be useful for testing the LiveBouncer at startup.
 	go func() {
 		b.logger.Info("start processing new and deleted decisions")
 		for decisions := range b.streamingBouncer.Stream {
-			if len(decisions.Deleted) > 0 {
-				b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", len(decisions.Deleted)))
-			}
 			// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 			// TODO: process in separate goroutines/waitgroup?
-			for _, decision := range decisions.Deleted {
-				if err := b.delete(decision); err != nil {
-					b.logger.Error(fmt.Sprintf("unable to delete decision for '%s': %s", *decision.Value, err))
-				} else {
-					b.logger.Debug(fmt.Sprintf("deleted '%s' (scope: %s)", *decision.Value, *decision.Scope))
+			if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
+				b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions))
+				for _, decision := range decisions.Deleted {
+					if err := b.delete(decision); err != nil {
+						b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", *decision.Value, err))
+					} else {
+						if numberOfDeletedDecisions <= maxNumberOfDecisionsToLog {
+							b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", *decision.Value, *decision.Scope))
+						}
+					}
 				}
+				if numberOfDeletedDecisions > maxNumberOfDecisionsToLog {
+					b.logger.Debug(fmt.Sprintf("skipped logging for %d deleted decisions", numberOfDeletedDecisions))
+				}
+				b.logger.Debug(fmt.Sprintf("finished processing %d deleted decisions", numberOfDeletedDecisions))
 			}
-			if len(decisions.New) > 0 {
-				b.logger.Debug(fmt.Sprintf("processing %d new decisions", len(decisions.New)))
-			}
+
 			// TODO: process in separate goroutines/waitgroup?
-			for _, decision := range decisions.New {
-				if err := b.add(decision); err != nil {
-					b.logger.Error(fmt.Sprintf("unable to insert decision for '%s': %s", *decision.Value, err))
-				} else {
-					b.logger.Debug(fmt.Sprintf("adding '%s' (scope: %s) for '%s'", *decision.Value, *decision.Scope, *decision.Duration))
+			if numberOfNewDecisions := len(decisions.New); numberOfNewDecisions > 0 {
+				b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions))
+				for _, decision := range decisions.New {
+					if err := b.add(decision); err != nil {
+						b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", *decision.Value, err))
+					} else {
+						if numberOfNewDecisions <= maxNumberOfDecisionsToLog {
+							b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", *decision.Value, *decision.Scope, *decision.Duration))
+						}
+					}
 				}
+				if numberOfNewDecisions > maxNumberOfDecisionsToLog {
+					b.logger.Debug(fmt.Sprintf("skipped logging for %d new decisions", numberOfNewDecisions))
+				}
+				b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions))
 			}
 		}
-	}()
 
-	go func() {
-		b.logger.Info("start processing crowdsec api errors")
-		for err := range b.streamingBouncer.Errors {
-			if b.shouldFailHard {
-				b.logger.Fatal(err.Error(), zap.String("address", b.streamingBouncer.APIUrl))
-			} else {
-				b.logger.Error(err.Error(), zap.String("address", b.streamingBouncer.APIUrl))
-			}
-		}
+		b.logger.Info("processing new and deleted decisions stopped")
 	}()
-
-	go b.streamingBouncer.Run()
 }
 
 // ShutDown stops the Bouncer
 func (b *Bouncer) ShutDown() error {
 	// TODO: persist the current state of the radix tree in some way, so that it can be used in startup again?
+	// TODO: clean shutdown of the streaming bouncer channel reading
 	b.store = nil
 	return nil
 }
@@ -173,17 +203,20 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
-
 	if b.useStreamingBouncer {
 		return b.store.get(ip)
 	}
 
 	decision, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
+		fields := []zapcore.Field{
+			zap.String("address", b.streamingBouncer.APIUrl),
+			zap.Error(err),
+		}
 		if b.shouldFailHard {
-			b.logger.Fatal(err.Error())
+			b.logger.Fatal(err.Error(), fields...)
 		} else {
-			b.logger.Error(err.Error())
+			b.logger.Error(err.Error(), fields...)
 		}
 		return nil, nil // when not failing hard, we return no error
 	}
@@ -193,5 +226,4 @@ func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
 	}
 
 	return nil, nil
-
 }

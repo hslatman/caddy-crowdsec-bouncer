@@ -1,6 +1,7 @@
 package bouncer
 
 import (
+	"fmt"
 	"net"
 	"net/url"
 	"regexp"
@@ -10,7 +11,6 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/jarcoal/httpmock"
-	"github.com/pkg/errors"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/google/go-cmp/cmp"
@@ -35,7 +35,7 @@ func new(t *testing.T) (*Bouncer, error) {
 
 	apiURL, err := url.Parse(bouncer.streamingBouncer.APIUrl)
 	if err != nil {
-		return nil, errors.Wrapf(err, "local API Url '%s'", bouncer.streamingBouncer.APIUrl)
+		return nil, fmt.Errorf("local API Url %q: %w", bouncer.streamingBouncer.APIUrl, err)
 	}
 	transport := &apiclient.APIKeyTransport{
 		APIKey:    bouncer.streamingBouncer.APIKey,
@@ -48,15 +48,13 @@ func new(t *testing.T) (*Bouncer, error) {
 	// the goal of ensuring the bouncer gets mocked decisions.
 	bouncer.streamingBouncer.APIClient, err = apiclient.NewDefaultClient(apiURL, "v1", bouncer.streamingBouncer.UserAgent, transport.Client())
 	if err != nil {
-		return nil, errors.Wrapf(err, "api client init")
+		return nil, fmt.Errorf("api client init: %w", err)
 	}
 
 	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to parse duration '%s'", bouncer.streamingBouncer.TickerInterval)
+		return nil, fmt.Errorf("unable to parse duration %q: %w", bouncer.streamingBouncer.TickerInterval, err)
 	}
-
-	bouncer.streamingBouncer.Errors = make(chan error)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
