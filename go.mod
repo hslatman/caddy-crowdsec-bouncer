@@ -5,7 +5,7 @@ go 1.20
 require (
 	github.com/caddyserver/caddy/v2 v2.7.4
 	github.com/caddyserver/format-encoder v0.0.0-20201124212233-c10acf81b981
-	github.com/crowdsecurity/crowdsec v1.5.3-rc4
+	github.com/crowdsecurity/crowdsec v1.5.4
 	github.com/crowdsecurity/go-cs-bouncer v0.0.8
 	github.com/google/go-cmp v0.5.9
 	github.com/hslatman/ipstore v0.0.0-20210131120430-64b55d649887
@@ -37,7 +37,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/chzyer/readline v1.5.1 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
-	github.com/crowdsecurity/go-cs-lib v0.0.3 // indirect
+	github.com/crowdsecurity/go-cs-lib v0.0.4 // indirect
 	github.com/dgraph-io/badger v1.6.2 // indirect
 	github.com/dgraph-io/badger/v2 v2.2007.4 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
