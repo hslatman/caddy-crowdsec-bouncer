@@ -17,12 +17,10 @@ package bouncer
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
-	"github.com/sirupsen/logrus"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -77,30 +75,22 @@ func (b *Bouncer) EnableHardFails() {
 
 // Init initializes the Bouncer
 func (b *Bouncer) Init() error {
+	// override CrowdSec's default logrus logging
+	b.overrideLogrusLogger()
 
+	// initialize the CrowdSec streaming bouncer
 	if b.useStreamingBouncer {
-		// silence the default CrowdSec logrus logging
-		logrus.SetOutput(io.Discard)
-
-		// catch log entries and log them using the *zap.Logger instead
-		logrus.AddHook(&zapAdapterHook{
-			logger:         b.logger,
-			shouldFailHard: b.shouldFailHard,
-			address:        b.streamingBouncer.APIUrl,
-		})
-
-		// initialize the CrowdSec streaming bouncer
 		return b.streamingBouncer.Init()
 	}
 
+	// initialize the CrowdSec live bouncer
 	return b.liveBouncer.Init()
 }
 
 // Run starts the Bouncer processes
 func (b *Bouncer) Run() {
-
+	// the LiveBouncer has nothing to run in the background; return early
 	if !b.useStreamingBouncer {
-		// the LiveBouncer has nothing to run in the background; return early
 		return
 	}
 
@@ -213,7 +203,6 @@ func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
-
 	if b.useStreamingBouncer {
 		return b.store.get(ip)
 	}
