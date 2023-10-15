@@ -2,11 +2,24 @@ package bouncer
 
 import (
 	"errors"
+	"io"
 
 	"github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+func (b *Bouncer) overrideLogrusLogger() {
+	// silence the default CrowdSec logrus logging
+	logrus.SetOutput(io.Discard)
+
+	// catch log entries and log them using the *zap.Logger instead
+	logrus.AddHook(&zapAdapterHook{
+		logger:         b.logger,
+		shouldFailHard: b.shouldFailHard,
+		address:        b.streamingBouncer.APIUrl,
+	})
+}
 
 type zapAdapterHook struct {
 	logger         *zap.Logger
