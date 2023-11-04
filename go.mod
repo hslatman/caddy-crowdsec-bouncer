@@ -23,6 +23,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.2.1 // indirect
 	github.com/Masterminds/sprig/v3 v3.2.3 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
+	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df // indirect
 	github.com/antonmedv/expr v1.15.3 // indirect
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b // indirect
@@ -59,7 +60,7 @@ require (
 	github.com/golang/glog v1.1.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/google/cel-go v0.18.1 // indirect
+	github.com/google/cel-go v0.17.1 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/pprof v0.0.0-20231101202521-4ca4178f5c7a // indirect
 	github.com/google/uuid v1.4.0 // indirect
