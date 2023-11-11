@@ -182,7 +182,7 @@ func (c *CrowdSec) Start() error {
 
 // Stop stops the CrowdSec Caddy app
 func (c *CrowdSec) Stop() error {
-	return c.bouncer.ShutDown()
+	return c.bouncer.Shutdown()
 }
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
