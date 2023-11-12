@@ -26,6 +26,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+const version = "v0.5.2"
 const maxNumberOfDecisionsToLog = 10
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
@@ -44,7 +45,7 @@ type Bouncer struct {
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 // TODO: take a configuration struct instead, because more options will be added.
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := "caddy-cs-bouncer/v0.3.2"
+	userAgent := fmt.Sprintf("caddy-cs-bouncer/%s", version)
 	insecureSkipVerify := false
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
