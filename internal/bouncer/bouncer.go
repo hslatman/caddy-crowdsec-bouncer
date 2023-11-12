@@ -48,11 +48,12 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 	insecureSkipVerify := false
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
-			APIKey:             apiKey,
-			APIUrl:             apiURL,
-			InsecureSkipVerify: &insecureSkipVerify,
-			TickerInterval:     tickerInterval,
-			UserAgent:          userAgent,
+			APIKey:              apiKey,
+			APIUrl:              apiURL,
+			InsecureSkipVerify:  &insecureSkipVerify,
+			TickerInterval:      tickerInterval,
+			UserAgent:           userAgent,
+			RetryInitialConnect: true,
 		},
 		liveBouncer: &csbouncer.LiveBouncer{
 			APIKey:             apiKey,
@@ -65,15 +66,16 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 	}, nil
 }
 
-// EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer)
+// EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer).
 func (b *Bouncer) EnableStreaming() {
 	b.useStreamingBouncer = true
 }
 
 // EnableHardFails will make the bouncer fail hard on (connection) errors
-// when contacting the CrowdSec Local API
+// when contacting the CrowdSec Local API.
 func (b *Bouncer) EnableHardFails() {
 	b.shouldFailHard = true
+	b.streamingBouncer.RetryInitialConnect = false
 }
 
 // Init initializes the Bouncer
