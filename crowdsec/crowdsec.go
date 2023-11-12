@@ -133,6 +133,11 @@ func (c *CrowdSec) configure() error {
 		c.EnableStreaming = &cfg.EnableStreaming
 		c.EnableHardFails = &cfg.EnableHardFails
 	}
+
+	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
+	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
+	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
+
 	s := c.APIUrl
 	u, err := url.Parse(s)
 	if err != nil {
@@ -166,6 +171,10 @@ func (c *CrowdSec) configure() error {
 func (c *CrowdSec) Validate() error {
 
 	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
+
+	if c.APIKey == "" {
+		return errors.New("crowdsec API Key must not be empty")
+	}
 
 	if c.bouncer == nil {
 		return errors.New("bouncer instance not available due to (potential) misconfiguration")
