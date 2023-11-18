@@ -26,7 +26,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const version = "v0.5.2"
+const version = "v0.5.3"
 const maxNumberOfDecisionsToLog = 10
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
@@ -121,6 +121,9 @@ func (b *Bouncer) Run() {
 				b.logger.Info("processing new and deleted decisions stopped")
 				return
 			case decisions := <-b.streamingBouncer.Stream:
+				if decisions == nil {
+					continue
+				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				// TODO: process in separate goroutines/waitgroup?
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
