@@ -121,6 +121,9 @@ func (b *Bouncer) Run() {
 				b.logger.Info("processing new and deleted decisions stopped")
 				return
 			case decisions := <-b.streamingBouncer.Stream:
+				if decisions == nil {
+					continue
+				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				// TODO: process in separate goroutines/waitgroup?
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
