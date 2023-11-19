@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -26,7 +27,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const version = "v0.5.3"
+const version = "v0.5.4"
 const maxNumberOfDecisionsToLog = 10
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
@@ -40,6 +41,7 @@ type Bouncer struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	wg     *sync.WaitGroup
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
@@ -100,10 +102,12 @@ func (b *Bouncer) Run() {
 		return
 	}
 
-	// TODO: pass context from top, so that it can influence the running
-	// bouncer, and possibly reload/restart it?
+	b.wg = &sync.WaitGroup{}
 	b.ctx, b.cancel = context.WithCancel(context.Background())
+
+	b.wg.Add(1)
 	go func() {
+		defer b.wg.Done()
 		b.streamingBouncer.Run(b.ctx)
 	}()
 
@@ -114,7 +118,9 @@ func (b *Bouncer) Run() {
 	// directly, but we could use the heartbeat service before starting to run?
 	// That can also be useful for testing the LiveBouncer at startup.
 
+	b.wg.Add(1)
 	go func() {
+		defer b.wg.Done()
 		for {
 			select {
 			case <-b.ctx.Done():
@@ -167,7 +173,14 @@ func (b *Bouncer) Run() {
 
 // Shutdown stops the Bouncer
 func (b *Bouncer) Shutdown() error {
+	// the LiveBouncer has nothing to do on shutdown
+	if !b.useStreamingBouncer {
+		return nil
+	}
+
 	b.cancel()
+	b.wg.Wait()
+
 	// TODO: clean shutdown of the streaming bouncer channel reading
 	//b.store = nil // TODO(hs): setting this to nil without reinstantiating it, leads to errors; do this properly.
 	return nil
@@ -220,7 +233,7 @@ func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
 	decision, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
 		fields := []zapcore.Field{
-			zap.String("address", b.streamingBouncer.APIUrl),
+			zap.String("address", b.liveBouncer.APIUrl),
 			zap.Error(err),
 		}
 		if b.shouldFailHard {
