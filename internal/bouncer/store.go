@@ -89,7 +89,6 @@ func (s *crowdSecStore) delete(decision *models.Decision) error {
 }
 
 func (s *crowdSecStore) get(key net.IP) (*models.Decision, error) {
-
 	r, err := s.store.Get(key)
 	if err != nil {
 		return nil, err

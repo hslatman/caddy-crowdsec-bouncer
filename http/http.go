@@ -50,7 +50,6 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 
 // Provision sets up the CrowdSec handler.
 func (h *Handler) Provision(ctx caddy.Context) error {
-
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
@@ -65,7 +64,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 
 // Validate ensures the app's configuration is valid.
 func (h *Handler) Validate() error {
-
 	if h.crowdsec == nil {
 		return errors.New("crowdsec app not available")
 	}
@@ -75,7 +73,6 @@ func (h *Handler) Validate() error {
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-
 	ipToCheck, err := determineIPFromRequest(r)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
@@ -132,7 +129,6 @@ func writeCaptchaResponse(w http.ResponseWriter) error {
 
 // writeThrottleResponse writes 429 status as response
 func writeThrottleResponse(w http.ResponseWriter, duration string) error {
-
 	d, err := time.ParseDuration(duration)
 	if err != nil {
 		return err

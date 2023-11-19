@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -27,7 +28,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const version = "v0.5.4"
+const version = "v0.5.5"
 const maxNumberOfDecisionsToLog = 10
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
@@ -39,14 +40,17 @@ type Bouncer struct {
 	useStreamingBouncer bool
 	shouldFailHard      bool
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     *sync.WaitGroup
+	// bouncer runtime management
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             *sync.WaitGroup
+	instantiatedAt time.Time
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 // TODO: take a configuration struct instead, because more options will be added.
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+	instantiatedAt := time.Now()
 	userAgent := fmt.Sprintf("caddy-cs-bouncer/%s", version)
 	insecureSkipVerify := false
 	return &Bouncer{
@@ -64,8 +68,9 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		store:  newStore(),
-		logger: logger,
+		store:          newStore(),
+		logger:         logger,
+		instantiatedAt: instantiatedAt,
 	}, nil
 }
 
@@ -86,13 +91,13 @@ func (b *Bouncer) Init() error {
 	// override CrowdSec's default logrus logging
 	b.overrideLogrusLogger()
 
-	// initialize the CrowdSec streaming bouncer
-	if b.useStreamingBouncer {
-		return b.streamingBouncer.Init()
+	// initialize the CrowdSec live bouncer
+	if !b.useStreamingBouncer {
+		return b.liveBouncer.Init()
 	}
 
-	// initialize the CrowdSec live bouncer
-	return b.liveBouncer.Init()
+	// initialize the CrowdSec streaming bouncer
+	return b.streamingBouncer.Init()
 }
 
 // Run starts the Bouncer processes
@@ -178,7 +183,7 @@ func (b *Bouncer) Shutdown() error {
 		return nil
 	}
 
-	b.cancel()
+	b.cancel() // TODO(hs): move these to Cleanup() instead?
 	b.wg.Wait()
 
 	// TODO: clean shutdown of the streaming bouncer channel reading
@@ -207,7 +212,6 @@ func (b *Bouncer) delete(decision *models.Decision) error {
 
 // IsAllowed checks if an IP is allowed or not
 func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
-
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
 	decision, err := b.retrieveDecision(ip)

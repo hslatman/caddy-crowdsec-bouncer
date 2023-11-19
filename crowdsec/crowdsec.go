@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -30,7 +31,9 @@ import (
 )
 
 var (
-	cfg *config
+	cfg             *config
+	latestBouncerMu sync.RWMutex
+	latestBouncer   *bouncer.Bouncer
 )
 
 const (
@@ -186,6 +189,12 @@ func (c *CrowdSec) Validate() error {
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
 	c.bouncer.Run()
+
+	// TODO(hs): before setting the global latest bouncer, ensure the new bouncer is healthy (enough)?
+	latestBouncerMu.Lock()
+	latestBouncer = c.bouncer
+	latestBouncerMu.Unlock()
+
 	return nil
 }
 
@@ -194,11 +203,29 @@ func (c *CrowdSec) Stop() error {
 	return c.bouncer.Shutdown()
 }
 
-// IsAllowed is used by the CrowdSec HTTP handler to check if
-// an IP is allowed to perform a request
+// IsAllowed is used by the CrowdSec HTTP Handler and L4 Matcher to check
+// if an IP is allowed to perform a request. It will try the latest (global)
+// bouncer instance first and will fallback to this CrowdSec instance's
+// bouncer in case it's missing. This is because Caddy may be in the process
+// of (re)starting with a new configuration and the latest bouncer may not
+// be available (yet) or may have been set to nil in the process. Using
+// the global instance does make the overal logic depend on some global
+// logic, but some construction like this seems to be the only way to make
+// Caddy always use the correct bouncer instance when checking IPs.
 func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
-	// TODO: check if running? fully loaded, etc?
-	return c.bouncer.IsAllowed(ip)
+	switch {
+	case latestBouncer != nil:
+		// try the latest bouncer instance first
+		latestBouncerMu.RLock()
+		defer latestBouncerMu.RUnlock()
+		return latestBouncer.IsAllowed(ip)
+	case c.bouncer != nil:
+		// fallback to this crowdsec instance bouncer
+		return c.bouncer.IsAllowed(ip)
+	default:
+		// fail closed
+		return false, nil, errors.New("bouncer not available")
+	}
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
