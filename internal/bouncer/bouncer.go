@@ -27,7 +27,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-const version = "v0.5.3"
+const version = "v0.5.4"
 const maxNumberOfDecisionsToLog = 10
 
 // Bouncer is a custom CrowdSec bouncer backed by an immutable radix tree
