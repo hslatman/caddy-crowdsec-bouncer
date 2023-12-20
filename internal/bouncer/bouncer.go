@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
@@ -39,9 +40,13 @@ type Bouncer struct {
 	useStreamingBouncer bool
 	shouldFailHard      bool
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     *sync.WaitGroup
+	createdAt time.Time
+
+	ctx     context.Context
+	started bool
+	startMu sync.Mutex
+	cancel  context.CancelFunc
+	wg      *sync.WaitGroup
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
@@ -64,9 +69,14 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		store:  newStore(),
-		logger: logger,
+		store:     newStore(),
+		logger:    logger,
+		createdAt: time.Now(),
 	}, nil
+}
+
+func (b *Bouncer) CreatedAt() time.Time {
+	return b.createdAt
 }
 
 // EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer).
@@ -97,6 +107,10 @@ func (b *Bouncer) Init() error {
 
 // Run starts the Bouncer processes
 func (b *Bouncer) Run() {
+	b.startMu.Lock()
+	b.started = true
+	b.startMu.Unlock()
+
 	// the LiveBouncer has nothing to run in the background; return early
 	if !b.useStreamingBouncer {
 		return
@@ -173,6 +187,12 @@ func (b *Bouncer) Run() {
 
 // Shutdown stops the Bouncer
 func (b *Bouncer) Shutdown() error {
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	if !b.started {
+		return nil
+	}
+
 	// the LiveBouncer has nothing to do on shutdown
 	if !b.useStreamingBouncer {
 		return nil

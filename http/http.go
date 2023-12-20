@@ -50,7 +50,6 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 
 // Provision sets up the CrowdSec handler.
 func (h *Handler) Provision(ctx caddy.Context) error {
-
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)

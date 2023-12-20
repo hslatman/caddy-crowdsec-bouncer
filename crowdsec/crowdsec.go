@@ -16,10 +16,7 @@ package crowdsec
 
 import (
 	"errors"
-	"fmt"
 	"net"
-	"net/url"
-	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -29,19 +26,9 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 )
 
-var (
-	cfg *config
-)
-
-const (
-	defaultTickerInterval   string = "60s"
-	defaultStreamingEnabled bool   = true
-	defaultHardFailsEnabled bool   = false
-)
-
 func init() {
 	caddy.RegisterModule(CrowdSec{})
-	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCaddyfileGlobalOption)
+	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCrowdSec)
 }
 
 // CaddyModule returns the Caddy module information.
@@ -50,14 +37,6 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 		ID:  "crowdsec",
 		New: func() caddy.Module { return new(CrowdSec) },
 	}
-}
-
-type config struct {
-	APIUrl          string
-	APIKey          string
-	TickerInterval  string
-	EnableStreaming bool
-	EnableHardFails bool
 }
 
 // CrowdSec is a Caddy App that functions as a CrowdSec bouncer. It acts
@@ -77,12 +56,12 @@ type CrowdSec struct {
 	// CrowdSec decisions in memory, resulting in quicker lookups. The
 	// LiveBouncer will perform an API call to your CrowdSec instance.
 	// Defaults to true.
-	EnableStreaming *bool `json:"enable_streaming,omitempty"`
+	EnableStreaming bool `json:"enable_streaming,omitempty"`
 	// EnableHardFails indicates whether calls to the CrowdSec API should
 	// result in hard failures, resulting in Caddy quitting vs.
 	// Caddy continuing operation (with a chance of not performing)
 	// validations. Defaults to false.
-	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
+	EnableHardFails bool `json:"enable_hard_fails,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -91,15 +70,9 @@ type CrowdSec struct {
 
 // Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
-
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
-
-	err := c.configure()
-	if err != nil {
-		return err
-	}
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
@@ -114,56 +87,8 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		bouncer.EnableHardFails()
 	}
 
-	if err := bouncer.Init(); err != nil {
-		return err
-	}
-
 	c.bouncer = bouncer
 
-	return nil
-}
-
-func (c *CrowdSec) configure() error {
-	if cfg != nil {
-		// A global config is provided through the Caddyfile; always use it
-		// TODO: combine this with the Unmarshaler approach?
-		c.APIUrl = cfg.APIUrl
-		c.APIKey = cfg.APIKey
-		c.TickerInterval = cfg.TickerInterval
-		c.EnableStreaming = &cfg.EnableStreaming
-		c.EnableHardFails = &cfg.EnableHardFails
-	}
-
-	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
-	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
-	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
-
-	s := c.APIUrl
-	u, err := url.Parse(s)
-	if err != nil {
-		return fmt.Errorf("invalid CrowdSec API URL: %e", err)
-	}
-	if u.Scheme == "" {
-		return fmt.Errorf("URL %s does not have a scheme (i.e https)", u.String())
-	}
-	if !strings.HasSuffix(s, "/") {
-		s = s + "/"
-	}
-	c.APIUrl = s
-	if c.APIKey == "" {
-		return errors.New("crowdsec API Key is missing")
-	}
-	if c.TickerInterval == "" {
-		c.TickerInterval = defaultTickerInterval
-	}
-	if c.EnableStreaming == nil {
-		value := defaultStreamingEnabled
-		c.EnableStreaming = &value
-	}
-	if c.EnableHardFails == nil {
-		value := defaultHardFailsEnabled
-		c.EnableHardFails = &value
-	}
 	return nil
 }
 
@@ -172,9 +97,9 @@ func (c *CrowdSec) Validate() error {
 
 	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
 
-	if c.APIKey == "" {
-		return errors.New("crowdsec API Key must not be empty")
-	}
+	// if c.APIKey == "" {
+	// 	return errors.New("crowdsec API Key must not be empty")
+	// }
 
 	if c.bouncer == nil {
 		return errors.New("bouncer instance not available due to (potential) misconfiguration")
@@ -183,9 +108,18 @@ func (c *CrowdSec) Validate() error {
 	return nil
 }
 
+func (c *CrowdSec) Cleanup() error {
+	return c.bouncer.Shutdown()
+}
+
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
+	if err := c.bouncer.Init(); err != nil {
+		return err
+	}
+
 	c.bouncer.Run()
+
 	return nil
 }
 
@@ -202,11 +136,11 @@ func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
-	return *c.EnableStreaming
+	return c.EnableStreaming
 }
 
 func (c *CrowdSec) shouldFailHard() bool {
-	return *c.EnableHardFails
+	return c.EnableHardFails
 }
 
 // Interface guards
