@@ -10,10 +10,11 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
-	"github.com/jarcoal/httpmock"
-	"go.uber.org/zap/zaptest"
-
 	"github.com/google/go-cmp/cmp"
+	"github.com/jarcoal/httpmock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 )
 
 func new(t *testing.T) (*Bouncer, error) {
@@ -228,4 +229,10 @@ func TestStreamingBouncer(t *testing.T) {
 			t.Errorf("%q. b.IsAllowed() = %v, want %v\ndiff=%s", tt.name, got, tt.want, cmp.Diff(got, tt.want))
 		}
 	}
+}
+
+func Test_generateInstanceID(t *testing.T) {
+	id, err := generateInstanceID(time.Now())
+	require.NoError(t, err)
+	assert.Len(t, id, 8)
 }

@@ -16,6 +16,7 @@ package crowdsec
 
 import (
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/caddyserver/caddy/v2"
@@ -74,6 +75,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
 
+	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
+	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
+	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
+
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
@@ -97,9 +102,9 @@ func (c *CrowdSec) Validate() error {
 
 	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
 
-	// if c.APIKey == "" {
-	// 	return errors.New("crowdsec API Key must not be empty")
-	// }
+	if c.APIKey == "" {
+		return errors.New("crowdsec API Key must not be empty")
+	}
 
 	if c.bouncer == nil {
 		return errors.New("bouncer instance not available due to (potential) misconfiguration")
@@ -109,7 +114,12 @@ func (c *CrowdSec) Validate() error {
 }
 
 func (c *CrowdSec) Cleanup() error {
-	return c.bouncer.Shutdown()
+	if err := c.bouncer.Shutdown(); err != nil {
+		return fmt.Errorf("failed cleaning up: %w", err)
+	}
+	c.bouncer = nil
+
+	return nil
 }
 
 // Start starts the CrowdSec Caddy app
@@ -145,9 +155,10 @@ func (c *CrowdSec) shouldFailHard() bool {
 
 // Interface guards
 var (
-	_ caddy.Module      = (*CrowdSec)(nil)
-	_ caddy.App         = (*CrowdSec)(nil)
-	_ caddy.Provisioner = (*CrowdSec)(nil)
-	_ caddy.Validator   = (*CrowdSec)(nil)
+	_ caddy.Module       = (*CrowdSec)(nil)
+	_ caddy.App          = (*CrowdSec)(nil)
+	_ caddy.Provisioner  = (*CrowdSec)(nil)
+	_ caddy.Validator    = (*CrowdSec)(nil)
+	_ caddy.CleanerUpper = (*CrowdSec)(nil)
 	//_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
 )

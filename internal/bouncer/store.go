@@ -33,7 +33,6 @@ func newStore() *crowdSecStore {
 }
 
 func (s *crowdSecStore) add(decision *models.Decision) error {
-
 	if isInvalid(decision) {
 		return nil
 	}

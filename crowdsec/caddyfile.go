@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -68,11 +67,6 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 			return nil, d.Errf("invalid configuration token provided: %s", d.Val())
 		}
 	}
-
-	// TODO(hs): should this sit somewhere else, so that it also works for JSON?
-	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
-	cs.APIUrl = repl.ReplaceKnown(cs.APIUrl, "")
-	cs.APIKey = repl.ReplaceKnown(cs.APIKey, "")
 
 	return httpcaddyfile.App{
 		Name:  "crowdsec",
