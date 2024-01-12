@@ -76,7 +76,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	defer c.logger.Sync() // nolint
 
 	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
-	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
+	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "http://127.0.0.1:8080/")
 	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
@@ -99,13 +99,12 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 // Validate ensures the app's configuration is valid.
 func (c *CrowdSec) Validate() error {
-
-	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
-
-	if c.APIKey == "" {
-		return errors.New("crowdsec API Key must not be empty")
+	if c.APIUrl == "" {
+		return errors.New("crowdsec API url must not be empty")
 	}
-
+	if c.APIKey == "" {
+		return errors.New("crowdsec API key must not be empty")
+	}
 	if c.bouncer == nil {
 		return errors.New("bouncer instance not available due to (potential) misconfiguration")
 	}
@@ -117,7 +116,6 @@ func (c *CrowdSec) Cleanup() error {
 	if err := c.bouncer.Shutdown(); err != nil {
 		return fmt.Errorf("failed cleaning up: %w", err)
 	}
-	c.bouncer = nil
 
 	return nil
 }
@@ -160,5 +158,4 @@ var (
 	_ caddy.Provisioner  = (*CrowdSec)(nil)
 	_ caddy.Validator    = (*CrowdSec)(nil)
 	_ caddy.CleanerUpper = (*CrowdSec)(nil)
-	//_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
 )
