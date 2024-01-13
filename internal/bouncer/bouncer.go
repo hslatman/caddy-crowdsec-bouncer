@@ -132,12 +132,11 @@ func (b *Bouncer) Init() error {
 // Run starts the Bouncer processes
 func (b *Bouncer) Run() {
 	b.startMu.Lock()
-	if b.started && !b.stopped {
+	defer b.startMu.Unlock()
+	if b.started {
 		return
 	}
 	b.started = true
-	b.startMu.Unlock()
-
 	b.logger.Info("started", b.zapField())
 
 	// the LiveBouncer has nothing to run in the background; return early
@@ -218,11 +217,13 @@ func (b *Bouncer) Run() {
 func (b *Bouncer) Shutdown() error {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
+	b.logger.Info("stopping", b.zapField())
+	defer func() {
+		b.stopped = true
+	}()
 	if !b.started || b.stopped {
 		return nil
 	}
-
-	b.logger.Info("stopping", b.zapField())
 
 	// the LiveBouncer has nothing to do on shutdown
 	if !b.useStreamingBouncer {
@@ -232,7 +233,6 @@ func (b *Bouncer) Shutdown() error {
 	b.cancel()
 	b.wg.Wait()
 
-	b.stopped = true
 	b.logger.Info("finished", b.zapField())
 	b.logger.Sync() // nolint
 
