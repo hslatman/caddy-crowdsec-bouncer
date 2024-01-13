@@ -23,6 +23,14 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		wantParseErr bool
 	}{
 		{
+			name:     "fail/missing tokens",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(``),
+			},
+			wantParseErr: true,
+		},
+		{
 			name:     "fail/not-crowdsec",
 			expected: &CrowdSec{},
 			args: args{
@@ -38,6 +46,92 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 					api_url http://127.0.0.1:8080 
 					api_key some_random_key
 					ticker_interval 30x
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/no-api-url",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url 
+					api_key some_random_key
+					ticker_interval 30x
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/invalid-api-url",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://\x00/
+					api_key some_random_key
+					ticker_interval 30x
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/invalid-api-url-no-scheme",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url example.com
+					api_key some_random_key
+					ticker_interval 30x
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/missing-api-key",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://127.0.0.1:8080 
+					api_key 
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/missing-ticker-interval",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://127.0.0.1:8080 
+					api_key test-key
+					ticker_interval
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/invalid-streaming",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://127.0.0.1:8080 
+					api_key test-key
+					ticker_interval 30s
+					disable_streaming absolutely
+				}`),
+			},
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/invalid-streaming",
+			expected: &CrowdSec{},
+			args: args{
+				d: caddyfile.NewTestDispenser(`crowdsec {
+					api_url http://127.0.0.1:8080 
+					api_key test-key
+					ticker_interval 30s
+					disable_streaming
+					enable_hard_fails yo
 				}`),
 			},
 			wantParseErr: true,

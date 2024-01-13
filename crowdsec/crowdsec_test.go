@@ -139,7 +139,7 @@ func TestCrowdSec_streamingBouncerRuntime(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount += 1
 		w.WriteHeader(200) // just accept any request
-		w.Write(nil)
+		w.Write(nil)       // nolint
 	}))
 	defer srv.Close()
 
@@ -201,7 +201,7 @@ func TestCrowdSec_liveBouncerRuntime(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount += 1
 		w.WriteHeader(200) // just accept any request
-		w.Write(nil)
+		w.Write(nil)       // nolint
 	}))
 	defer srv.Close()
 
