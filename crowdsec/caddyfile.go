@@ -11,10 +11,12 @@ import (
 )
 
 func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
+	tv := true
+	fv := false
 	cs := &CrowdSec{
 		TickerInterval:  "60s",
-		EnableStreaming: true,
-		EnableHardFails: false,
+		EnableStreaming: &tv,
+		EnableHardFails: &fv,
 	}
 
 	if !d.Next() {
@@ -57,12 +59,12 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 			if d.NextArg() {
 				return nil, d.ArgErr()
 			}
-			cs.EnableStreaming = false
+			cs.EnableStreaming = &fv
 		case "enable_hard_fails":
 			if d.NextArg() {
 				return nil, d.ArgErr()
 			}
-			cs.EnableHardFails = true
+			cs.EnableHardFails = &tv
 		default:
 			return nil, d.Errf("invalid configuration token provided: %s", d.Val())
 		}

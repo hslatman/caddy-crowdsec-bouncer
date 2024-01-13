@@ -50,19 +50,19 @@ type CrowdSec struct {
 	// APIKey for the CrowdSec Local API
 	APIKey string `json:"api_key"`
 	// TickerInterval is the interval the StreamBouncer uses for querying
-	// the CrowdSec Local API. Defaults to "10s".
+	// the CrowdSec Local API. Defaults to "60s".
 	TickerInterval string `json:"ticker_interval,omitempty"`
 	// EnableStreaming indicates whether the StreamBouncer should be used.
 	// If it's false, the LiveBouncer is used. The StreamBouncer keeps
 	// CrowdSec decisions in memory, resulting in quicker lookups. The
 	// LiveBouncer will perform an API call to your CrowdSec instance.
 	// Defaults to true.
-	EnableStreaming bool `json:"enable_streaming,omitempty"`
+	EnableStreaming *bool `json:"enable_streaming,omitempty"`
 	// EnableHardFails indicates whether calls to the CrowdSec API should
 	// result in hard failures, resulting in Caddy quitting vs.
 	// Caddy continuing operation (with a chance of not performing)
 	// validations. Defaults to false.
-	EnableHardFails bool `json:"enable_hard_fails,omitempty"`
+	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -76,8 +76,16 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	defer c.logger.Sync() // nolint
 
 	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
-	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "http://127.0.0.1:8080/")
+	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
 	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
+	c.TickerInterval = repl.ReplaceKnown(c.TickerInterval, "")
+
+	if c.APIUrl == "" {
+		c.APIUrl = "http://127.0.0.1:8080/"
+	}
+	if c.TickerInterval == "" {
+		c.TickerInterval = "60s"
+	}
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
 	if err != nil {
@@ -99,9 +107,6 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 // Validate ensures the app's configuration is valid.
 func (c *CrowdSec) Validate() error {
-	if c.APIUrl == "" {
-		return errors.New("crowdsec API url must not be empty")
-	}
 	if c.APIKey == "" {
 		return errors.New("crowdsec API key must not be empty")
 	}
@@ -144,11 +149,11 @@ func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
-	return c.EnableStreaming
+	return c.EnableStreaming == nil || *c.EnableStreaming
 }
 
 func (c *CrowdSec) shouldFailHard() bool {
-	return c.EnableHardFails
+	return c.EnableHardFails != nil && *c.EnableHardFails
 }
 
 // Interface guards

@@ -10,6 +10,8 @@ import (
 )
 
 func TestUnmarshalCaddyfile(t *testing.T) {
+	tv := true
+	fv := false
 	type args struct {
 		d *caddyfile.Dispenser
 	}
@@ -60,8 +62,8 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			expected: &CrowdSec{
 				APIUrl:          "http://127.0.0.1:8080/",
 				APIKey:          "some_random_key",
-				EnableStreaming: true,
-				EnableHardFails: false,
+				EnableStreaming: &tv,
+				EnableHardFails: &fv,
 			},
 			args: args{
 				d: caddyfile.NewTestDispenser(`crowdsec {
@@ -78,8 +80,8 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				APIUrl:          "http://127.0.0.1:8080/",
 				APIKey:          "some_random_key",
 				TickerInterval:  "33s",
-				EnableStreaming: false,
-				EnableHardFails: true,
+				EnableStreaming: &fv,
+				EnableHardFails: &tv,
 			},
 			args: args{
 				d: caddyfile.NewTestDispenser(`crowdsec {
@@ -137,11 +139,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 					t.Errorf("got: %s, want: %s", c.TickerInterval, tt.expected.TickerInterval)
 				}
 			}
-			if tt.expected.EnableStreaming != c.EnableStreaming {
-				t.Errorf("got: %t, want: %t", c.EnableStreaming, tt.expected.EnableStreaming)
+			if *tt.expected.EnableStreaming != *c.EnableStreaming {
+				t.Errorf("got: %t, want: %t", *c.EnableStreaming, *tt.expected.EnableStreaming)
 			}
-			if tt.expected.EnableHardFails != c.EnableHardFails {
-				t.Errorf("got: %t, want: %t", c.EnableHardFails, tt.expected.EnableHardFails)
+			if *tt.expected.EnableHardFails != *c.EnableHardFails {
+				t.Errorf("got: %t, want: %t", *c.EnableHardFails, *tt.expected.EnableHardFails)
 			}
 		})
 	}

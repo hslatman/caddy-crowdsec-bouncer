@@ -234,7 +234,7 @@ func (b *Bouncer) Shutdown() error {
 
 	b.stopped = true
 	b.logger.Info("finished", b.zapField())
-	b.logger.Sync()
+	b.logger.Sync() // nolint
 
 	// TODO: clean shutdown of the streaming bouncer channel reading
 	//b.store = nil // TODO(hs): setting this to nil without reinstantiating it, leads to errors; do this properly.
