@@ -1,6 +1,7 @@
 package crowdsec
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -21,6 +22,10 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 
 	if !d.Next() {
 		return nil, d.Err("expected tokens")
+	}
+
+	if d.Val() != "crowdsec" {
+		return nil, d.Err(fmt.Sprintf(`expected "crowdsec"; got %q`, d.Val()))
 	}
 
 	for d.NextBlock(0) {
