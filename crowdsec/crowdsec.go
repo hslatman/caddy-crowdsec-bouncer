@@ -18,8 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
-	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -29,19 +27,9 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 )
 
-var (
-	cfg *config
-)
-
-const (
-	defaultTickerInterval   string = "60s"
-	defaultStreamingEnabled bool   = true
-	defaultHardFailsEnabled bool   = false
-)
-
 func init() {
 	caddy.RegisterModule(CrowdSec{})
-	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCaddyfileGlobalOption)
+	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCrowdSec)
 }
 
 // CaddyModule returns the Caddy module information.
@@ -50,14 +38,6 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 		ID:  "crowdsec",
 		New: func() caddy.Module { return new(CrowdSec) },
 	}
-}
-
-type config struct {
-	APIUrl          string
-	APIKey          string
-	TickerInterval  string
-	EnableStreaming bool
-	EnableHardFails bool
 }
 
 // CrowdSec is a Caddy App that functions as a CrowdSec bouncer. It acts
@@ -70,7 +50,7 @@ type CrowdSec struct {
 	// APIKey for the CrowdSec Local API
 	APIKey string `json:"api_key"`
 	// TickerInterval is the interval the StreamBouncer uses for querying
-	// the CrowdSec Local API. Defaults to "10s".
+	// the CrowdSec Local API. Defaults to "60s".
 	TickerInterval string `json:"ticker_interval,omitempty"`
 	// EnableStreaming indicates whether the StreamBouncer should be used.
 	// If it's false, the LiveBouncer is used. The StreamBouncer keeps
@@ -91,14 +71,20 @@ type CrowdSec struct {
 
 // Provision sets up the CrowdSec app.
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
-
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
 	defer c.logger.Sync() // nolint
 
-	err := c.configure()
-	if err != nil {
-		return err
+	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
+	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
+	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
+	c.TickerInterval = repl.ReplaceKnown(c.TickerInterval, "")
+
+	if c.APIUrl == "" {
+		c.APIUrl = "http://127.0.0.1:8080/"
+	}
+	if c.TickerInterval == "" {
+		c.TickerInterval = "60s"
 	}
 
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
@@ -114,68 +100,16 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		bouncer.EnableHardFails()
 	}
 
-	if err := bouncer.Init(); err != nil {
-		return err
-	}
-
 	c.bouncer = bouncer
 
 	return nil
 }
 
-func (c *CrowdSec) configure() error {
-	if cfg != nil {
-		// A global config is provided through the Caddyfile; always use it
-		// TODO: combine this with the Unmarshaler approach?
-		c.APIUrl = cfg.APIUrl
-		c.APIKey = cfg.APIKey
-		c.TickerInterval = cfg.TickerInterval
-		c.EnableStreaming = &cfg.EnableStreaming
-		c.EnableHardFails = &cfg.EnableHardFails
-	}
-
-	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
-	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
-	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
-
-	s := c.APIUrl
-	u, err := url.Parse(s)
-	if err != nil {
-		return fmt.Errorf("invalid CrowdSec API URL: %e", err)
-	}
-	if u.Scheme == "" {
-		return fmt.Errorf("URL %s does not have a scheme (i.e https)", u.String())
-	}
-	if !strings.HasSuffix(s, "/") {
-		s = s + "/"
-	}
-	c.APIUrl = s
-	if c.APIKey == "" {
-		return errors.New("crowdsec API Key is missing")
-	}
-	if c.TickerInterval == "" {
-		c.TickerInterval = defaultTickerInterval
-	}
-	if c.EnableStreaming == nil {
-		value := defaultStreamingEnabled
-		c.EnableStreaming = &value
-	}
-	if c.EnableHardFails == nil {
-		value := defaultHardFailsEnabled
-		c.EnableHardFails = &value
-	}
-	return nil
-}
-
 // Validate ensures the app's configuration is valid.
 func (c *CrowdSec) Validate() error {
-
-	// TODO: fail hard after provisioning is not correct? Or do it in provisioning already?
-
 	if c.APIKey == "" {
-		return errors.New("crowdsec API Key must not be empty")
+		return errors.New("crowdsec API key must not be empty")
 	}
-
 	if c.bouncer == nil {
 		return errors.New("bouncer instance not available due to (potential) misconfiguration")
 	}
@@ -183,9 +117,22 @@ func (c *CrowdSec) Validate() error {
 	return nil
 }
 
+func (c *CrowdSec) Cleanup() error {
+	if err := c.bouncer.Shutdown(); err != nil {
+		return fmt.Errorf("failed cleaning up: %w", err)
+	}
+
+	return nil
+}
+
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
+	if err := c.bouncer.Init(); err != nil {
+		return err
+	}
+
 	c.bouncer.Run()
+
 	return nil
 }
 
@@ -202,18 +149,18 @@ func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
-	return *c.EnableStreaming
+	return c.EnableStreaming == nil || *c.EnableStreaming
 }
 
 func (c *CrowdSec) shouldFailHard() bool {
-	return *c.EnableHardFails
+	return c.EnableHardFails != nil && *c.EnableHardFails
 }
 
 // Interface guards
 var (
-	_ caddy.Module      = (*CrowdSec)(nil)
-	_ caddy.App         = (*CrowdSec)(nil)
-	_ caddy.Provisioner = (*CrowdSec)(nil)
-	_ caddy.Validator   = (*CrowdSec)(nil)
-	//_ caddyfile.Unmarshaler = (*CrowdSec)(nil)
+	_ caddy.Module       = (*CrowdSec)(nil)
+	_ caddy.App          = (*CrowdSec)(nil)
+	_ caddy.Provisioner  = (*CrowdSec)(nil)
+	_ caddy.Validator    = (*CrowdSec)(nil)
+	_ caddy.CleanerUpper = (*CrowdSec)(nil)
 )
