@@ -12,6 +12,7 @@ require (
 	github.com/mholt/caddy-l4 v0.0.0-20231016112149-a362a1fbf652
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.8.4
+	go.uber.org/goleak v1.2.1
 	go.uber.org/zap v1.26.0
 )
 
@@ -127,7 +128,6 @@ require (
 	go.step.sm/cli-utils v0.8.0 // indirect
 	go.step.sm/crypto v0.36.1 // indirect
 	go.step.sm/linkedca v0.20.1 // indirect
-	go.uber.org/goleak v1.2.1 // indirect
 	go.uber.org/mock v0.3.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.14.0 // indirect

@@ -217,13 +217,15 @@ func (b *Bouncer) Run() {
 func (b *Bouncer) Shutdown() error {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
-	b.logger.Info("stopping", b.zapField())
-	defer func() {
-		b.stopped = true
-	}()
 	if !b.started || b.stopped {
 		return nil
 	}
+	b.logger.Info("stopping", b.zapField())
+	defer func() {
+		b.stopped = true
+		b.logger.Info("finished", b.zapField())
+		b.logger.Sync() // nolint
+	}()
 
 	// the LiveBouncer has nothing to do on shutdown
 	if !b.useStreamingBouncer {
@@ -232,9 +234,6 @@ func (b *Bouncer) Shutdown() error {
 
 	b.cancel()
 	b.wg.Wait()
-
-	b.logger.Info("finished", b.zapField())
-	b.logger.Sync() // nolint
 
 	// TODO: clean shutdown of the streaming bouncer channel reading
 	//b.store = nil // TODO(hs): setting this to nil without reinstantiating it, leads to errors; do this properly.

@@ -35,6 +35,7 @@ func TestCrowdSec_Provision(t *testing.T) {
 	tests := []struct {
 		name      string
 		config    string
+		env       map[string]string
 		assertion func(tt assert.TestingT, c *CrowdSec)
 		wantErr   bool
 	}{
@@ -68,12 +69,35 @@ func TestCrowdSec_Provision(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "json-env-vars",
+			config: `{
+				"api_url": "{env.CROWDSEC_TEST_API_URL}",
+				"api_key": "{env.CROWDSEC_TEST_API_KEY}",
+				"ticker_interval": "{env.CROWDSEC_TEST_TICKER_INTERVAL}"
+			}`,
+			env: map[string]string{
+				"CROWDSEC_TEST_API_URL":         "http://127.0.0.2:8080/",
+				"CROWDSEC_TEST_API_KEY":         "env-test-key",
+				"CROWDSEC_TEST_TICKER_INTERVAL": "25s",
+			},
+			assertion: func(tt assert.TestingT, c *CrowdSec) {
+				assert.Equal(tt, "http://127.0.0.2:8080/", c.APIUrl)
+				assert.Equal(tt, "env-test-key", c.APIKey)
+				assert.Equal(tt, "25s", c.TickerInterval)
+			},
+			wantErr: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var c CrowdSec
 			err := json.Unmarshal([]byte(tt.config), &c)
 			require.NoError(t, err)
+
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
 
 			ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
 			err = c.Provision(ctx)
