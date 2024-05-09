@@ -1,10 +1,3 @@
-version: "3.4"
-
-volumes:
-  caddy-data: {}
-  caddy-config: {}
-  logs: {}
-
 services:
   crowdsec:
     image: crowdsecurity/crowdsec
@@ -25,3 +18,8 @@ services:
       - caddy-config:/config
       - logs:/var/log/caddy
       - ./docker/config.json:/etc/caddy/config.json
+
+volumes:
+  caddy-data:
+  caddy-config:
+  logs:
