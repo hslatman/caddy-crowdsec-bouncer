@@ -183,10 +183,10 @@ Steps to run this demo are as follows:
 
 ```bash
 # run CrowdSec container
-$ docker-compose up -d crowdsec
+$ docker compose up -d crowdsec
 
 # add the Caddy bouncer, generating an API key
-$ docker-compose exec crowdsec cscli bouncers add caddy-bouncer
+$ docker compose exec crowdsec cscli bouncers add caddy-bouncer
 
 # copy and paste the API key in the ./docker/config.json file
 # below is the git diff after changing the appropriate line:
@@ -196,10 +196,10 @@ $ git diff
 + "api_key": "9e4ac94cf9aebaa3625a1d51951230a9",
 
 # run Caddy; at first run a custom build will be created using xcaddy
-$ docker-compose up -d caddy
+$ docker compose up -d caddy
 
 # tail the logs
-$ docker-compose logs -tf
+$ docker compose logs -tf
 ```
 
 You can then access https://localhost:9443 and https://localhost:8443.
