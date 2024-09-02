@@ -1,14 +1,17 @@
 {
-    debug
-    crowdsec {
-        api_url http://localhost:8080
-        api_key <api_key>
-    }
+	log {
+		level DEBUG
+	}
+	crowdsec {
+		api_url http://localhost:7080
+		api_key {env.CROWDSEC_API_KEY}
+		ticker_interval 3s
+	}
 }
 
 localhost {
-    route {
-        crowdsec
-        respond "Allowed by CrowdSec!"
-    }
+	route {
+		crowdsec
+		respond "Allowed by CrowdSec!"
+	}
 }

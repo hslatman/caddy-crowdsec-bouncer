@@ -18,6 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
+	"runtime/debug"
+	"slices"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -113,8 +117,108 @@ func (c *CrowdSec) Validate() error {
 	if c.bouncer == nil {
 		return errors.New("bouncer instance not available due to (potential) misconfiguration")
 	}
+	if err := c.checkModules(); err != nil {
+		return fmt.Errorf("failed checking CrowdSec modules: %w", err)
+	}
 
 	return nil
+}
+
+const (
+	handlerName = "http.handlers.crowdsec"
+	matcherName = "layer4.matchers.crowdsec"
+)
+
+var crowdSecModules = []string{handlerName, matcherName}
+
+func (c *CrowdSec) checkModules() error {
+	modules, err := matchModules(crowdSecModules...)
+	if err != nil {
+		return fmt.Errorf("failed retrieving CrowdSec modules: %w", err)
+	}
+
+	layer4, err := matchModules("layer4")
+	if err != nil {
+		return fmt.Errorf("failed retrieving layer4 module: %w", err)
+	}
+
+	hasLayer4 := len(layer4) > 0
+	switch {
+	case hasLayer4 && len(modules) == 0:
+		c.logger.Warn(fmt.Sprintf("%s and %s modules are not available", handlerName, matcherName))
+	case hasLayer4 && hasModule(modules, matcherName) && !hasModule(modules, handlerName):
+		c.logger.Warn(fmt.Sprintf("%s module is not available", handlerName))
+	case hasLayer4 && hasModule(modules, handlerName) && !hasModule(modules, matcherName):
+		c.logger.Warn(fmt.Sprintf("%s module is not available", matcherName))
+	case len(modules) == 0:
+		c.logger.Warn(fmt.Sprintf("%s module is not available", handlerName))
+	}
+
+	return nil
+}
+
+type moduleInfo struct {
+	caddyModuleID string
+	standard      bool
+	goModule      *debug.Module
+	err           error
+}
+
+func hasModule(modules []moduleInfo, moduleIdentifier string) bool {
+	for _, m := range modules {
+		if m.caddyModuleID == moduleIdentifier {
+			return true
+		}
+	}
+	return false
+}
+
+func matchModules(moduleIdentifiers ...string) (modules []moduleInfo, err error) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		err = fmt.Errorf("no build info")
+		return
+	}
+
+	for _, modID := range caddy.Modules() {
+		if !slices.Contains(moduleIdentifiers, modID) {
+			continue
+		}
+
+		modInfo, err := caddy.GetModule(modID)
+		if err != nil {
+			modules = append(modules, moduleInfo{caddyModuleID: modID, err: err})
+			continue
+		}
+
+		// to get the Caddy plugin's version info, we need to know
+		// the package that the Caddy module's value comes from; we
+		// can use reflection but we need a non-pointer value (I'm
+		// not sure why), and since New() should return a pointer
+		// value, we need to dereference it first
+		iface := any(modInfo.New())
+		if rv := reflect.ValueOf(iface); rv.Kind() == reflect.Ptr {
+			iface = reflect.New(reflect.TypeOf(iface).Elem()).Elem().Interface()
+		}
+		modPkgPath := reflect.TypeOf(iface).PkgPath()
+
+		// now we find the Go module that the Caddy module's package
+		// belongs to; we assume the Caddy module package path will
+		// be prefixed by its Go module path, and we will choose the
+		// longest matching prefix in case there are nested modules
+		var matched *debug.Module
+		for _, dep := range bi.Deps {
+			if strings.HasPrefix(modPkgPath, dep.Path) {
+				if matched == nil || len(dep.Path) > len(matched.Path) {
+					matched = dep
+				}
+			}
+		}
+
+		standard := strings.HasPrefix(modPkgPath, caddy.ImportPath)
+		modules = append(modules, moduleInfo{caddyModuleID: modID, standard: standard, goModule: matched})
+	}
+	return
 }
 
 func (c *CrowdSec) Cleanup() error {
