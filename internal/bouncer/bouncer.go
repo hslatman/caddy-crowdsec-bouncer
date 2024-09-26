@@ -25,13 +25,19 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	"github.com/crowdsecurity/go-cs-lib/ptr"
+	"github.com/sirupsen/logrus"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-const version = "v0.6.0"
-const maxNumberOfDecisionsToLog = 10
+const (
+	userAgentName    = "caddy-cs-bouncer"
+	userAgentVersion = "v0.7.0"
+
+	maxNumberOfDecisionsToLog = 10
+)
 
 // Bouncer is a wrapper for a CrowdSec bouncer. It supports both the the
 // streaming and live bouncer implementations. The streaming bouncer is
@@ -40,6 +46,7 @@ const maxNumberOfDecisionsToLog = 10
 type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
+	metricsProvider     *csbouncer.MetricsProvider
 	store               *crowdSecStore
 	logger              *zap.Logger
 	useStreamingBouncer bool
@@ -47,18 +54,19 @@ type Bouncer struct {
 	instantiatedAt      time.Time
 	instanceID          string
 
-	ctx     context.Context
-	started bool
-	stopped bool
-	startMu sync.Mutex
-	cancel  context.CancelFunc
-	wg      *sync.WaitGroup
+	ctx       context.Context
+	started   bool
+	stopped   bool
+	startedAt time.Time
+	startMu   sync.Mutex
+	cancel    context.CancelFunc
+	wg        *sync.WaitGroup
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 // TODO: take a configuration struct instead, because more options will be added.
 func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := fmt.Sprintf("caddy-cs-bouncer/%s", version)
+	userAgent := fmt.Sprintf("%s/%s", userAgentName, userAgentVersion)
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -94,6 +102,7 @@ func generateInstanceID(t time.Time) (string, error) {
 	if _, err := r.Read(b[:]); err != nil {
 		return "", err
 	}
+
 	return hex.EncodeToString(b[:]), nil
 }
 
@@ -113,20 +122,98 @@ func (b *Bouncer) zapField() zapcore.Field {
 	return zap.String("instance_id", b.instanceID)
 }
 
+func (b *Bouncer) updateMetrics(m *models.RemediationComponentsMetrics, interval time.Duration) {
+
+	m.Name = userAgentName // instance ID? Is name provided when creating bouncer in CrowdSec, it seems
+	m.Version = ptr.Of(userAgentVersion)
+	m.Type = userAgentName
+	m.UtcStartupTimestamp = ptr.Of(b.startedAt.UTC().Unix())
+
+	activeDecisions := "active_decisions" // TODO: specific values allowed? Seem to be Prometheus metrics, though
+	value := float64(20)                  // TODO: track and get actual number; per origin and type?
+	origin := "127.0.0.30"                // TODO: bouncer IP? Or original source of decisions?
+	ipType := "ipv4"                      // TODO: IP type from bouncer?
+
+	metric := &models.DetailedMetrics{
+		Meta: &models.MetricsMeta{
+			UtcNowTimestamp:   ptr.Of(time.Now().Unix()),
+			WindowSizeSeconds: ptr.Of(int64(interval.Seconds())),
+		},
+		Items: []*models.MetricsDetailItem{
+			{
+				Name:  ptr.Of(activeDecisions),
+				Value: ptr.Of(value),
+				Labels: map[string]string{
+					"origin":  origin,
+					"ip_type": ipType,
+				},
+				Unit: ptr.Of("ip"),
+			},
+		},
+	}
+
+	m.Metrics = append(m.Metrics, metric)
+}
+
 // Init initializes the Bouncer
 func (b *Bouncer) Init() error {
 	// override CrowdSec's default logrus logging
 	b.overrideLogrusLogger()
 
+	// TODO: make metrics gathering/integration optional? I.e. if the metrics
+	// interval is configured to be 0 or smaller, don't start the metrics
+	// provider? Separate setting for gathering metrics vs. pushing to LAPI?
+	metricsInterval := 10 * time.Second
+
 	// initialize the CrowdSec live bouncer
 	if !b.useStreamingBouncer {
 		b.logger.Info("initializing live bouncer", b.zapField())
-		return b.liveBouncer.Init()
+		if err := b.liveBouncer.Init(); err != nil {
+			return err
+		}
+
+		b.liveBouncer.MetricsInterval = metricsInterval
+
+		m, err := csbouncer.NewMetricsProvider(
+			b.liveBouncer.APIClient,
+			userAgentName,
+			b.updateMetrics,
+			logrus.StandardLogger(), // TODO: move around?
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating metrics provider: %w", err)
+		}
+
+		m.Interval = metricsInterval
+
+		b.metricsProvider = m
+
+		return nil
 	}
 
 	// initialize the CrowdSec streaming bouncer
 	b.logger.Info("initializing streaming bouncer", b.zapField())
-	return b.streamingBouncer.Init()
+	if err := b.streamingBouncer.Init(); err != nil {
+		return err
+	}
+
+	b.streamingBouncer.MetricsInterval = metricsInterval
+
+	m, err := csbouncer.NewMetricsProvider(
+		b.streamingBouncer.APIClient,
+		userAgentName,
+		b.updateMetrics,
+		logrus.StandardLogger(), // TODO: move around?
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating metrics provider: %w", err)
+	}
+
+	m.Interval = metricsInterval
+
+	b.metricsProvider = m
+
+	return nil
 }
 
 // Run starts the Bouncer processes
@@ -136,20 +223,39 @@ func (b *Bouncer) Run() {
 	if b.started {
 		return
 	}
-	b.started = true
-	b.logger.Info("started", b.zapField())
 
-	// the LiveBouncer has nothing to run in the background; return early
-	if !b.useStreamingBouncer {
-		return
-	}
+	b.started = true
+	b.startedAt = time.Now()
+	b.logger.Info("started", b.zapField())
 
 	b.wg = &sync.WaitGroup{}
 	b.ctx, b.cancel = context.WithCancel(context.Background())
 
+	// the LiveBouncer has nothing to run in the background; return early
+	if !b.useStreamingBouncer {
+		// TODO: deduplicate this logic; helper function?
+
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+
+			b.logger.Debug("starting metrics provider", b.zapField())
+			if err := b.metricsProvider.Run(b.ctx); err != nil {
+				if err.Error() == "metric provider halted" {
+					b.logger.Info("metrics provider stopped", b.zapField())
+				} else {
+					b.logger.Error("failed running metrics provider", b.zapField(), zap.Error(err))
+				}
+			}
+		}()
+
+		return
+	}
+
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
+		b.logger.Debug("starting streaming bouncer", b.zapField())
 		b.streamingBouncer.Run(b.ctx)
 	}()
 
@@ -163,6 +269,9 @@ func (b *Bouncer) Run() {
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
+
+		b.logger.Debug("starting decision processing", b.zapField())
+
 		for {
 			select {
 			case <-b.ctx.Done():
@@ -211,6 +320,20 @@ func (b *Bouncer) Run() {
 			}
 		}
 	}()
+
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+
+		b.logger.Debug("starting metrics provider", b.zapField())
+		if err := b.metricsProvider.Run(b.ctx); err != nil {
+			if err.Error() == "metric provider halted" {
+				b.logger.Info("metrics provider stopped", b.zapField())
+			} else {
+				b.logger.Error("failed running metrics provider", b.zapField(), zap.Error(err))
+			}
+		}
+	}()
 }
 
 // Shutdown stops the Bouncer
@@ -220,6 +343,7 @@ func (b *Bouncer) Shutdown() error {
 	if !b.started || b.stopped {
 		return nil
 	}
+
 	b.logger.Info("stopping", b.zapField())
 	defer func() {
 		b.stopped = true
@@ -227,10 +351,11 @@ func (b *Bouncer) Shutdown() error {
 		b.logger.Sync() // nolint
 	}()
 
-	// the LiveBouncer has nothing to do on shutdown
-	if !b.useStreamingBouncer {
-		return nil
-	}
+	// TODO: verify this is OK
+	// // the LiveBouncer has nothing to do on shutdown
+	// if !b.useStreamingBouncer {
+	// 	return nil
+	// }
 
 	b.cancel()
 	b.wg.Wait()
