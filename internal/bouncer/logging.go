@@ -38,6 +38,10 @@ func (b *Bouncer) overrideLogrusLogger() {
 	std.ReplaceHooks(hooks)
 }
 
+func (b *Bouncer) zapField() zapcore.Field {
+	return zap.String("instance_id", b.instanceID)
+}
+
 type zapAdapterHook struct {
 	logger         *zap.Logger
 	shouldFailHard bool
@@ -106,3 +110,7 @@ var levelAdapter = map[logrus.Level]zapcore.Level{
 }
 
 var _ logrus.Hook = (*zapAdapterHook)(nil)
+
+func newMetricsLogger() *logrus.Logger {
+	return logrus.StandardLogger()
+}

@@ -1,7 +1,7 @@
 package bouncer
 
 import (
-	"fmt"
+	"context"
 	"net"
 	"net/url"
 	"regexp"
@@ -12,12 +12,12 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jarcoal/httpmock"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 )
 
-func new(t *testing.T) (*Bouncer, error) {
+func newBouncer(t *testing.T) (*Bouncer, error) {
+	t.Helper()
 
 	key := "apiKey"
 	host := "http://127.0.0.1:8080/"
@@ -25,9 +25,7 @@ func new(t *testing.T) (*Bouncer, error) {
 	logger := zaptest.NewLogger(t)
 
 	bouncer, err := New(key, host, tickerInterval, logger)
-	if err != nil {
-		return nil, err
-	}
+	require.NoError(t, err)
 
 	bouncer.EnableStreaming()
 
@@ -35,9 +33,8 @@ func new(t *testing.T) (*Bouncer, error) {
 	bouncer.streamingBouncer.Stream = make(chan *models.DecisionsStreamResponse)
 
 	apiURL, err := url.Parse(bouncer.streamingBouncer.APIUrl)
-	if err != nil {
-		return nil, fmt.Errorf("local API Url %q: %w", bouncer.streamingBouncer.APIUrl, err)
-	}
+	require.NoError(t, err, "local API Url %q", bouncer.streamingBouncer.APIUrl)
+
 	transport := &apiclient.APIKeyTransport{
 		APIKey:    bouncer.streamingBouncer.APIKey,
 		Transport: httpmock.DefaultTransport, // crucial for httpmock to work correctly
@@ -48,14 +45,12 @@ func new(t *testing.T) (*Bouncer, error) {
 	// Transport in the APIKeyTransport and waiting a bit before the bouncer is ran. This results in
 	// the goal of ensuring the bouncer gets mocked decisions.
 	bouncer.streamingBouncer.APIClient, err = apiclient.NewDefaultClient(apiURL, "v1", bouncer.streamingBouncer.UserAgent, transport.Client())
-	if err != nil {
-		return nil, fmt.Errorf("api client init: %w", err)
-	}
+	require.NoError(t, err)
 
 	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse duration %q: %w", bouncer.streamingBouncer.TickerInterval, err)
-	}
+	require.NoError(t, err)
+
+	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, bouncer.updateMetrics, time.Minute)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
@@ -129,11 +124,8 @@ func decisions() *models.DecisionsStreamResponse {
 }
 
 func TestStreamingBouncer(t *testing.T) {
-
-	b, err := new(t)
-	if err != nil {
-		t.Fatal(err)
-	}
+	b, err := newBouncer(t)
+	require.NoError(t, err)
 
 	// activate httpmock so that responses can be mocked
 	httpmock.Activate()
@@ -147,7 +139,7 @@ func TestStreamingBouncer(t *testing.T) {
 	// run the bouncer; makes it make a call to the mocked CrowdSec API
 	// this should be called after the httpmock is activated, because otherwise the bouncer
 	// will try to call an actual CrowdSec instance
-	b.Run()
+	b.Run(context.Background())
 
 	// allow the bouncer a bit of time to retrieve and store the mocked rules
 	time.Sleep(1 * time.Second)
@@ -234,5 +226,5 @@ func TestStreamingBouncer(t *testing.T) {
 func Test_generateInstanceID(t *testing.T) {
 	id, err := generateInstanceID(time.Now())
 	require.NoError(t, err)
-	assert.Len(t, id, 8)
+	require.Len(t, id, 8)
 }
