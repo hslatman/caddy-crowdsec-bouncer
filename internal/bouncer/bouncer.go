@@ -36,15 +36,15 @@ const (
 	maxNumberOfDecisionsToLog = 10
 )
 
-// Bouncer is a wrapper for a CrowdSec bouncer. It supports both the the
+// Bouncer is a wrapper for a CrowdSec bouncer. It supports both the
 // streaming and live bouncer implementations. The streaming bouncer is
 // backed by an immutable radix tree storing known bad IPs and IP ranges.
-// The live bouncer will reach out to the CrowdSec agent on every check.
+// The live bouncer will reach out to the CrowdSec LAPI on every check.
 type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	metricsProvider     *csbouncer.MetricsProvider
-	store               *crowdSecStore
+	store               *store
 	logger              *zap.Logger
 	useStreamingBouncer bool
 	shouldFailHard      bool

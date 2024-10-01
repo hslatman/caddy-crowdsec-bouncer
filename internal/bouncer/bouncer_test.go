@@ -58,7 +58,6 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 }
 
 func decisions() *models.DecisionsStreamResponse {
-
 	duration := "120s"
 	source := "cscli"
 	scenario := "manual ban ..."
