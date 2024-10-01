@@ -1,6 +1,7 @@
 package bouncer
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
@@ -147,7 +148,7 @@ func TestStreamingBouncer(t *testing.T) {
 	// run the bouncer; makes it make a call to the mocked CrowdSec API
 	// this should be called after the httpmock is activated, because otherwise the bouncer
 	// will try to call an actual CrowdSec instance
-	b.Run()
+	b.Run(context.Background())
 
 	// allow the bouncer a bit of time to retrieve and store the mocked rules
 	time.Sleep(1 * time.Second)

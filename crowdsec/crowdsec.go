@@ -15,6 +15,7 @@
 package crowdsec
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -235,7 +236,7 @@ func (c *CrowdSec) Start() error {
 		return err
 	}
 
-	c.bouncer.Run()
+	c.bouncer.Run(context.Background())
 
 	return nil
 }
