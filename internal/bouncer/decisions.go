@@ -28,7 +28,7 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 
 		for {
 			select {
-			case <-b.ctx.Done():
+			case <-ctx.Done():
 				b.logger.Info("processing new and deleted decisions stopped", b.zapField())
 				return
 			case decisions := <-b.streamingBouncer.Stream:
