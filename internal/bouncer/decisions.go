@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
@@ -95,7 +96,9 @@ func (b *Bouncer) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 
-func (b *Bouncer) retrieveDecision(ip net.IP) (*models.Decision, error) {
+func (b *Bouncer) retrieveDecision(ipAddr netip.Addr) (*models.Decision, error) {
+	ip := net.IP(ipAddr.AsSlice()) // TODO: feed through netip.Addr fully
+
 	if b.useStreamingBouncer {
 		return b.store.get(ip)
 	}

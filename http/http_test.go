@@ -16,9 +16,9 @@ package http
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -47,14 +47,14 @@ func Test_determineIPFromRequest(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    args
-		want    net.IP
+		want    netip.Addr
 		wantErr bool
 	}{
-		{"ok", args{r.WithContext(okCtx)}, net.ParseIP("127.0.0.1"), false},
-		{"no-ip", args{r.WithContext(noIPCtx)}, nil, true},
-		{"wrong-type", args{r.WithContext(wrongTypeCtx)}, nil, true},
-		{"empty-ip", args{r.WithContext(emptyIPCtx)}, nil, true},
-		{"invalid-ip", args{r.WithContext(invalidIPCtx)}, nil, true},
+		{"ok", args{r.WithContext(okCtx)}, netip.MustParseAddr("127.0.0.1"), false},
+		{"no-ip", args{r.WithContext(noIPCtx)}, netip.Addr{}, true},
+		{"wrong-type", args{r.WithContext(wrongTypeCtx)}, netip.Addr{}, true},
+		{"empty-ip", args{r.WithContext(emptyIPCtx)}, netip.Addr{}, true},
+		{"invalid-ip", args{r.WithContext(invalidIPCtx)}, netip.Addr{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

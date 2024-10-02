@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"reflect"
 	"runtime/debug"
 	"slices"
@@ -248,7 +248,7 @@ func (c *CrowdSec) Stop() error {
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request
-func (c *CrowdSec) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
+func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	// TODO: check if running? fully loaded, etc?
 	return c.bouncer.IsAllowed(ip)
 }

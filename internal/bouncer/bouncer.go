@@ -19,7 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
-	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -201,8 +201,7 @@ func (b *Bouncer) Shutdown() error {
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
-
+func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
 	decision, err := b.retrieveDecision(ip)
