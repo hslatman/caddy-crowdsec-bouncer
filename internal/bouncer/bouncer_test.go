@@ -2,7 +2,7 @@ package bouncer
 
 import (
 	"context"
-	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"testing"
@@ -58,7 +58,6 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 }
 
 func decisions() *models.DecisionsStreamResponse {
-
 	duration := "120s"
 	source := "cscli"
 	scenario := "manual ban ..."
@@ -145,7 +144,7 @@ func TestStreamingBouncer(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	type args struct {
-		ip net.IP
+		ip netip.Addr
 	}
 	tests := []struct {
 		name    string
@@ -156,7 +155,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "127.0.0.1 not allowed",
 			args: args{
-				ip: net.ParseIP("127.0.0.1"),
+				ip: netip.MustParseAddr("127.0.0.1"),
 			},
 			want:    false,
 			wantErr: false,
@@ -164,7 +163,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "127.0.0.2 not allowed",
 			args: args{
-				ip: net.ParseIP("127.0.0.2"),
+				ip: netip.MustParseAddr("127.0.0.2"),
 			},
 			want:    false,
 			wantErr: false,
@@ -172,7 +171,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "127.0.0.3 allowed",
 			args: args{
-				ip: net.ParseIP("127.0.0.3"),
+				ip: netip.MustParseAddr("127.0.0.3"),
 			},
 			want:    true,
 			wantErr: false,
@@ -180,7 +179,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "10.0.0.1/24 (10.0.0.1) not allowed",
 			args: args{
-				ip: net.ParseIP("10.0.0.1"),
+				ip: netip.MustParseAddr("10.0.0.1"),
 			},
 			want:    false,
 			wantErr: false,
@@ -188,7 +187,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "10.0.1.0 allowed",
 			args: args{
-				ip: net.ParseIP("10.0.1.0"),
+				ip: netip.MustParseAddr("10.0.1.0"),
 			},
 			want:    true,
 			wantErr: false,
@@ -196,7 +195,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "128.0.0.1 not allowed",
 			args: args{
-				ip: net.ParseIP("128.0.0.1"),
+				ip: netip.MustParseAddr("128.0.0.1"),
 			},
 			want:    false,
 			wantErr: false,
@@ -204,7 +203,7 @@ func TestStreamingBouncer(t *testing.T) {
 		{
 			name: "129.0.0.1 allowed",
 			args: args{
-				ip: net.ParseIP("129.0.0.1"),
+				ip: netip.MustParseAddr("129.0.0.1"),
 			},
 			want:    true,
 			wantErr: false,

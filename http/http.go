@@ -17,8 +17,8 @@ package http
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -74,7 +74,6 @@ func (h *Handler) Validate() error {
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-
 	ipToCheck, err := determineIPFromRequest(r)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
@@ -149,25 +148,26 @@ func writeThrottleResponse(w http.ResponseWriter, duration string) error {
 // Caddy extracts from the original request and stores in the request context.
 // Support for setting the real client IP in case a proxy sits in front of
 // Caddy was added, so the client IP reported here is the actual client IP.
-func determineIPFromRequest(r *http.Request) (net.IP, error) {
+func determineIPFromRequest(r *http.Request) (netip.Addr, error) {
+	zero := netip.Addr{}
 	clientIPVar := caddyhttp.GetVar(r.Context(), caddyhttp.ClientIPVarKey)
 	if clientIPVar == nil {
-		return nil, errors.New("failed getting client IP from context")
+		return zero, errors.New("failed getting client IP from context")
 	}
 
 	var clientIP string
 	var ok bool
 	if clientIP, ok = clientIPVar.(string); !ok {
-		return nil, fmt.Errorf("client IP from request context is invalid type %T", clientIPVar)
+		return zero, fmt.Errorf("client IP from request context is invalid type %T", clientIPVar)
 	}
 
 	if clientIP == "" {
-		return nil, errors.New("client IP from request context is empty")
+		return zero, errors.New("client IP from request context is empty")
 	}
 
-	ip := net.ParseIP(clientIP)
-	if ip == nil {
-		return nil, fmt.Errorf("could not parse %q into net.IP", clientIP)
+	ip, err := netip.ParseAddr(clientIP)
+	if err != nil {
+		return zero, fmt.Errorf("could not parse %q into netip.Addr", clientIP)
 	}
 
 	return ip, nil

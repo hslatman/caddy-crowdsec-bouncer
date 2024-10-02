@@ -19,7 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
-	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -36,15 +36,15 @@ const (
 	maxNumberOfDecisionsToLog = 10
 )
 
-// Bouncer is a wrapper for a CrowdSec bouncer. It supports both the the
+// Bouncer is a wrapper for a CrowdSec bouncer. It supports both the
 // streaming and live bouncer implementations. The streaming bouncer is
 // backed by an immutable radix tree storing known bad IPs and IP ranges.
-// The live bouncer will reach out to the CrowdSec agent on every check.
+// The live bouncer will reach out to the CrowdSec LAPI on every check.
 type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	metricsProvider     *csbouncer.MetricsProvider
-	store               *crowdSecStore
+	store               *store
 	logger              *zap.Logger
 	useStreamingBouncer bool
 	shouldFailHard      bool
@@ -201,8 +201,7 @@ func (b *Bouncer) Shutdown() error {
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Bouncer) IsAllowed(ip net.IP) (bool, *models.Decision, error) {
-
+func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
 	decision, err := b.retrieveDecision(ip)

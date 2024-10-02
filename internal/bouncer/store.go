@@ -19,20 +19,20 @@ import (
 	"net"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
-	"github.com/hslatman/ipstore/pkg/ipstore"
+	"github.com/hslatman/ipstore"
 )
 
-type crowdSecStore struct {
+type store struct {
 	store *ipstore.Store
 }
 
-func newStore() *crowdSecStore {
-	return &crowdSecStore{
+func newStore() *store {
+	return &store{
 		store: ipstore.New(),
 	}
 }
 
-func (s *crowdSecStore) add(decision *models.Decision) error {
+func (s *store) add(decision *models.Decision) error {
 	if isInvalid(decision) {
 		return nil
 	}
@@ -58,8 +58,7 @@ func (s *crowdSecStore) add(decision *models.Decision) error {
 	}
 }
 
-func (s *crowdSecStore) delete(decision *models.Decision) error {
-
+func (s *store) delete(decision *models.Decision) error {
 	if isInvalid(decision) {
 		return nil
 	}
@@ -87,8 +86,7 @@ func (s *crowdSecStore) delete(decision *models.Decision) error {
 	}
 }
 
-func (s *crowdSecStore) get(key net.IP) (*models.Decision, error) {
-
+func (s *store) get(key net.IP) (*models.Decision, error) {
 	r, err := s.store.Get(key)
 	if err != nil {
 		return nil, err
@@ -137,7 +135,6 @@ func parseIP(value string) (net.IP, error) {
 // valid, meaning that it's not pointing to nil and has a
 // Scope, Value and Type set, the minimum required to operate
 func isInvalid(d *models.Decision) bool {
-
 	if d == nil {
 		return true
 	}

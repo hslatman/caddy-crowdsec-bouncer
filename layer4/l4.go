@@ -17,6 +17,7 @@ package layer4
 import (
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
@@ -89,18 +90,16 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 
 // getClientIP determines the IP of the client connecting
 // Implementation taken from github.com/mholt/caddy-l4/layer4/matchers.go
-func (m Matcher) getClientIP(cx *l4.Connection) (net.IP, error) {
-
+func (m Matcher) getClientIP(cx *l4.Connection) (netip.Addr, error) {
 	remote := cx.Conn.RemoteAddr().String()
-
 	ipStr, _, err := net.SplitHostPort(remote)
 	if err != nil {
 		ipStr = remote
 	}
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return nil, fmt.Errorf("invalid client IP address: %s", ipStr)
+	ip, err := netip.ParseAddr(ipStr)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("invalid client IP address: %s", ipStr)
 	}
 
 	return ip, nil
