@@ -15,7 +15,7 @@
 package bouncer
 
 import (
-	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
@@ -72,7 +72,7 @@ func TestStore(t *testing.T) {
 		Scenario: &scenario,
 		Scope:    &scopeIP,
 		Type:     &typ,
-		Value:    &value4,
+		Value:    &value4, // ip in range notation
 	}
 
 	d5 := &models.Decision{
@@ -96,8 +96,9 @@ func TestStore(t *testing.T) {
 	require.NoError(t, err)
 	err = s.add(d5)
 	require.Error(t, err)
+	require.Equal(t, 4, s.store.Len())
 
-	ip1 := net.ParseIP(value1)
+	ip1 := netip.MustParseAddr(value1)
 	r1, err := s.get(ip1)
 	require.NoError(t, err)
 	require.NotNil(t, r1)
