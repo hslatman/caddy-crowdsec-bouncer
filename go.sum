@@ -203,6 +203,8 @@ github.com/groob/finalizer v0.0.0-20170707115354-4c2ed49aabda/go.mod h1:MyndkAZd
 github.com/hashicorp/hcl v1.0.0/go.mod h1:E5yfLk+7swimpb2L/Alb/PJmXilQ/rhwaUYs4T20WEQ=
 github.com/hslatman/ipstore v0.2.1-0.20241003102639-77b98e171659 h1:kkKqw+NR37yM2LSz2n4KDrk7euiWKDxW7Uy2okVpv98=
 github.com/hslatman/ipstore v0.2.1-0.20241003102639-77b98e171659/go.mod h1:fUg+lu09+OKKllPSRSvE6OdJ8AZB4sAjHxqW6QChpmU=
+github.com/hslatman/ipstore v0.3.0 h1:3lUtYZMDGRdDePFFL2wUIrpHqMsqzJEluDnQwt43cfs=
+github.com/hslatman/ipstore v0.3.0/go.mod h1:fUg+lu09+OKKllPSRSvE6OdJ8AZB4sAjHxqW6QChpmU=
 github.com/huandu/xstrings v1.3.3/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq4ovT0aE=
 github.com/huandu/xstrings v1.4.0 h1:D17IlohoQq4UcpqD7fDk80P7l+lwAmlFaBHgOipl2FU=
 github.com/huandu/xstrings v1.4.0/go.mod h1:y5/lhBue+AyNmUVz9RLU9xbLR0o4KIIExikq4ovT0aE=

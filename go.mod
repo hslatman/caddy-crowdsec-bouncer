@@ -8,7 +8,7 @@ require (
 	github.com/crowdsecurity/go-cs-bouncer v0.0.14
 	github.com/crowdsecurity/go-cs-lib v0.0.15
 	github.com/google/go-cmp v0.6.0
-	github.com/hslatman/ipstore v0.2.1-0.20241003102639-77b98e171659
+	github.com/hslatman/ipstore v0.3.0
 	github.com/jarcoal/httpmock v1.3.1
 	github.com/mholt/caddy-l4 v0.0.0-20231016112149-a362a1fbf652
 	github.com/sirupsen/logrus v1.9.3
