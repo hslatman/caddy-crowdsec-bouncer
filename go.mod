@@ -1,6 +1,6 @@
 module github.com/hslatman/caddy-crowdsec-bouncer
 
-go 1.22
+go 1.22.0
 
 require (
 	github.com/caddyserver/caddy/v2 v2.7.5
@@ -8,7 +8,7 @@ require (
 	github.com/crowdsecurity/go-cs-bouncer v0.0.14
 	github.com/crowdsecurity/go-cs-lib v0.0.15
 	github.com/google/go-cmp v0.6.0
-	github.com/hslatman/ipstore v0.2.0
+	github.com/hslatman/ipstore v0.3.0
 	github.com/jarcoal/httpmock v1.3.1
 	github.com/mholt/caddy-l4 v0.0.0-20231016112149-a362a1fbf652
 	github.com/sirupsen/logrus v1.9.3
@@ -31,6 +31,7 @@ require (
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bits-and-blooms/bitset v1.14.3 // indirect
 	github.com/blackfireio/osinfo v1.0.5 // indirect
 	github.com/caddyserver/certmagic v0.19.2 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
@@ -45,6 +46,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/expr-lang/expr v1.16.9 // indirect
 	github.com/fatih/color v1.17.0 // indirect
+	github.com/gaissmai/bart v0.13.0 // indirect
 	github.com/go-kit/kit v0.13.0 // indirect
 	github.com/go-kit/log v0.2.1 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
@@ -69,7 +71,6 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/pprof v0.0.0-20231101202521-4ca4178f5c7a // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/hslatman/cidranger v1.0.3-0.20210102151717-b2292da972c3 // indirect
 	github.com/huandu/xstrings v1.4.0 // indirect
 	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

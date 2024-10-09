@@ -3,7 +3,6 @@ package bouncer
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
@@ -96,9 +95,7 @@ func (b *Bouncer) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 
-func (b *Bouncer) retrieveDecision(ipAddr netip.Addr) (*models.Decision, error) {
-	ip := net.IP(ipAddr.AsSlice()) // TODO: feed through netip.Addr fully
-
+func (b *Bouncer) retrieveDecision(ip netip.Addr) (*models.Decision, error) {
 	if b.useStreamingBouncer {
 		return b.store.get(ip)
 	}

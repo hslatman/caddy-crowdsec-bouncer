@@ -16,19 +16,19 @@ package bouncer
 
 import (
 	"fmt"
-	"net"
+	"net/netip"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/hslatman/ipstore"
 )
 
 type store struct {
-	store *ipstore.Store
+	store *ipstore.Store[*models.Decision]
 }
 
 func newStore() *store {
 	return &store{
-		store: ipstore.New(),
+		store: ipstore.New[*models.Decision](),
 	}
 }
 
@@ -48,11 +48,11 @@ func (s *store) add(decision *models.Decision) error {
 		}
 		return s.store.Add(ip, decision)
 	case "Range":
-		_, net, err := net.ParseCIDR(value)
+		prf, err := netip.ParsePrefix(value)
 		if err != nil {
 			return err
 		}
-		return s.store.AddCIDR(*net, decision)
+		return s.store.AddCIDR(prf, decision)
 	default:
 		return fmt.Errorf("got unhandled scope: %s", scope)
 	}
@@ -75,18 +75,18 @@ func (s *store) delete(decision *models.Decision) error {
 		_, err = s.store.Remove(ip)
 		return err
 	case "Range":
-		_, net, err := net.ParseCIDR(value)
+		prf, err := netip.ParsePrefix(value)
 		if err != nil {
 			return err
 		}
-		_, err = s.store.RemoveCIDR(*net)
+		_, err = s.store.RemoveCIDR(prf)
 		return err
 	default:
 		return fmt.Errorf("got unhandled scope: %s", scope)
 	}
 }
 
-func (s *store) get(key net.IP) (*models.Decision, error) {
+func (s *store) get(key netip.Addr) (*models.Decision, error) {
 	r, err := s.store.Get(key)
 	if err != nil {
 		return nil, err
@@ -102,31 +102,27 @@ func (s *store) get(key net.IP) (*models.Decision, error) {
 	// means that the IP should not be allowed, so it's relatively safe to use
 	// the first, but there may be 'softer' Decisions that should actually take
 	// precedence.
-	first, ok := r[0].(*models.Decision)
-	if !ok {
-		return nil, fmt.Errorf("invalid type retrieved from store")
-	}
 
-	return first, err
+	return r[0], err
 }
 
 // parseIP parses a value
-func parseIP(value string) (net.IP, error) {
+func parseIP(value string) (netip.Addr, error) {
 	var err error
-	var ip net.IP
-	var nw *net.IPNet
-	ip = net.ParseIP(value)
-	if ip == nil {
+	var ip netip.Addr
+	ip, err = netip.ParseAddr(value)
+	if err != nil || !ip.IsValid() {
 		// try parsing as CIDR instead as fallback
-		ip, nw, err = net.ParseCIDR(value)
+		prf, err := netip.ParsePrefix(value)
 		if err != nil {
-			return nil, err
+			return netip.Addr{}, err
 		}
 		// expect all bits to be ones for an IP; otherwise this is probably a range
-		ones, bits := nw.Mask.Size()
+		ones, bits := prf.Bits(), prf.Addr().BitLen()
 		if ones != bits {
-			return nil, fmt.Errorf("%s seems to be a range instead of an IP", value)
+			return netip.Addr{}, fmt.Errorf("%s seems to be a range instead of an IP", value)
 		}
+		ip = prf.Addr()
 	}
 	return ip, nil
 }
