@@ -20,6 +20,7 @@ import (
 	"net/netip"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	l4 "github.com/mholt/caddy-l4/layer4"
 	"go.uber.org/zap"
@@ -45,7 +46,6 @@ func (Matcher) CaddyModule() caddy.ModuleInfo {
 
 // Provision parses m's IP ranges, either from IP or CIDR expressions.
 func (m *Matcher) Provision(ctx caddy.Context) error {
-
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
 		return fmt.Errorf("getting crowdsec app: %v", err)
@@ -105,9 +105,15 @@ func (m Matcher) getClientIP(cx *l4.Connection) (netip.Addr, error) {
 	return ip, nil
 }
 
+// UnmarshalCaddyfile implements [caddyfile.Unmarshaler].
+func (m Matcher) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	return nil
+}
+
 // Interface guards
 var (
-	_ l4.ConnMatcher    = (*Matcher)(nil)
-	_ caddy.Provisioner = (*Matcher)(nil)
-	_ caddy.Validator   = (*Matcher)(nil)
+	_ l4.ConnMatcher        = (*Matcher)(nil)
+	_ caddy.Provisioner     = (*Matcher)(nil)
+	_ caddy.Validator       = (*Matcher)(nil)
+	_ caddyfile.Unmarshaler = (Matcher)(Matcher{})
 )
