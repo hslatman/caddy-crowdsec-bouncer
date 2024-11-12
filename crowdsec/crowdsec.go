@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"runtime/debug"
@@ -69,6 +70,8 @@ type CrowdSec struct {
 	// validations. Defaults to false.
 	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
 
+	AppSecUrl string `json:"appsec_url,omitempty"` // TODO: documentation
+
 	ctx     caddy.Context
 	logger  *zap.Logger
 	bouncer *bouncer.Bouncer
@@ -84,6 +87,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
 	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
 	c.TickerInterval = repl.ReplaceKnown(c.TickerInterval, "")
+	c.AppSecUrl = repl.ReplaceKnown(c.AppSecUrl, "")
 
 	if c.APIUrl == "" {
 		c.APIUrl = "http://127.0.0.1:8080/"
@@ -92,7 +96,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		c.TickerInterval = "60s"
 	}
 
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
+	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
 	}
@@ -251,6 +255,10 @@ func (c *CrowdSec) Stop() error {
 func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	// TODO: check if running? fully loaded, etc?
 	return c.bouncer.IsAllowed(ip)
+}
+
+func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
+	return c.bouncer.CheckRequest(ctx, r)
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {

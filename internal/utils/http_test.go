@@ -1,4 +1,4 @@
-// Copyright 2023 Herman Slatman
+// Copyright 2024 Herman Slatman
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package http
+package utils
 
 import (
 	"context"
@@ -58,7 +58,7 @@ func Test_determineIPFromRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := determineIPFromRequest(tt.args.r)
+			got, err := DetermineIPFromRequest(tt.args.r)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("determineIPFromRequest() error = %v, wantErr %v", err, tt.wantErr)
 				return

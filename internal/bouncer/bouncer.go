@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"net/netip"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ import (
 
 const (
 	userAgentName    = "caddy-cs-bouncer"
-	userAgentVersion = "v0.7.0"
+	userAgentVersion = "v0.8.0"
 
 	maxNumberOfDecisionsToLog = 10
 )
@@ -44,6 +45,7 @@ type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	metricsProvider     *csbouncer.MetricsProvider
+	appsec              *appsec
 	store               *store
 	logger              *zap.Logger
 	useStreamingBouncer bool
@@ -62,7 +64,7 @@ type Bouncer struct {
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 // TODO: take a configuration struct instead, because more options will be added.
-func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+func New(apiKey, apiURL, appSecURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	userAgent := fmt.Sprintf("%s/%s", userAgentName, userAgentVersion)
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
@@ -86,6 +88,7 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
+		appsec:         newAppSec(appSecURL, apiKey),
 		store:          newStore(),
 		logger:         logger,
 		instantiatedAt: instantiatedAt,
@@ -217,6 +220,10 @@ func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	isAllowed = true
 
 	return isAllowed, nil, nil
+}
+
+func (b *Bouncer) CheckRequest(ctx context.Context, r *http.Request) error {
+	return b.appsec.checkRequest(ctx, r)
 }
 
 func generateInstanceID(t time.Time) (string, error) {
