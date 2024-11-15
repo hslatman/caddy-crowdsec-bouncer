@@ -88,7 +88,7 @@ func New(apiKey, apiURL, appSecURL, tickerInterval string, logger *zap.Logger) (
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		appsec:         newAppSec(appSecURL, apiKey),
+		appsec:         newAppSec(appSecURL, apiKey, logger.Named("appsec")),
 		store:          newStore(),
 		logger:         logger,
 		instantiatedAt: instantiatedAt,
@@ -129,6 +129,8 @@ func (b *Bouncer) Init() (err error) {
 			return err
 		}
 
+		b.logAppSecStatus()
+
 		return nil
 	}
 
@@ -141,6 +143,8 @@ func (b *Bouncer) Init() (err error) {
 	if b.metricsProvider, err = newMetricsProvider(b.streamingBouncer.APIClient, b.updateMetrics, metricsInterval); err != nil {
 		return err
 	}
+
+	b.logAppSecStatus()
 
 	return nil
 }

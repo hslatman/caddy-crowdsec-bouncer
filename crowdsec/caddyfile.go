@@ -70,6 +70,11 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 				return nil, d.ArgErr()
 			}
 			cs.EnableHardFails = &tv
+		case "appsec_url":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			cs.AppSecUrl = d.Val()
 		default:
 			return nil, d.Errf("invalid configuration token provided: %s", d.Val())
 		}

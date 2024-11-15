@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -28,6 +27,7 @@ import (
 
 	_ "github.com/hslatman/caddy-crowdsec-bouncer/appsec" // include support for AppSec WAF component
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/utils"
 )
 
@@ -38,9 +38,8 @@ func init() {
 
 // Handler matches request IPs to CrowdSec decisions to (dis)allow access
 type Handler struct {
-	logger   *zap.Logger
-	crowdsec *crowdsec.CrowdSec
-
+	logger        *zap.Logger
+	crowdsec      *crowdsec.CrowdSec
 	appsecEnabled bool
 }
 
@@ -60,7 +59,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	h.crowdsec = crowdsecAppIface.(*crowdsec.CrowdSec)
 
-	h.appsecEnabled = true // TODO: move to provisioning; unmarshaling of Caddyfile; etc
+	h.appsecEnabled = true // TODO: make configurable
 
 	h.logger = ctx.Logger(h)
 	defer h.logger.Sync() // nolint
@@ -80,42 +79,43 @@ func (h *Handler) Validate() error {
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	ipToCheck, err := utils.DetermineIPFromRequest(r)
+	ip, err := utils.DetermineIPFromRequest(r)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
 	}
 
-	isAllowed, decision, err := h.crowdsec.IsAllowed(ipToCheck)
+	isAllowed, decision, err := h.crowdsec.IsAllowed(ip)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
 	}
+
+	// TODO: if the IP is allowed, should we (temporarily) put it in an explicit allowlist for quicker check?
 
 	if !isAllowed {
 		// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
 		// TODO: can we provide the reason for the response to the Caddy logger, like the CrowdSec type, duration, etc.
 		typ := *decision.Type
-		switch typ {
-		case "ban":
-			h.logger.Debug(fmt.Sprintf("serving ban response to %s", *decision.Value))
-			return writeBanResponse(w)
-		case "captcha":
-			h.logger.Debug(fmt.Sprintf("serving captcha (ban) response to %s", *decision.Value))
-			return writeCaptchaResponse(w)
-		case "throttle":
-			h.logger.Debug(fmt.Sprintf("serving throttle response to %s", *decision.Value))
-			return writeThrottleResponse(w, *decision.Duration)
-		default:
-			h.logger.Warn(fmt.Sprintf("got crowdsec decision type: %s", typ))
-			h.logger.Debug(fmt.Sprintf("serving ban response to %s", *decision.Value))
-			return writeBanResponse(w)
-		}
-	}
+		value := *decision.Value
+		duration := *decision.Duration
 
-	// TODO: if the IP is allowed, should we (temporarily) put it in an explicit allowlist for quicker check?
+		return utils.WriteResponse(w, h.logger, typ, value, duration, 0)
+	}
 
 	if h.appsecEnabled {
 		if err := h.crowdsec.CheckRequest(r.Context(), r); err != nil {
-			// TODO: do something with the error
+			a := &bouncer.AppSecError{}
+			if !errors.As(err, &a) {
+				return err
+			}
+
+			switch a.Action {
+			case "allow":
+				// nothing to do
+			case "log":
+				h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
+			default:
+				return utils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+			}
 		}
 	}
 
@@ -123,34 +123,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if err := next.ServeHTTP(w, r); err != nil {
 		return err
 	}
-
-	return nil
-}
-
-// writeBanResponse writes a 403 status as response
-func writeBanResponse(w http.ResponseWriter) error {
-	w.WriteHeader(http.StatusForbidden)
-	return nil
-}
-
-// writeCaptchaResponse (currently) writes a 403 status as response
-func writeCaptchaResponse(w http.ResponseWriter) error {
-	// TODO: implement showing a captcha in some way. How? hCaptcha? And how to handle afterwards?
-	return writeBanResponse(w)
-}
-
-// writeThrottleResponse writes 429 status as response
-func writeThrottleResponse(w http.ResponseWriter, duration string) error {
-
-	d, err := time.ParseDuration(duration)
-	if err != nil {
-		return err
-	}
-
-	// TODO: round this to the nearest multiple of the ticker interval? and/or include the time the decision was processed from stream vs. request time?
-	retryAfter := fmt.Sprintf("%.0f", d.Seconds())
-	w.Header().Add("Retry-After", retryAfter)
-	w.WriteHeader(http.StatusTooManyRequests)
 
 	return nil
 }

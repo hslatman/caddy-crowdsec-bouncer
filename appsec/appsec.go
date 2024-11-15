@@ -24,6 +24,8 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/utils"
 	"go.uber.org/zap"
 )
 
@@ -32,7 +34,8 @@ func init() {
 	httpcaddyfile.RegisterHandlerDirective("appsec", parseCaddyfileHandlerDirective)
 }
 
-// Handler matches request IPs to CrowdSec decisions to (dis)allow access
+// Handler checks the CrowdSec AppSec component decided whether
+// an HTTP request is blocked or not.
 type Handler struct {
 	logger   *zap.Logger
 	crowdsec *crowdsec.CrowdSec
@@ -46,7 +49,7 @@ func (Handler) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// Provision sets up the CrowdSec handler.
+// Provision sets up the CrowdSec AppSec handler.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
@@ -71,10 +74,25 @@ func (h *Handler) Validate() error {
 
 // ServeHTTP is the Caddy handler for serving HTTP requests
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	err := h.crowdsec.CheckRequest(r.Context(), r)
-	if err != nil {
-		// TODO: do something with the error
-		// TODO: add (debug) logging
+	if err := h.crowdsec.CheckRequest(r.Context(), r); err != nil {
+		a := &bouncer.AppSecError{}
+		if !errors.As(err, &a) {
+			return err
+		}
+
+		ip, err := utils.DetermineIPFromRequest(r)
+		if err != nil {
+			return err // TODO: return error here? Or just log it and continue serving
+		}
+
+		switch a.Action {
+		case "allow":
+			// nothing to do
+		case "log":
+			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
+		default:
+			return utils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+		}
 	}
 
 	// Continue down the handler stack
