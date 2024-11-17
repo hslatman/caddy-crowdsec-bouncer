@@ -1,4 +1,18 @@
-package utils
+// Copyright 2024 Herman Slatman
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package httputils
 
 import (
 	"errors"
@@ -11,11 +25,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// DetermineIPFromRequest returns the IP of the client based on the value that
+// determineIPFromRequest returns the IP of the client based on the value that
 // Caddy extracts from the original request and stores in the request context.
 // Support for setting the real client IP in case a proxy sits in front of
 // Caddy was added, so the client IP reported here is the actual client IP.
-func DetermineIPFromRequest(r *http.Request) (netip.Addr, error) {
+func determineIPFromRequest(r *http.Request) (netip.Addr, error) {
 	zero := netip.Addr{}
 	clientIPVar := caddyhttp.GetVar(r.Context(), caddyhttp.ClientIPVarKey)
 	if clientIPVar == nil {

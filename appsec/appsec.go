@@ -18,15 +18,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"go.uber.org/zap"
+
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/utils"
-	"go.uber.org/zap"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
 )
 
 func init() {
@@ -58,7 +60,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	h.crowdsec = crowdsecAppIface.(*crowdsec.CrowdSec)
 
 	h.logger = ctx.Logger(h)
-	defer h.logger.Sync() // nolint
 
 	return nil
 }
@@ -72,17 +73,25 @@ func (h *Handler) Validate() error {
 	return nil
 }
 
-// ServeHTTP is the Caddy handler for serving HTTP requests
-func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	if err := h.crowdsec.CheckRequest(r.Context(), r); err != nil {
+// Cleanup cleans up resources when the module is being stopped.
+func (h *Handler) Cleanup() error {
+	h.logger.Sync() // nolint
+
+	return nil
+}
+
+// ServeHTTP is the Caddy handler for serving HTTP requests.
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	var (
+		ctx = r.Context()
+		ip  netip.Addr
+	)
+
+	ctx, ip = httputils.EnsureIP(ctx, r)
+	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
 		a := &bouncer.AppSecError{}
 		if !errors.As(err, &a) {
 			return err
-		}
-
-		ip, err := utils.DetermineIPFromRequest(r)
-		if err != nil {
-			return err // TODO: return error here? Or just log it and continue serving
 		}
 
 		switch a.Action {
@@ -91,12 +100,12 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		case "log":
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
 		default:
-			return utils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+			return httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
 		}
 	}
 
 	// Continue down the handler stack
-	if err := next.ServeHTTP(w, r); err != nil {
+	if err := next.ServeHTTP(w, r.WithContext(ctx)); err != nil {
 		return err
 	}
 
@@ -105,7 +114,6 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 // UnmarshalCaddyfile implements caddyfile.Unmarshaler.
 func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	// TODO: parse additional handler directives (none exist now)
 	return nil
 }
 
@@ -113,7 +121,7 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 func parseCaddyfileHandlerDirective(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var handler Handler
 	err := handler.UnmarshalCaddyfile(h.Dispenser)
-	return handler, err
+	return &handler, err
 }
 
 // Interface guards

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package utils
+package httputils
 
 import (
 	"context"
@@ -58,7 +58,7 @@ func Test_determineIPFromRequest(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := DetermineIPFromRequest(tt.args.r)
+			got, err := determineIPFromRequest(tt.args.r)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("determineIPFromRequest() error = %v, wantErr %v", err, tt.wantErr)
 				return

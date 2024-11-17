@@ -11,6 +11,8 @@ require (
 	github.com/hslatman/ipstore v0.3.0
 	github.com/jarcoal/httpmock v1.3.1
 	github.com/mholt/caddy-l4 v0.0.0-20231016112149-a362a1fbf652
+	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
+	github.com/prometheus/client_golang v1.20.4
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
 	go.uber.org/goleak v1.2.1
@@ -104,7 +106,6 @@ require (
 	github.com/onsi/ginkgo/v2 v2.13.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.20.4 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.59.1 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect

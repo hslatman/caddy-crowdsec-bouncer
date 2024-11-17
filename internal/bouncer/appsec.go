@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/utils"
+	"github.com/oxtoacart/bpool"
 	"go.uber.org/zap"
+
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
 )
 
 type appsec struct {
@@ -18,6 +21,7 @@ type appsec struct {
 	apiKey string
 	logger *zap.Logger
 	client *http.Client
+	pool   *bpool.BufferPool
 }
 
 func newAppSec(apiURL, apiKey string, logger *zap.Logger) *appsec {
@@ -27,7 +31,20 @@ func newAppSec(apiURL, apiKey string, logger *zap.Logger) *appsec {
 		logger: logger,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       60 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
 		},
+		pool: bpool.NewBufferPool(64),
 	}
 }
 
@@ -41,9 +58,9 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return nil // AppSec component not enabled; skip check
 	}
 
-	originalIP, err := utils.DetermineIPFromRequest(r)
-	if err != nil {
-		return err // TODO: return error here? Or just log it and continue serving
+	originalIP, ok := httputils.FromContext(ctx)
+	if !ok {
+		return errors.New("could not retrieve netip.Addr from context")
 	}
 
 	originalBody, err := io.ReadAll(r.Body)
@@ -55,7 +72,12 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	var body io.ReadCloser = http.NoBody
 	if len(originalBody) > 0 {
 		method = http.MethodPost
-		body = io.NopCloser(bytes.NewBuffer(originalBody)) // TODO: reuse buffers?
+
+		buffer := a.pool.Get()
+		defer a.pool.Put(buffer)
+
+		_, _ = buffer.Write(originalBody)
+		body = io.NopCloser(buffer)
 	}
 	r.Body = io.NopCloser(bytes.NewBuffer(originalBody))
 

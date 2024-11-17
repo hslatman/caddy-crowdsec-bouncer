@@ -17,6 +17,7 @@ package bouncer
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -63,7 +64,6 @@ type Bouncer struct {
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
-// TODO: take a configuration struct instead, because more options will be added.
 func New(apiKey, apiURL, appSecURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	userAgent := fmt.Sprintf("%s/%s", userAgentName, userAgentVersion)
 	insecureSkipVerify := false
@@ -211,6 +211,10 @@ func (b *Bouncer) Shutdown() error {
 func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
+	if !ip.IsValid() {
+		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
+	}
+
 	decision, err := b.retrieveDecision(ip)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
