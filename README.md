@@ -4,8 +4,6 @@ A [Caddy](https://caddyserver.com/) module that blocks malicious traffic based o
 
 ## Description
 
-__This repository is currently a WIP. Things may change a bit.__
-
 CrowdSec is a free and open source security automation tool that uses local logs and a set of scenarios to infer malicious intent. 
 In addition to operating locally, an optional community integration is also available, through which crowd-sourced IP reputation lists are distributed.
 
@@ -14,27 +12,33 @@ At its core is the CrowdSec Agent, which keeps track of all data and related sys
 Bouncers are pieces of software that perform specific actions based on the decisions of the Agent.
 
 This repository contains a custom CrowdSec Bouncer that can be embedded as a Caddy module.
-It consists of the follwing three main pieces:
+It consists of the following four main pieces:
 
 * A Caddy App
-* A Caddy HTTP Handler
+* A Caddy Bouncer HTTP Handler
 * A Caddy [Layer 4](https://github.com/mholt/caddy-l4) Connection Matcher
+* A Caddy AppSec HTTP Handler
 
 The App is responsible for communicating with a CrowdSec Agent via the CrowdSec *Local API* and keeping track of the decisions of the Agent.
-The HTTP Handler checks client IPs of incoming requests against the decisions stored by the App.
-This way, multiple independent HTTP Handlers or Connection Matchers can use the storage exposed by the App.
+The Bouncer HTTP Handler checks client IPs of incoming requests against the decisions stored by the App.
+This way, multiple independent HTTP Handlers and Connection Matchers can use the storage exposed by the App.
 The App can be configured to use either the StreamBouncer, which gets decisions via a HTTP polling mechanism, or the LiveBouncer, which sends a request on every incoming HTTP request or Layer 4 connection setup.
+The Layer 4 Connection Matcher matches TCP and UDP IP addresses against the CrowdSec *Local API*.
+Finally, the AppSec HTTP Handler communicates with an AppSec component configured on your CrowdSec deployment, and will check incoming HTTP requests against the rulesets configured.
 
 ## Usage
 
 Get the module
 
 ```bash
-# get the http handler
+# get the CrowdSec Bouncer HTTP handler
 go get github.com/hslatman/caddy-crowdsec-bouncer/http
 
-# get the layer4 connection matcher (only required if you need support for TCP/UDP level blocking)
+# get the CrowdSec layer4 connection matcher (only required if you need support for TCP/UDP level blocking)
 go get github.com/hslatman/caddy-crowdsec-bouncer/layer4
+
+# get the AppSec HTTP handler (only required if you want CrowdSec AppSec support)
+go get github.com/hslatman/caddy-crowdsec-bouncer/appsec
 ```
 
 Create a (custom) Caddy server (or use *xcaddy*)
@@ -45,10 +49,12 @@ package main
 import (
   cmd "github.com/caddyserver/caddy/v2/cmd"
   _ "github.com/caddyserver/caddy/v2/modules/standard"
-  // import the http handler
+  // import the bouncer HTTP handler
   _ "github.com/hslatman/caddy-crowdsec-bouncer/http"
   // import the layer4 matcher (in case you want to block connections to layer4 servers using CrowdSec)
   _ "github.com/hslatman/caddy-crowdsec-bouncer/layer4"
+  // import the appsec HTTP handler (in case you want to block requests using the CrowdSec AppSec component)
+  _ "github.com/hslatman/caddy-crowdsec-bouncer/appsec"
 )
 
 func main() {
@@ -56,114 +62,57 @@ func main() {
 }
 ```
 
+Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 matchers.
+You'll also need to use a recent version of Caddy (i.e. 2.7.3 and newer) and Go 1.20 (or newer).
+
 Example Caddyfile:
 
 ```
 {
-    debug
-    crowdsec {
-        api_url http://localhost:8080
-        api_key <api_key>
-        ticker_interval 15s
-        #disable_streaming
-        #enable_hard_fails
-    }
-}
+  debug
 
-localhost {
-    route {
-        crowdsec
-        respond "Allowed by CrowdSec!"
-    }
-}
-```
-
-Configuration using a Caddyfile is only supported for HTTP handlers.
-You'll also need to use a recent version of Caddy (i.e. 2.7.3 and newer) and Go 1.20 (or newer).
-In case you want to use the CrowdSec bouncer on TCP or UDP level, you'll need to configure Caddy using the native JSON format.
-An example configuration is shown below:
-
-```json
-{   
-    "apps": {
-      "crowdsec": {
-        "api_key": "<insert_crowdsec_local_api_key_here>",
-        "api_url": "http://127.0.0.1:8080/",
-        "ticker_interval": "10s",
-        "enable_streaming": true,
-        "enable_hard_fails": false,
-      },
-      "http": {
-        "http_port": 9080,
-        "https_port": 9443,
-        "servers": {
-          "example": {
-            "listen": [
-              "127.0.0.1:9443"
-            ],
-            "routes": [
-              {
-                "group": "example-group",
-                "match": [
-                  {
-                    "path": [
-                      "/*"
-                    ]
-                  }
-                ],
-                "handle": [
-                  {
-                    "handler": "crowdsec"
-                  },
-                  {
-                    "handler": "static_response",
-                    "status_code": "200",
-                    "body": "Hello World!"
-                  },
-                  {
-                    "handler": "headers",
-                    "response": {
-                      "set": {
-                        "Server": ["caddy-cs-bouncer-example-server"]
-                      }
-                    }
-                  }
-                ]
-              }
-            ],
-            "logs": {}
-          }
-        }
-      },
-      "layer4": {
-        "servers": {
-          "https_proxy": {
-            "listen": ["localhost:8443"],
-            "routes": [
-              {
-                "match": [
-                  {
-                    "crowdsec": {},
-                    "tls": {}
-                  }
-                ],
-                "handle": [
-                  {
-                    "handler": "proxy",
-                    "upstreams": [
-                      {
-                        "dial": ["localhost:9443"]
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          }
-        }
-      },
-    }
+  crowdsec {
+    api_url http://localhost:8080
+    api_key <api_key>
+    ticker_interval 15s
+    appsec_url http://localhost:7422
+    #disable_streaming
+    #enable_hard_fails
   }
+
+  layer4 {
+    localhost:4444 {
+      @crowdsec crowdsec
+      route @crowdsec {
+        proxy {
+          upstream localhost:6443
+        }
+      }
+    }
+	}
+}
+
+localhost:8443 {
+  route {
+    crowdsec
+    respond "Allowed by Bouncer!"
+  }
+}
+
+localhost:7443 {
+  route {
+    appsec
+    respond "Allowed by AppSec!"
+  }
+}
+
+localhost:6443 {
+  route {
+    crowdsec
+    appsec
+    respond "Allowed by Bouncer and AppSec!"
+  }
+}
 ```
 
 Run the Caddy server
@@ -171,9 +120,6 @@ Run the Caddy server
 ```bash
 # with a Caddyfile
 go run main.go run -config Caddyfile 
-
-# with JSON configuration
-go run main.go run -config config.json
 ```
 
 ## Demo
