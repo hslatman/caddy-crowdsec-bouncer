@@ -109,7 +109,7 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	case 200:
 		return nil
 	case 401:
-		a.logger.Error("appsec component not authenticated", zap.String("appsec_url", a.apiURL))
+		a.logger.Error("appsec component not authenticated", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
 		return nil // this fails open, currently; make it fail hard if configured to do so?
 	case 403:
 		var r appsecResponse
@@ -118,11 +118,14 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		}
 
 		return &AppSecError{Err: errors.New("appsec rule triggered"), Action: r.Action, Duration: "", StatusCode: r.StatusCode}
+	case 404:
+		a.logger.Error("appsec component endpoint not found", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
+		return nil
 	case 500:
-		a.logger.Error("appsec component internal error", zap.String("appsec_url", a.apiURL))
+		a.logger.Error("appsec component internal error", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
 		return nil // this fails open, currently; make it fail hard if configured to do so?
 	default:
-		a.logger.Warn("appsec component returned unsupported status", zap.String("code", resp.Status))
+		a.logger.Error("appsec component returned unsupported status", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
 		return nil
 	}
 }

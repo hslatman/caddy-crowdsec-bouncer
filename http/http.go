@@ -26,7 +26,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
-	_ "github.com/hslatman/caddy-crowdsec-bouncer/appsec" // include support for AppSec WAF component
+	_ "github.com/hslatman/caddy-crowdsec-bouncer/appsec" // always include AppSec module when HTTP is added
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
 )
@@ -86,7 +86,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		ip  netip.Addr
 	)
 
-	ctx, ip = httputils.EnsureIP(ctx, r)
+	ctx, ip = httputils.EnsureIP(ctx)
 	isAllowed, decision, err := h.crowdsec.IsAllowed(ip)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving

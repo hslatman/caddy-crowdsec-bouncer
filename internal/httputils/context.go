@@ -16,13 +16,12 @@ package httputils
 
 import (
 	"context"
-	"net/http"
 	"net/netip"
 )
 
 type contextKey struct{}
 
-func EnsureIP(ctx context.Context, r *http.Request) (context.Context, netip.Addr) { // TODO: pass in ctx only?
+func EnsureIP(ctx context.Context) (context.Context, netip.Addr) {
 	var (
 		ip  netip.Addr
 		err error
@@ -30,7 +29,7 @@ func EnsureIP(ctx context.Context, r *http.Request) (context.Context, netip.Addr
 
 	ip, ok := FromContext(ctx)
 	if !ok {
-		if ip, err = determineIPFromRequest(r); err != nil { // TODO: pass in ctx only?
+		if ip, err = determineIPFromRequest(ctx); err != nil {
 			ip = netip.Addr{}
 		}
 

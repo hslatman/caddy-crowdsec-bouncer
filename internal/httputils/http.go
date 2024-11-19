@@ -15,6 +15,7 @@
 package httputils
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,9 +30,9 @@ import (
 // Caddy extracts from the original request and stores in the request context.
 // Support for setting the real client IP in case a proxy sits in front of
 // Caddy was added, so the client IP reported here is the actual client IP.
-func determineIPFromRequest(r *http.Request) (netip.Addr, error) {
+func determineIPFromRequest(ctx context.Context) (netip.Addr, error) {
 	zero := netip.Addr{}
-	clientIPVar := caddyhttp.GetVar(r.Context(), caddyhttp.ClientIPVarKey)
+	clientIPVar := caddyhttp.GetVar(ctx, caddyhttp.ClientIPVarKey)
 	if clientIPVar == nil {
 		return zero, errors.New("failed getting client IP from context")
 	}

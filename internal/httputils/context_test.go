@@ -16,17 +16,15 @@ package httputils
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestEnsureIP(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/caddy", http.NoBody)
 	ipFromRequest := newCaddyVarsContext()
 	caddyhttp.SetVar(ipFromRequest, caddyhttp.ClientIPVarKey, "127.0.0.1")
 	ipFromContext := newCaddyVarsContext()
@@ -37,7 +35,6 @@ func TestEnsureIP(t *testing.T) {
 
 	type args struct {
 		ctx context.Context
-		r   *http.Request
 	}
 	tests := []struct {
 		name    string
@@ -48,7 +45,6 @@ func TestEnsureIP(t *testing.T) {
 		{
 			name: "ip-from-request",
 			args: args{
-				r:   r.WithContext(ipFromRequest),
 				ctx: ipFromRequest,
 			},
 			wantIP: netip.MustParseAddr("127.0.0.1"),
@@ -56,7 +52,6 @@ func TestEnsureIP(t *testing.T) {
 		{
 			name: "ip-from-context",
 			args: args{
-				r:   r.WithContext(ipFromContext),
 				ctx: ipFromContext,
 			},
 			wantIP: netip.MustParseAddr("127.0.0.3"),
@@ -64,7 +59,6 @@ func TestEnsureIP(t *testing.T) {
 		{
 			name: "invalid-ip",
 			args: args{
-				r:   r.WithContext(invalidIPCtx),
 				ctx: invalidIPCtx,
 			},
 			wantIP: netip.Addr{},
@@ -72,10 +66,30 @@ func TestEnsureIP(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, ip := EnsureIP(tt.args.ctx, tt.args.r)
+			ctx, ip := EnsureIP(tt.args.ctx)
 
 			assert.Equal(t, tt.wantIP, ip)
 			assert.Equal(t, tt.wantIP, ctx.Value(contextKey{}).(netip.Addr))
 		})
 	}
+}
+
+func TestFromContext(t *testing.T) {
+	ctx := context.WithValue(context.Background(), contextKey{}, nil)
+	got, ok := FromContext(ctx)
+	require.False(t, ok)
+	require.Equal(t, netip.Addr{}, got)
+	require.False(t, got.IsValid())
+
+	ctx = context.WithValue(context.Background(), contextKey{}, netip.Addr{})
+	got, ok = FromContext(ctx)
+	require.False(t, ok)
+	require.Equal(t, netip.Addr{}, got)
+	require.False(t, got.IsValid())
+
+	ip := netip.MustParseAddr("127.0.0.1")
+	ctx = context.WithValue(context.Background(), contextKey{}, ip)
+	got, ok = FromContext(ctx)
+	require.True(t, ok)
+	require.Equal(t, ip, got)
 }

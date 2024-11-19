@@ -87,7 +87,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		ip  netip.Addr
 	)
 
-	ctx, ip = httputils.EnsureIP(ctx, r)
+	ctx, ip = httputils.EnsureIP(ctx)
 	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
 		a := &bouncer.AppSecError{}
 		if !errors.As(err, &a) {

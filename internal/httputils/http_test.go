@@ -16,13 +16,11 @@ package httputils
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"net/netip"
-	"reflect"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/stretchr/testify/require"
 )
 
 func newCaddyVarsContext() (ctx context.Context) {
@@ -31,7 +29,6 @@ func newCaddyVarsContext() (ctx context.Context) {
 }
 
 func Test_determineIPFromRequest(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/caddy", nil)
 	okCtx := newCaddyVarsContext()
 	caddyhttp.SetVar(okCtx, caddyhttp.ClientIPVarKey, "127.0.0.1")
 	noIPCtx := newCaddyVarsContext()
@@ -42,7 +39,7 @@ func Test_determineIPFromRequest(t *testing.T) {
 	invalidIPCtx := newCaddyVarsContext()
 	caddyhttp.SetVar(invalidIPCtx, caddyhttp.ClientIPVarKey, "127.0.0.1.x")
 	type args struct {
-		r *http.Request
+		ctx context.Context
 	}
 	tests := []struct {
 		name    string
@@ -50,22 +47,23 @@ func Test_determineIPFromRequest(t *testing.T) {
 		want    netip.Addr
 		wantErr bool
 	}{
-		{"ok", args{r.WithContext(okCtx)}, netip.MustParseAddr("127.0.0.1"), false},
-		{"no-ip", args{r.WithContext(noIPCtx)}, netip.Addr{}, true},
-		{"wrong-type", args{r.WithContext(wrongTypeCtx)}, netip.Addr{}, true},
-		{"empty-ip", args{r.WithContext(emptyIPCtx)}, netip.Addr{}, true},
-		{"invalid-ip", args{r.WithContext(invalidIPCtx)}, netip.Addr{}, true},
+		{"ok", args{okCtx}, netip.MustParseAddr("127.0.0.1"), false},
+		{"no-ip", args{noIPCtx}, netip.Addr{}, true},
+		{"wrong-type", args{wrongTypeCtx}, netip.Addr{}, true},
+		{"empty-ip", args{emptyIPCtx}, netip.Addr{}, true},
+		{"invalid-ip", args{invalidIPCtx}, netip.Addr{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := determineIPFromRequest(tt.args.r)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("determineIPFromRequest() error = %v, wantErr %v", err, tt.wantErr)
+			got, err := determineIPFromRequest(tt.args.ctx)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Equal(t, netip.Addr{}, got)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("determineIPFromRequest() = %v, want %v", got, tt.want)
-			}
+
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }

@@ -89,7 +89,7 @@ Example Caddyfile:
         }
       }
     }
-	}
+  }
 }
 
 localhost:8443 {
