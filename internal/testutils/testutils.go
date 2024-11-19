@@ -44,7 +44,7 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
-	t.Cleanup(func() { c.Terminate(ctx) })
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
 
 	endpointPort, err := c.MappedPort(ctx, "8080/tcp")
 	require.NoError(t, err)
@@ -102,7 +102,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
-	t.Cleanup(func() { c.Terminate(ctx) })
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
 
 	code, reader, err := c.Exec(ctx, []string{"cscli", "collections", "install", "crowdsecurity/appsec-virtual-patching"})
 	require.NoError(t, err)
