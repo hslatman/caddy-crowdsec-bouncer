@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/exec"
@@ -51,7 +52,7 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 
 	return &container{
 		c:        c,
-		endpoint: fmt.Sprintf("http://localhost:%d", endpointPort.Int()),
+		endpoint: fmt.Sprintf("http://127.0.0.1:%d", endpointPort.Int()),
 	}
 }
 
@@ -81,11 +82,70 @@ labels:
 
 func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	t.Helper()
+
+	// shared data between initialization and actual AppSec container
+	mounts := testcontainers.ContainerMounts{
+		{
+			Source: testcontainers.GenericVolumeMountSource{
+				Name: "crowdsec-etc",
+			},
+			Target: "/etc/crowdsec",
+		},
+		{
+			Source: testcontainers.GenericVolumeMountSource{
+				Name: "crowdsec-data",
+			},
+			Target: "/var/lib/crowdsec/data",
+		},
+	}
+
+	// AppSec requires some WAF rules to be present, so we start by initializing
+	// a container, installing the required collections, and then stopping it again.
+	initContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "crowdsecurity/crowdsec:latest",
+			Mounts:       mounts,
+			ExposedPorts: []string{"8080/tcp"},
+			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
+			Env: map[string]string{
+				"BOUNCER_KEY_testbouncer1": testAPIKey,
+				"DISABLE_ONLINE_API":       "true",
+			},
+		},
+		Started: true,
+		Logger:  testcontainers.TestLogger(t),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, initContainer)
+
+	// install some AppSec rule collections
+	code, reader, err := initContainer.Exec(ctx, []string{"cscli", "collections", "install", "crowdsecurity/appsec-virtual-patching"})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, code)
+	LogContainerOutput(t, reader)
+
+	code, reader, err = initContainer.Exec(ctx, []string{"cscli", "collections", "install", "crowdsecurity/appsec-generic-rules"})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, code)
+	LogContainerOutput(t, reader)
+
+	// allow container some slack
+	time.Sleep(1 * time.Second)
+
+	// cleanly stop the initialization container
+	duration := 3 * time.Second
+	err = initContainer.Stop(ctx, &duration)
+	require.NoError(t, err)
+	err = initContainer.Terminate(ctx)
+	require.NoError(t, err)
+
+	// create the actual AppSec container
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        "crowdsecurity/crowdsec:latest",
+			Mounts:       mounts,
 			ExposedPorts: []string{"8080/tcp", "7422/tcp"},
-			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
+			WaitingFor:   wait.ForLog("Appsec Runner ready to process event"),
 			Env: map[string]string{
 				"BOUNCER_KEY_testbouncer1": testAPIKey,
 				"DISABLE_ONLINE_API":       "true",
@@ -104,23 +164,6 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	require.NotNil(t, c)
 	t.Cleanup(func() { _ = c.Terminate(ctx) })
 
-	code, reader, err := c.Exec(ctx, []string{"cscli", "collections", "install", "crowdsecurity/appsec-virtual-patching"})
-	require.NoError(t, err)
-	require.Equal(t, 0, code)
-	LogContainerOutput(t, reader)
-
-	code, reader, err = c.Exec(ctx, []string{"cscli", "collections", "install", "crowdsecurity/appsec-generic-rules"})
-	require.NoError(t, err)
-	require.Equal(t, 0, code)
-	LogContainerOutput(t, reader)
-
-	time.Sleep(2 * time.Second)
-
-	err = c.Stop(ctx, nil)
-	require.NoError(t, err)
-	err = c.Start(ctx)
-	require.NoError(t, err)
-
 	endpointPort, err := c.MappedPort(ctx, "8080/tcp")
 	require.NoError(t, err)
 
@@ -129,8 +172,8 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 
 	return &container{
 		c:        c,
-		endpoint: fmt.Sprintf("http://localhost:%d", endpointPort.Int()),
-		appsec:   fmt.Sprintf("http://localhost:%d", appsecPort.Int()),
+		endpoint: fmt.Sprintf("http://127.0.0.1:%d", endpointPort.Int()),
+		appsec:   fmt.Sprintf("http://127.0.0.1:%d", appsecPort.Int()),
 	}
 }
 
@@ -155,6 +198,10 @@ func NewCrowdSecModule(t *testing.T, ctx context.Context, config string) *crowds
 
 func LogContainerOutput(t *testing.T, reader io.Reader) {
 	t.Helper()
+
+	if reader == nil {
+		return
+	}
 
 	buf := new(strings.Builder)
 	_, err := io.Copy(buf, reader)

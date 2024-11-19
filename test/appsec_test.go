@@ -42,7 +42,7 @@ func TestAppSec(t *testing.T) {
 
 	// wait a little bit of time to let the go-cs-bouncer do _some_ work,
 	// before it properly returns; seems to hang otherwise on b.wg.Wait().
-	time.Sleep(1 * time.Second)
+	time.Sleep(100 * time.Millisecond)
 
 	r := httptest.NewRequest(http.MethodGet, "http://www.example.com", http.NoBody)
 	r = r.WithContext(ctx)
