@@ -63,34 +63,41 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return errors.New("could not retrieve netip.Addr from context")
 	}
 
-	originalBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-
 	method := http.MethodGet
 	var body io.ReadCloser = http.NoBody
-	if len(originalBody) > 0 {
-		method = http.MethodPost
+	if r.Body != nil && r.ContentLength > 0 {
+		originalBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			return err
+		}
 
+		method = http.MethodPost
 		buffer := a.pool.Get()
 		defer a.pool.Put(buffer)
 
 		_, _ = buffer.Write(originalBody)
 		body = io.NopCloser(buffer)
+
+		r.Body = io.NopCloser(bytes.NewBuffer(originalBody))
 	}
-	r.Body = io.NopCloser(bytes.NewBuffer(originalBody))
 
 	req, err := http.NewRequestWithContext(ctx, method, a.apiURL, body)
 	if err != nil {
 		return err
 	}
 
+	for key, headers := range r.Header {
+		for _, value := range headers {
+			req.Header.Add(key, value)
+		}
+	}
 	req.Header.Set("X-Crowdsec-Appsec-Ip", originalIP.String())
 	req.Header.Set("X-Crowdsec-Appsec-Uri", r.URL.String())
 	req.Header.Set("X-Crowdsec-Appsec-Host", r.Host)
 	req.Header.Set("X-Crowdsec-Appsec-Verb", r.Method)
 	req.Header.Set("X-Crowdsec-Appsec-Api-Key", a.apiKey)
+	req.Header.Set("X-Crowdsec-Appsec-User-Agent", r.Header.Get("User-Agent"))
+	req.Header.Set("User-Agent", userAgent)
 
 	totalAppSecCalls.Inc()
 	resp, err := a.client.Do(req)

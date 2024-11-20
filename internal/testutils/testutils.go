@@ -32,12 +32,13 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 	t.Helper()
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "crowdsecurity/crowdsec:latest",
+			Image:        "crowdsecurity/crowdsec:slim",
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
 			Env: map[string]string{
 				"BOUNCER_KEY_testbouncer1": testAPIKey,
 				"DISABLE_ONLINE_API":       "true",
+				"NO_HUB_UPGRADE":           "true",
 			},
 		},
 		Started: true,
@@ -74,7 +75,7 @@ func (c *container) Exec(ctx context.Context, cmd []string) (int, io.Reader, err
 
 const appSecConfig = `listen_addr: 0.0.0.0:7422
 appsec_config: crowdsecurity/appsec-default
-name: test
+name: appsec-test
 source: appsec
 labels:
   type: appsec
@@ -103,13 +104,14 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	// a container, installing the required collections, and then stopping it again.
 	initContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "crowdsecurity/crowdsec:latest",
+			Image:        "crowdsecurity/crowdsec:slim",
 			Mounts:       mounts,
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
 			Env: map[string]string{
 				"BOUNCER_KEY_testbouncer1": testAPIKey,
 				"DISABLE_ONLINE_API":       "true",
+				"NO_HUB_UPGRADE":           "true",
 			},
 		},
 		Started: true,
@@ -142,13 +144,16 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	// create the actual AppSec container
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "crowdsecurity/crowdsec:latest",
+			Image:        "crowdsecurity/crowdsec:slim",
 			Mounts:       mounts,
 			ExposedPorts: []string{"8080/tcp", "7422/tcp"},
 			WaitingFor:   wait.ForLog("Appsec Runner ready to process event"),
 			Env: map[string]string{
 				"BOUNCER_KEY_testbouncer1": testAPIKey,
 				"DISABLE_ONLINE_API":       "true",
+				"NO_HUB_UPGRADE":           "true",
+				"LEVEL_DEBUG":              "true",
+				"DEBUG":                    "true",
 			},
 			Files: []testcontainers.ContainerFile{
 				{

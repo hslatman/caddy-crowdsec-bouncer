@@ -34,6 +34,7 @@ import (
 const (
 	userAgentName    = "caddy-cs-bouncer"
 	userAgentVersion = "v0.8.0"
+	userAgent        = userAgentName + "/" + userAgentVersion
 
 	maxNumberOfDecisionsToLog = 10
 )
@@ -65,7 +66,6 @@ type Bouncer struct {
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
 func New(apiKey, apiURL, appSecURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := fmt.Sprintf("%s/%s", userAgentName, userAgentVersion)
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
