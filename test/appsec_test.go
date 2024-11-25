@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,28 +64,27 @@ func TestAppSec(t *testing.T) {
 	err = crowdsec.CheckRequest(ctx, r)
 	assert.Error(t, err)
 
-	// TODO: find out why the below two POST requests with a body don't trigger
-	// a ban from the AppSec component.
-	// // simulate a request exploiting Ivanti EPM - SQLi; CVE-2024-29824.
-	// body := bytes.NewBufferString("blabla 'xp_cmdshell' blabla")
-	// r = httptest.NewRequest(http.MethodPost, "http://www.example.com/WSStatusEvents/EventHandler.asmx", body)
-	// r = r.WithContext(ctx)
-	// r.Header.Set("User-Agent", "test-appsec")
-	// err = crowdsec.CheckRequest(ctx, r)
-	// assert.Error(t, err)
+	// simulate a request exploiting Ivanti EPM - SQLi; CVE-2024-29824.
+	body := bytes.NewBufferString("blabla 'xp_cmdshell' blabla")
+	r = httptest.NewRequest(http.MethodPost, "http://www.example.com/wsstatusevents/eventhandler.asmx", body)
+	r = r.WithContext(ctx)
+	r.Header.Set("User-Agent", "test-appsec")
+	err = crowdsec.CheckRequest(ctx, r)
+	assert.Error(t, err)
 
-	// // simulate a request exploiting Dasan GPON RCE; CVE-2018-10562
-	// body := bytes.NewBufferString(`{"dest_host": "ping"}`)
-	// r = httptest.NewRequest(http.MethodPost, "http://www.example.com/gponform/diag_form", body)
-	// r = r.WithContext(ctx)
-	// r.Header.Set("User-Agent", "test-appsec")
-	// r.Header.Set("Content-Type", "application/json")
-	// err = crowdsec.CheckRequest(ctx, r)
-	// assert.Error(t, err)
+	// simulate a request exploiting Dasan GPON RCE; CVE-2018-10562
+	data := url.Values{}
+	data.Set("dest_host", "\\`arg\\`;bla")
+	r = httptest.NewRequest(http.MethodPost, "http://www.example.com/gponform/diag_form", strings.NewReader(data.Encode()))
+	r = r.WithContext(ctx)
+	r.Header.Set("User-Agent", "test-appsec")
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	err = crowdsec.CheckRequest(ctx, r)
+	assert.Error(t, err)
 
 	// simulate a request exploiting WooCommerce auth bypass; CVE-2023-28121, ensuring
 	// that headers are passed correctly.
-	body := bytes.NewBufferString("some body")
+	body = bytes.NewBufferString("some body")
 	r = httptest.NewRequest(http.MethodPost, "http://www.example.com", body)
 	r = r.WithContext(ctx)
 	r.Header.Set("User-Agent", "test-appsec")

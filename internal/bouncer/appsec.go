@@ -63,6 +63,7 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return errors.New("could not retrieve netip.Addr from context")
 	}
 
+	var contentLength int
 	method := http.MethodGet
 	var body io.ReadCloser = http.NoBody
 	if r.Body != nil && r.ContentLength > 0 {
@@ -71,13 +72,16 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 			return err
 		}
 
-		method = http.MethodPost
 		buffer := a.pool.Get()
 		defer a.pool.Put(buffer)
 
 		_, _ = buffer.Write(originalBody)
+
+		method = http.MethodPost
+		contentLength = buffer.Len()
 		body = io.NopCloser(buffer)
 
+		// "reset" the original request body
 		r.Body = io.NopCloser(bytes.NewBuffer(originalBody))
 	}
 
@@ -97,7 +101,13 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	req.Header.Set("X-Crowdsec-Appsec-Verb", r.Method)
 	req.Header.Set("X-Crowdsec-Appsec-Api-Key", a.apiKey)
 	req.Header.Set("X-Crowdsec-Appsec-User-Agent", r.Header.Get("User-Agent"))
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", userAgentName)
+
+	// explicitly setting the content length results in CrowdSec properly accepting
+	// the request body. Without this the Content-Length header won't be set to the
+	// correct value, resulting in CrowdSec skipping its evaluation. We should test
+	// whether https://github.com/crowdsecurity/crowdsec/pull/3342 makes it work.
+	req.ContentLength = int64(contentLength)
 
 	totalAppSecCalls.Inc()
 	resp, err := a.client.Do(req)

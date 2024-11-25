@@ -157,7 +157,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 			},
 			Files: []testcontainers.ContainerFile{
 				{
-					Reader:            bytes.NewBuffer([]byte(appSecConfig)),
+					Reader:            bytes.NewBufferString(appSecConfig),
 					ContainerFilePath: "/etc/crowdsec/acquis.d/appsec.yaml",
 				},
 			},
