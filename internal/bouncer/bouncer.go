@@ -113,7 +113,7 @@ func (b *Bouncer) Init() (err error) {
 	// TODO: make metrics gathering/integration optional? I.e. if the metrics
 	// interval is configured to be 0 or smaller, don't start the metrics
 	// provider? Separate setting for gathering metrics vs. pushing to LAPI?
-	metricsInterval := 10 * time.Second
+	metricsInterval := 0 * time.Minute // 1 * time.Minute
 
 	// initialize the CrowdSec live bouncer
 	if !b.useStreamingBouncer {
