@@ -20,7 +20,11 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 )
 
-const testAPIKey = "testbouncer1key"
+const (
+	containerImage = "crowdsecurity/crowdsec:slim"
+	//containerImage = "crowdsec-local"
+	testAPIKey = "testbouncer1key"
+)
 
 type container struct {
 	c        testcontainers.Container
@@ -32,7 +36,7 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 	t.Helper()
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "crowdsecurity/crowdsec:slim",
+			Image:        containerImage,
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
 			Env: map[string]string{
@@ -104,7 +108,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	// a container, installing the required collections, and then stopping it again.
 	initContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "crowdsecurity/crowdsec:slim",
+			Image:        containerImage,
 			Mounts:       mounts,
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
@@ -144,7 +148,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	// create the actual AppSec container
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "crowdsecurity/crowdsec:slim",
+			Image:        containerImage,
 			Mounts:       mounts,
 			ExposedPorts: []string{"8080/tcp", "7422/tcp"},
 			WaitingFor:   wait.ForLog("Appsec Runner ready to process event"),

@@ -103,10 +103,12 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	req.Header.Set("X-Crowdsec-Appsec-User-Agent", r.Header.Get("User-Agent"))
 	req.Header.Set("User-Agent", userAgentName)
 
-	// explicitly setting the content length results in CrowdSec properly accepting
-	// the request body. Without this the Content-Length header won't be set to the
-	// correct value, resulting in CrowdSec skipping its evaluation. We should test
-	// whether https://github.com/crowdsecurity/crowdsec/pull/3342 makes it work.
+	// explicitly setting the content length results in CrowdSec (1.6.4) properly
+	// accepting the request body. Without this the Content-Length header won't be
+	// set to the correct value, resulting in CrowdSec skipping its evaluation. The
+	// PR at https://github.com/crowdsecurity/crowdsec/pull/3342 makes it work, but
+	// that's not merged yet, and will thus require the release of CrowdSec that
+	// includes the patch.
 	req.ContentLength = int64(contentLength)
 
 	totalAppSecCalls.Inc()
