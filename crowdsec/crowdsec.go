@@ -72,6 +72,9 @@ type CrowdSec struct {
 	// AppSecUrl is the URL of the AppSec component served by your
 	// CrowdSec installation. Disabled by default.
 	AppSecUrl string `json:"appsec_url,omitempty"`
+	// AppSecMaxBodySize is the maximum number of request body bytes that
+	// will be sent to your AppSec component.
+	AppSecMaxBodySize int `json:"appsec_max_body_bytes,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -97,7 +100,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		c.TickerInterval = "60s"
 	}
 
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.TickerInterval, c.logger)
+	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
 	}

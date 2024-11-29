@@ -17,18 +17,20 @@ import (
 )
 
 type appsec struct {
-	apiURL string
-	apiKey string
-	logger *zap.Logger
-	client *http.Client
-	pool   *bpool.BufferPool
+	apiURL      string
+	apiKey      string
+	maxBodySize int
+	logger      *zap.Logger
+	client      *http.Client
+	pool        *bpool.BufferPool
 }
 
-func newAppSec(apiURL, apiKey string, logger *zap.Logger) *appsec {
+func newAppSec(apiURL, apiKey string, maxBodySize int, logger *zap.Logger) *appsec {
 	return &appsec{
-		apiURL: apiURL,
-		apiKey: apiKey,
-		logger: logger,
+		apiURL:      apiURL,
+		apiKey:      apiKey,
+		maxBodySize: maxBodySize,
+		logger:      logger,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -75,11 +77,17 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		buffer := a.pool.Get()
 		defer a.pool.Put(buffer)
 
-		_, _ = buffer.Write(originalBody)
+		if a.maxBodySize > 0 {
+			len := min(len(originalBody), a.maxBodySize)
+			_, _ = buffer.Write(originalBody[:len])
+
+		} else {
+			_, _ = buffer.Write(originalBody)
+		}
 
 		method = http.MethodPost
-		contentLength = buffer.Len()
 		body = io.NopCloser(buffer)
+		contentLength = buffer.Len()
 
 		// "reset" the original request body
 		r.Body = io.NopCloser(bytes.NewBuffer(originalBody))

@@ -3,6 +3,7 @@ package crowdsec
 import (
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,15 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 				return nil, d.ArgErr()
 			}
 			cs.AppSecUrl = d.Val()
+		case "appsec_max_body_bytes":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			v, err := strconv.Atoi(d.Val())
+			if err != nil {
+				return nil, d.Errf("invalid maximum number of bytes %q: %v", d.Val(), err)
+			}
+			cs.AppSecMaxBodySize = v
 		default:
 			return nil, d.Errf("invalid configuration token %q provided", d.Val())
 		}
