@@ -27,17 +27,25 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
 
 	"go.uber.org/zap"
 )
 
 const (
-	userAgentName    = "caddy-cs-bouncer"
-	userAgentVersion = "v0.8.0"
-	userAgent        = userAgentName + "/" + userAgentVersion
-
+	userAgentName             = "caddy-cs-bouncer"
 	maxNumberOfDecisionsToLog = 10
 )
+
+var (
+	userAgent        string
+	userAgentVersion string
+)
+
+func init() {
+	userAgentVersion = version.Current()
+	userAgent = userAgentName + "/" + userAgentVersion
+}
 
 // Bouncer is a wrapper for a CrowdSec bouncer. It supports both the
 // streaming and live bouncer implementations. The streaming bouncer is
