@@ -17,8 +17,10 @@ package bouncer
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"net/netip"
 	"sync"
 	"time"
@@ -31,7 +33,8 @@ import (
 
 const (
 	userAgentName    = "caddy-cs-bouncer"
-	userAgentVersion = "v0.7.0"
+	userAgentVersion = "v0.8.0"
+	userAgent        = userAgentName + "/" + userAgentVersion
 
 	maxNumberOfDecisionsToLog = 10
 )
@@ -44,6 +47,7 @@ type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
 	metricsProvider     *csbouncer.MetricsProvider
+	appsec              *appsec
 	store               *store
 	logger              *zap.Logger
 	useStreamingBouncer bool
@@ -61,9 +65,7 @@ type Bouncer struct {
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
-// TODO: take a configuration struct instead, because more options will be added.
-func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
-	userAgent := fmt.Sprintf("%s/%s", userAgentName, userAgentVersion)
+func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -86,6 +88,7 @@ func New(apiKey, apiURL, tickerInterval string, logger *zap.Logger) (*Bouncer, e
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
+		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, logger.Named("appsec")),
 		store:          newStore(),
 		logger:         logger,
 		instantiatedAt: instantiatedAt,
@@ -126,6 +129,8 @@ func (b *Bouncer) Init() (err error) {
 			return err
 		}
 
+		b.logAppSecStatus()
+
 		return nil
 	}
 
@@ -138,6 +143,8 @@ func (b *Bouncer) Init() (err error) {
 	if b.metricsProvider, err = newMetricsProvider(b.streamingBouncer.APIClient, b.updateMetrics, metricsInterval); err != nil {
 		return err
 	}
+
+	b.logAppSecStatus()
 
 	return nil
 }
@@ -204,6 +211,10 @@ func (b *Bouncer) Shutdown() error {
 func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
+	if !ip.IsValid() {
+		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
+	}
+
 	decision, err := b.retrieveDecision(ip)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
@@ -217,6 +228,10 @@ func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 	isAllowed = true
 
 	return isAllowed, nil, nil
+}
+
+func (b *Bouncer) CheckRequest(ctx context.Context, r *http.Request) error {
+	return b.appsec.checkRequest(ctx, r)
 }
 
 func generateInstanceID(t time.Time) (string, error) {

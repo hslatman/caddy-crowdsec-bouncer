@@ -31,6 +31,19 @@ import (
 	"go.uber.org/goleak"
 )
 
+type fakeModule struct{}
+
+func (m fakeModule) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "http.handlers.crowdsec",
+		New: func() caddy.Module { return new(fakeModule) },
+	}
+}
+
+func init() {
+	caddy.RegisterModule(fakeModule{}) // prevents module warning logs
+}
+
 func TestCrowdSec_Provision(t *testing.T) {
 	tests := []struct {
 		name      string

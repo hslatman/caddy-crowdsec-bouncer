@@ -1,4 +1,4 @@
-// Copyright 2020 Herman Slatman
+// Copyright 2024 Herman Slatman
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package http
+package appsec
 
 import (
 	"errors"
@@ -26,17 +26,18 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
-	_ "github.com/hslatman/caddy-crowdsec-bouncer/appsec" // always include AppSec module when HTTP is added
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
 )
 
 func init() {
 	caddy.RegisterModule(Handler{})
-	httpcaddyfile.RegisterHandlerDirective("crowdsec", parseCaddyfileHandlerDirective)
+	httpcaddyfile.RegisterHandlerDirective("appsec", parseCaddyfileHandlerDirective)
 }
 
-// Handler matches request IPs to CrowdSec decisions to (dis)allow access.
+// Handler checks the CrowdSec AppSec component decided whether
+// an HTTP request is blocked or not.
 type Handler struct {
 	logger   *zap.Logger
 	crowdsec *crowdsec.CrowdSec
@@ -45,12 +46,12 @@ type Handler struct {
 // CaddyModule returns the Caddy module information.
 func (Handler) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.crowdsec",
+		ID:  "http.handlers.appsec",
 		New: func() caddy.Module { return new(Handler) },
 	}
 }
 
-// Provision sets up the CrowdSec handler.
+// Provision sets up the CrowdSec AppSec handler.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	crowdsecAppIface, err := ctx.App("crowdsec")
 	if err != nil {
@@ -87,21 +88,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
-	isAllowed, decision, err := h.crowdsec.IsAllowed(ip)
-	if err != nil {
-		return err // TODO: return error here? Or just log it and continue serving
-	}
+	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
+		a := &bouncer.AppSecError{}
+		if !errors.As(err, &a) {
+			return err
+		}
 
-	// TODO: if the IP is allowed, should we (temporarily) put it in an explicit allowlist for quicker check?
-
-	if !isAllowed {
-		// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
-		// TODO: can we provide the reason for the response to the Caddy logger, like the CrowdSec type, duration, etc.
-		typ := *decision.Type
-		value := *decision.Value
-		duration := *decision.Duration
-
-		return httputils.WriteResponse(w, h.logger, typ, value, duration, 0)
+		switch a.Action {
+		case "allow":
+			// nothing to do
+		case "log":
+			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
+		default:
+			return httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+		}
 	}
 
 	// Continue down the handler stack
@@ -131,5 +131,4 @@ var (
 	_ caddy.Validator             = (*Handler)(nil)
 	_ caddyhttp.MiddlewareHandler = (*Handler)(nil)
 	_ caddyfile.Unmarshaler       = (*Handler)(nil)
-	_ caddy.CleanerUpper          = (*Handler)(nil)
 )

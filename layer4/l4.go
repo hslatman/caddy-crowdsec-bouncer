@@ -21,9 +21,10 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	l4 "github.com/mholt/caddy-l4/layer4"
 	"go.uber.org/zap"
+
+	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 )
 
 func init() {
@@ -53,7 +54,6 @@ func (m *Matcher) Provision(ctx caddy.Context) error {
 	m.crowdsec = crowdsecAppIface.(*crowdsec.CrowdSec)
 
 	m.logger = ctx.Logger(m)
-	defer m.logger.Sync() // nolint
 
 	return nil
 }
@@ -67,9 +67,7 @@ func (m *Matcher) Validate() error {
 // not denied according to CrowdSec decisions stored in the
 // CrowdSec app module.
 func (m Matcher) Match(cx *l4.Connection) (bool, error) {
-
 	// TODO: needs to be tested with TCP as well as UDP.
-
 	clientIP, err := m.getClientIP(cx)
 	if err != nil {
 		return false, err
@@ -86,6 +84,12 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func (m *Matcher) Cleanup() error {
+	m.logger.Sync() // nolint
+
+	return nil
 }
 
 // getClientIP determines the IP of the client connecting

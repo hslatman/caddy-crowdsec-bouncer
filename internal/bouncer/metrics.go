@@ -9,7 +9,24 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
+)
+
+var (
+	// metrics provided by the go-cs-bouncer package
+	totalLAPICalls  = csbouncer.TotalLAPICalls
+	totalLAPIErrors = csbouncer.TotalLAPIError
+
+	// appsec metrics
+	totalAppSecCalls = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "lapi_appsec_requests_total",
+		Help: "The total number of calls to CrowdSec LAPI AppSec component",
+	})
+	totalAppSecErrors = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "lapi_appsec_requests_failures_total",
+		Help: "The total number of failed calls to CrowdSec LAPI AppSec component",
+	})
 )
 
 func newMetricsProvider(client *apiclient.ApiClient, updater csbouncer.MetricsUpdater, interval time.Duration) (*csbouncer.MetricsProvider, error) {

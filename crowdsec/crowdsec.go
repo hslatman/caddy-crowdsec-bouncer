@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"runtime/debug"
@@ -50,9 +51,9 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 // which can be used by the HTTP handler and Layer4 matcher to decide if
 // a request or connection is allowed or not.
 type CrowdSec struct {
-	// APIUrl for the CrowdSec Local API. Defaults to http://127.0.0.1:8080/
+	// APIUrl for the CrowdSec Local API. Defaults to http://127.0.0.1:8080/.
 	APIUrl string `json:"api_url,omitempty"`
-	// APIKey for the CrowdSec Local API
+	// APIKey for the CrowdSec Local API.
 	APIKey string `json:"api_key"`
 	// TickerInterval is the interval the StreamBouncer uses for querying
 	// the CrowdSec Local API. Defaults to "60s".
@@ -68,6 +69,12 @@ type CrowdSec struct {
 	// Caddy continuing operation (with a chance of not performing)
 	// validations. Defaults to false.
 	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
+	// AppSecUrl is the URL of the AppSec component served by your
+	// CrowdSec installation. Disabled by default.
+	AppSecUrl string `json:"appsec_url,omitempty"`
+	// AppSecMaxBodySize is the maximum number of request body bytes that
+	// will be sent to your AppSec component.
+	AppSecMaxBodySize int `json:"appsec_max_body_bytes,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -84,6 +91,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
 	c.APIKey = repl.ReplaceKnown(c.APIKey, "")
 	c.TickerInterval = repl.ReplaceKnown(c.TickerInterval, "")
+	c.AppSecUrl = repl.ReplaceKnown(c.AppSecUrl, "")
 
 	if c.APIUrl == "" {
 		c.APIUrl = "http://127.0.0.1:8080/"
@@ -92,7 +100,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		c.TickerInterval = "60s"
 	}
 
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.TickerInterval, c.logger)
+	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.TickerInterval, c.logger)
 	if err != nil {
 		return err
 	}
@@ -126,11 +134,12 @@ func (c *CrowdSec) Validate() error {
 }
 
 const (
-	handlerName = "http.handlers.crowdsec"
-	matcherName = "layer4.matchers.crowdsec"
+	appSecHandlerName = "http.handlers.appsec"
+	httpHandlerName   = "http.handlers.crowdsec"
+	matcherName       = "layer4.matchers.crowdsec"
 )
 
-var crowdSecModules = []string{handlerName, matcherName}
+var crowdSecModules = []string{httpHandlerName, appSecHandlerName, matcherName}
 
 func (c *CrowdSec) checkModules() error {
 	modules, err := matchModules(crowdSecModules...)
@@ -146,13 +155,13 @@ func (c *CrowdSec) checkModules() error {
 	hasLayer4 := len(layer4) > 0
 	switch {
 	case hasLayer4 && len(modules) == 0:
-		c.logger.Warn(fmt.Sprintf("%s and %s modules are not available", handlerName, matcherName))
-	case hasLayer4 && hasModule(modules, matcherName) && !hasModule(modules, handlerName):
-		c.logger.Warn(fmt.Sprintf("%s module is not available", handlerName))
-	case hasLayer4 && hasModule(modules, handlerName) && !hasModule(modules, matcherName):
+		c.logger.Warn(fmt.Sprintf("%s and %s modules are not available", httpHandlerName, matcherName))
+	case hasLayer4 && hasModule(modules, matcherName) && !hasModule(modules, httpHandlerName):
+		c.logger.Warn(fmt.Sprintf("%s module is not available", httpHandlerName))
+	case hasLayer4 && hasModule(modules, httpHandlerName) && !hasModule(modules, matcherName):
 		c.logger.Warn(fmt.Sprintf("%s module is not available", matcherName))
 	case len(modules) == 0:
-		c.logger.Warn(fmt.Sprintf("%s module is not available", handlerName))
+		c.logger.Warn(fmt.Sprintf("%s module is not available", httpHandlerName))
 	}
 
 	return nil
@@ -227,6 +236,8 @@ func (c *CrowdSec) Cleanup() error {
 		return fmt.Errorf("failed cleaning up: %w", err)
 	}
 
+	c.logger.Sync() // nolint
+
 	return nil
 }
 
@@ -247,10 +258,14 @@ func (c *CrowdSec) Stop() error {
 }
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
-// an IP is allowed to perform a request
+// an IP is allowed to perform a request.
 func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
-	// TODO: check if running? fully loaded, etc?
 	return c.bouncer.IsAllowed(ip)
+}
+
+// CheckRequest checks the incoming request against AppSec.
+func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
+	return c.bouncer.CheckRequest(ctx, r)
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {

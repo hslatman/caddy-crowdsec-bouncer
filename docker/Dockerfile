@@ -12,6 +12,7 @@ RUN xcaddy build \
     --with github.com/mholt/caddy-l4 \
     --with github.com/caddyserver/transform-encoder \
     --with github.com/hslatman/caddy-crowdsec-bouncer/http@main \
+    --with github.com/hslatman/caddy-crowdsec-bouncer/appsec@main \
     --with github.com/hslatman/caddy-crowdsec-bouncer/layer4@main
 
 FROM caddy:${CADDY_VERSION} AS caddy

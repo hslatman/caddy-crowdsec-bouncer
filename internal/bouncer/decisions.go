@@ -100,18 +100,22 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr) (*models.Decision, error) {
 		return b.store.get(ip)
 	}
 
+	totalLAPICalls.Inc() // increment; not built into liveBouncer
 	decision, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
+		totalLAPIErrors.Inc() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
 			b.zapField(),
 			zap.String("address", b.liveBouncer.APIUrl),
 			zap.Error(err),
 		}
+
 		if b.shouldFailHard {
 			b.logger.Fatal(err.Error(), fields...)
 		} else {
 			b.logger.Error(err.Error(), fields...)
 		}
+
 		return nil, nil // when not failing hard, we return no error
 	}
 
