@@ -32,21 +32,68 @@ type container struct {
 	appsec   string
 }
 
-func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
+func NewContainer(t *testing.T, ctx context.Context, network string) *container {
 	t.Helper()
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        containerImage,
-			ExposedPorts: []string{"8080/tcp"},
-			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
-			Env: map[string]string{
-				"BOUNCER_KEY_testbouncer1": testAPIKey,
-				"DISABLE_ONLINE_API":       "true",
-				"NO_HUB_UPGRADE":           "true",
+			FromDockerfile: testcontainers.FromDockerfile{
+				Context:    "./../../docker",
+				Dockerfile: "Dockerfile",
 			},
+			Hostname: "caddy",
+			//ExposedPorts: []string{"9080/tcp"},
+			// Files: []testcontainers.ContainerFile{
+			// 	{
+			// 		HostFilePath:      "./../../docker/config.json",
+			// 		ContainerFilePath: "/etc/caddy/config.json",
+			// 	},
+			// },
+			WaitingFor: wait.ForLog("serving initial configuration"),
+			Env: map[string]string{
+				"CROWDSEC_API_KEY":         testAPIKey,
+				"CROWDSEC_TICKER_INTERVAL": "1s",
+			},
+			Networks: []string{network},
 		},
 		Started: true,
 		Logger:  testcontainers.TestLogger(t),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, c)
+	t.Cleanup(func() { _ = c.Terminate(ctx) })
+
+	// endpointPort, err := c.MappedPort(ctx, "9080/tcp")
+	// require.NoError(t, err)
+
+	return &container{
+		c: c,
+		//endpoint: fmt.Sprintf("http://127.0.0.1:%d", endpointPort.Int()),
+	}
+}
+
+func NewCrowdSecContainer(t *testing.T, ctx context.Context, network string) *container {
+	t.Helper()
+
+	req := testcontainers.ContainerRequest{
+		Image:        containerImage,
+		ExposedPorts: []string{"8080/tcp"},
+		WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
+		Env: map[string]string{
+			"BOUNCER_KEY_testbouncer1": testAPIKey,
+			"DISABLE_ONLINE_API":       "true",
+			"NO_HUB_UPGRADE":           "true",
+		},
+		Hostname: "crowdsec",
+	}
+
+	if network != "" {
+		req.Networks = []string{network}
+	}
+
+	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+		Logger:           testcontainers.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)

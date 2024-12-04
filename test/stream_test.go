@@ -17,7 +17,7 @@ import (
 func TestStreamingBouncer(t *testing.T) {
 	ctx := context.Background()
 
-	container := testutils.NewCrowdSecContainer(t, ctx)
+	container := testutils.NewCrowdSecContainer(t, ctx, "")
 
 	config := fmt.Sprintf(`{
 		"api_url": %q,
