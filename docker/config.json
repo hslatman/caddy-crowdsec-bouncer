@@ -25,9 +25,9 @@
     },
     "apps": {
       "crowdsec": {
-        "api_key": "<api_key>",
+        "api_key": "{env.CROWDSEC_API_KEY}",
         "api_url": "http://crowdsec:8080/",
-        "ticker_interval": "10s",
+        "ticker_interval": "{env.CROWDSEC_TICKER_INTERVAL}",
         "enable_streaming": true
       },
       "layer4": {
@@ -106,9 +106,11 @@
           "policies": [
             {
               "subjects": ["caddy", "localhost"],
-              "issuer":{
-                "module": "internal"
-              },
+              "issuers":[
+                {
+                  "module": "internal"
+                }
+              ],
               "on_demand": true
             }
           ]

@@ -19,7 +19,7 @@ func TestLiveBouncer(t *testing.T) {
 
 	// TODO: do tests with the handlers/matchers (instead)?
 
-	container := testutils.NewCrowdSecContainer(t, ctx)
+	container := testutils.NewCrowdSecContainer(t, ctx, "")
 
 	config := fmt.Sprintf(`{
 		"api_url": %q,
