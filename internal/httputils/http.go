@@ -81,7 +81,7 @@ func writeBanResponse(w http.ResponseWriter, statusCode int) error {
 	if code <= 0 {
 		code = http.StatusForbidden
 	}
-
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(code)
 	return nil
 }
