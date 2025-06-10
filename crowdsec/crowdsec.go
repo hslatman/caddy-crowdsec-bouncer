@@ -236,7 +236,11 @@ func (c *CrowdSec) Cleanup() error {
 		return fmt.Errorf("failed cleaning up: %w", err)
 	}
 
-	c.logger.Sync() // nolint
+	if c.logger == nil {
+		return nil
+	}
+
+	_ = c.logger.Sync() // nolint
 
 	return nil
 }
