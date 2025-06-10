@@ -1,6 +1,6 @@
 module github.com/hslatman/caddy-crowdsec-bouncer
 
-go 1.22.0
+go 1.23.0
 
 require (
 	github.com/caddyserver/caddy/v2 v2.7.5
