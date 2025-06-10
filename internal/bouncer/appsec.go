@@ -125,7 +125,7 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		totalAppSecErrors.Inc()
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
