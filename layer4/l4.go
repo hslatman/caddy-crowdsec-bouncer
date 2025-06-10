@@ -87,7 +87,11 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 }
 
 func (m *Matcher) Cleanup() error {
-	m.logger.Sync() // nolint
+	if m.logger == nil {
+		return nil
+	}
+
+	_ = m.logger.Sync() // nolint
 
 	return nil
 }

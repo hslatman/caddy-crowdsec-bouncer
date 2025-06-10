@@ -74,7 +74,11 @@ func (h *Handler) Validate() error {
 
 // Cleanup cleans up resources when the module is being stopped.
 func (h *Handler) Cleanup() error {
-	h.logger.Sync() // nolint
+	if h.logger == nil {
+		return nil
+	}
+
+	_ = h.logger.Sync() // nolint
 
 	return nil
 }
