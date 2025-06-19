@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	userAgentName = "caddy-crowdsec-cmd"
+	UserAgentName = "caddy-crowdsec-cmd"
 )
 
 type adminClient struct {
@@ -30,7 +30,7 @@ func newAdminClient(fl caddycmd.Flags) (*adminClient, error) {
 	}
 
 	userAgentVersion := version.Current()
-	userAgent := userAgentName + "/" + userAgentVersion
+	userAgent := UserAgentName + "/" + userAgentVersion
 
 	return &adminClient{
 		address: adminAddress,

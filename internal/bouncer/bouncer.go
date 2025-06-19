@@ -154,14 +154,14 @@ func (b *Bouncer) Init() (err error) {
 	}
 
 	// conditionally initialize the CrowdSec streaming bouncer. The
-	// live bouncer is also initialized for ad-hoc live lookups.
+	// live bouncer is also initialized for ad hoc live lookups.
 	if b.useStreamingBouncer {
 		b.logger.Info("initializing streaming bouncer", b.zapField())
 		if err = b.streamingBouncer.Init(); err != nil {
 			return err
 		}
 
-		b.logger.Info("initializing live bouncer for ad-hoc live lookups", b.zapField())
+		b.logger.Info("initializing live bouncer for ad hoc live lookups", b.zapField())
 		if err = b.liveBouncer.Init(); err != nil {
 			return err
 		}

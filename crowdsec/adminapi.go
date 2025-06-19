@@ -1,17 +1,20 @@
 package crowdsec
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/command"
 )
 
 func init() {
@@ -81,7 +84,7 @@ func (a *adminAPI) Routes() []caddy.AdminRoute {
 }
 
 func handlerWithMiddleware(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
-	return requirePost(next)
+	return requirePost(extractClientVersion(next))
 }
 
 func requirePost(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
@@ -89,6 +92,19 @@ func requirePost(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return nil
+		}
+
+		return next(w, r)
+	}
+}
+
+type clientVersionContextKey struct{}
+
+func extractClientVersion(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		if ua := r.Header.Get("User-Agent"); strings.HasPrefix(ua, fmt.Sprintf("%s/", command.UserAgentName)) { // caddy-crowdsec-cmd
+			v := strings.TrimSpace(strings.TrimPrefix(ua, fmt.Sprintf("%s/", command.UserAgentName)))
+			r = r.WithContext(context.WithValue(r.Context(), clientVersionContextKey{}, v))
 		}
 
 		return next(w, r)
