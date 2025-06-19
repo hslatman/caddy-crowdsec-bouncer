@@ -27,6 +27,8 @@ var (
 		Name: "lapi_appsec_requests_failures_total",
 		Help: "The total number of failed calls to CrowdSec LAPI AppSec component",
 	})
+
+	// TODO: additional metrics for number of blocked IPs / requests?
 )
 
 func newMetricsProvider(client *apiclient.ApiClient, updater csbouncer.MetricsUpdater, interval time.Duration) (*csbouncer.MetricsProvider, error) {

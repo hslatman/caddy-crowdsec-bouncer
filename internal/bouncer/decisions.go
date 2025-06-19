@@ -95,13 +95,13 @@ func (b *Bouncer) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 
-func (b *Bouncer) retrieveDecision(ip netip.Addr) (*models.Decision, error) {
-	if b.useStreamingBouncer {
+func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decision, error) {
+	if b.useStreamingBouncer && !forceLive {
 		return b.store.get(ip)
 	}
 
 	totalLAPICalls.Inc() // increment; not built into liveBouncer
-	decision, err := b.liveBouncer.Get(ip.String())
+	decisions, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
 		totalLAPIErrors.Inc() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
@@ -119,8 +119,8 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr) (*models.Decision, error) {
 		return nil, nil // when not failing hard, we return no error
 	}
 
-	if len(*decision) >= 1 {
-		return (*decision)[0], nil // TODO: decide if choosing the first decision is OK
+	if len(*decisions) >= 1 {
+		return (*decisions)[0], nil // TODO: decide if choosing the first decision is OK
 	}
 
 	return nil, nil

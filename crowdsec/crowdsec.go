@@ -31,11 +31,13 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/command"
 )
 
 func init() {
 	caddy.RegisterModule(CrowdSec{})
 	httpcaddyfile.RegisterGlobalOption("crowdsec", parseCrowdSec)
+	command.Register()
 }
 
 // CaddyModule returns the Caddy module information.
@@ -264,12 +266,22 @@ func (c *CrowdSec) Stop() error {
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request.
 func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
-	return c.bouncer.IsAllowed(ip)
+	return c.bouncer.IsAllowed(ip, false)
 }
 
 // CheckRequest checks the incoming request against AppSec.
 func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
 	return c.bouncer.CheckRequest(ctx, r)
+}
+
+func (c *CrowdSec) Healthy(ctx context.Context) bool {
+	b, _ := c.bouncer.Healthy(ctx)
+	return b
+}
+
+func (c *CrowdSec) Ping(ctx context.Context) bool {
+	b, _ := c.bouncer.Ping(ctx)
+	return b
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {

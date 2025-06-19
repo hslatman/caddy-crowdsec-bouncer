@@ -60,8 +60,10 @@ type Bouncer struct {
 	logger              *zap.Logger
 	useStreamingBouncer bool
 	shouldFailHard      bool
-	instantiatedAt      time.Time
-	instanceID          string
+
+	userAgent      string
+	instantiatedAt time.Time
+	instanceID     string
 
 	ctx       context.Context
 	started   bool
@@ -99,6 +101,7 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, tickerInterval
 		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, logger.Named("appsec")),
 		store:          newStore(),
 		logger:         logger,
+		userAgent:      userAgent,
 		instantiatedAt: instantiatedAt,
 		instanceID:     instanceID,
 	}, nil
@@ -116,6 +119,22 @@ func (b *Bouncer) EnableHardFails() {
 	b.streamingBouncer.RetryInitialConnect = false
 }
 
+func (b *Bouncer) NumberOfActiveDecisions() int {
+	return b.store.store.Len()
+}
+
+func (b *Bouncer) UserAgent() string {
+	return b.userAgent
+}
+
+func (b *Bouncer) StartedAt() time.Time {
+	return b.instantiatedAt
+}
+
+func (b *Bouncer) InstanceID() string {
+	return b.instanceID
+}
+
 // Init initializes the Bouncer
 func (b *Bouncer) Init() (err error) {
 	// override CrowdSec's default logrus logging
@@ -126,26 +145,26 @@ func (b *Bouncer) Init() (err error) {
 	// provider? Separate setting for gathering metrics vs. pushing to LAPI?
 	metricsInterval := 0 * time.Minute // 1 * time.Minute
 
-	// initialize the CrowdSec live bouncer
+	// conditionally initialize the CrowdSec live bouncer
 	if !b.useStreamingBouncer {
 		b.logger.Info("initializing live bouncer", b.zapField())
 		if err = b.liveBouncer.Init(); err != nil {
 			return err
 		}
+	}
 
-		if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, b.updateMetrics, metricsInterval); err != nil {
+	// conditionally initialize the CrowdSec streaming bouncer. The
+	// live bouncer is also initialized for ad-hoc live lookups.
+	if b.useStreamingBouncer {
+		b.logger.Info("initializing streaming bouncer", b.zapField())
+		if err = b.streamingBouncer.Init(); err != nil {
 			return err
 		}
 
-		b.logAppSecStatus()
-
-		return nil
-	}
-
-	// initialize the CrowdSec streaming bouncer
-	b.logger.Info("initializing streaming bouncer", b.zapField())
-	if err = b.streamingBouncer.Init(); err != nil {
-		return err
+		b.logger.Info("initializing live bouncer for ad-hoc live lookups", b.zapField())
+		if err = b.liveBouncer.Init(); err != nil {
+			return err
+		}
 	}
 
 	if b.metricsProvider, err = newMetricsProvider(b.streamingBouncer.APIClient, b.updateMetrics, metricsInterval); err != nil {
@@ -216,14 +235,14 @@ func (b *Bouncer) Shutdown() error {
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
+func (b *Bouncer) IsAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
 	if !ip.IsValid() {
 		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
 	}
 
-	decision, err := b.retrieveDecision(ip)
+	decision, err := b.retrieveDecision(ip, forceLive)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
 	}
@@ -232,7 +251,7 @@ func (b *Bouncer) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 		return isAllowed, decision, nil
 	}
 
-	// At this point we've determined the IP is allowed
+	// at this point we've determined the IP is allowed
 	isAllowed = true
 
 	return isAllowed, nil, nil

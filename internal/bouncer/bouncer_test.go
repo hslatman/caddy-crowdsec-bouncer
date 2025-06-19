@@ -143,6 +143,9 @@ func TestStreamingBouncer(t *testing.T) {
 	// allow the bouncer a bit of time to retrieve and store the mocked rules
 	time.Sleep(1 * time.Second)
 
+	// for this test, all lookups must use the streaming bouncer
+	forceLive := false
+
 	type args struct {
 		ip netip.Addr
 	}
@@ -211,7 +214,7 @@ func TestStreamingBouncer(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, _, err := b.IsAllowed(tt.args.ip)
+		got, _, err := b.IsAllowed(tt.args.ip, forceLive)
 		if (err != nil) != tt.wantErr {
 			t.Errorf("%q. b.IsAllowed() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 			continue
