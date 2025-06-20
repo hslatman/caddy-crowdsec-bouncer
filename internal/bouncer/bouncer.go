@@ -205,6 +205,9 @@ func (b *Bouncer) Run(ctx context.Context) {
 	// the CrowdSec API? The bouncer/client doesn't seem to give us that information
 	// directly, but we could use the heartbeat service before starting to run?
 	// That can also be useful for testing the LiveBouncer at startup.
+	// NOTE: heartbeat service can't be used by LiveBouncer; it will result in 401s
+	// when trying to use that, it seems. It might be just for CrowdSec "machines".
+	// The Bouncer now has a method Ping that can be used in lieu of the heartbeat.
 
 	b.startStreamingBouncer(b.ctx)
 	b.startProcessingDecisions(b.ctx)

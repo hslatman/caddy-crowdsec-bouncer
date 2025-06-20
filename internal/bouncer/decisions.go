@@ -55,6 +55,7 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 				}
 
 				// TODO: process in separate goroutines/waitgroup?
+				// TODO: emit a Caddy event at the end of processing (new) decisions?
 				if numberOfNewDecisions := len(decisions.New); numberOfNewDecisions > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions), b.zapField())
 					for _, decision := range decisions.New {

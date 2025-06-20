@@ -84,7 +84,7 @@ func (a *adminAPI) Routes() []caddy.AdminRoute {
 }
 
 func handlerWithMiddleware(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
-	return requirePost(extractClientVersion(next))
+	return requirePost(extractRequestID(extractClientVersion(next)))
 }
 
 func requirePost(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
@@ -105,6 +105,18 @@ func extractClientVersion(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
 		if ua := r.Header.Get("User-Agent"); strings.HasPrefix(ua, fmt.Sprintf("%s/", command.UserAgentName)) { // caddy-crowdsec-cmd
 			v := strings.TrimSpace(strings.TrimPrefix(ua, fmt.Sprintf("%s/", command.UserAgentName)))
 			r = r.WithContext(context.WithValue(r.Context(), clientVersionContextKey{}, v))
+		}
+
+		return next(w, r)
+	}
+}
+
+type requestIDContextKey struct{}
+
+func extractRequestID(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		if id := r.Header.Get("X-Request-ID"); id != "" {
+			r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id))
 		}
 
 		return next(w, r)

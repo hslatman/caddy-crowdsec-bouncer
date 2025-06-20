@@ -9,6 +9,7 @@ import (
 	"net/netip"
 
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
+	"github.com/google/uuid"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
@@ -19,8 +20,8 @@ const (
 )
 
 type adminClient struct {
-	address string
-	headers http.Header
+	address   string
+	userAgent string
 }
 
 func newAdminClient(fl caddycmd.Flags) (*adminClient, error) {
@@ -33,15 +34,13 @@ func newAdminClient(fl caddycmd.Flags) (*adminClient, error) {
 	userAgent := UserAgentName + "/" + userAgentVersion
 
 	return &adminClient{
-		address: adminAddress,
-		headers: http.Header{
-			"User-Agent": []string{userAgent},
-		},
+		address:   adminAddress,
+		userAgent: userAgent,
 	}, nil
 }
 
 func (c *adminClient) doRequest(path string, body io.Reader) ([]byte, error) {
-	resp, err := caddycmd.AdminAPIRequest(c.address, http.MethodPost, path, c.headers, body)
+	resp, err := caddycmd.AdminAPIRequest(c.address, http.MethodPost, path, c.headers(), body)
 	if err != nil {
 		return nil, fmt.Errorf("admin API request failed: %w", err)
 	}
@@ -53,6 +52,13 @@ func (c *adminClient) doRequest(path string, body io.Reader) ([]byte, error) {
 	}
 
 	return b, nil
+}
+
+func (c *adminClient) headers() http.Header {
+	return http.Header{
+		"User-Agent":   []string{c.userAgent},
+		"X-Request-ID": []string{uuid.New().String()},
+	}
 }
 
 func (c *adminClient) Health() (*adminapi.HealthResponse, error) {
