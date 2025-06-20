@@ -274,16 +274,6 @@ func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
 	return c.bouncer.CheckRequest(ctx, r)
 }
 
-func (c *CrowdSec) Healthy(ctx context.Context) bool {
-	b, _ := c.bouncer.Healthy(ctx)
-	return b
-}
-
-func (c *CrowdSec) Ping(ctx context.Context) bool {
-	b, _ := c.bouncer.Ping(ctx)
-	return b
-}
-
 func (c *CrowdSec) isStreamingEnabled() bool {
 	return c.EnableStreaming == nil || *c.EnableStreaming
 }

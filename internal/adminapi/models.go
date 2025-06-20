@@ -2,11 +2,26 @@ package adminapi
 
 import "time"
 
+type Streaming struct {
+	Enabled  bool
+	Interval string
+}
+
+type Live struct {
+	Enabled bool
+	Mode    string
+}
+
+type AppSec struct {
+	Enabled bool
+}
+
 type InfoResponse struct {
-	BouncerEnabled          bool
-	AppSecEnabled           bool
-	StreamingEnabled        bool
+	Streaming               Streaming
+	Live                    Live
+	AppSec                  AppSec
 	ShouldFailHard          bool
+	AuthType                string
 	UserAgent               string
 	InstanceID              string
 	Uptime                  time.Duration

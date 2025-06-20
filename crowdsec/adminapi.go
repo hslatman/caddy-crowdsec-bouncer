@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
-	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
@@ -25,9 +24,9 @@ func init() {
 // runtime information about the CrowdSec remediation component
 // built into, and running as part of Caddy.
 type adminAPI struct {
-	ctx      caddy.Context
-	log      *zap.Logger
-	crowdsec *CrowdSec
+	ctx   caddy.Context
+	log   *zap.Logger
+	admin admin
 }
 
 // CaddyModule returns the Caddy module information.
@@ -48,7 +47,7 @@ func (a *adminAPI) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
 
-	a.crowdsec = crowdsec.(*CrowdSec)
+	a.admin = crowdsec.(*CrowdSec)
 
 	return nil
 }
@@ -124,7 +123,7 @@ func extractRequestID(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
 }
 
 func (a *adminAPI) handleHealth(w http.ResponseWriter, r *http.Request) error {
-	ok := a.crowdsec.Healthy(r.Context())
+	ok := a.admin.healthy(r.Context())
 	b, err := json.Marshal(adminapi.HealthResponse{
 		Ok: ok,
 	})
@@ -153,12 +152,7 @@ func (a *adminAPI) handleCheck(w http.ResponseWriter, r *http.Request) error {
 
 	// TODO: return decision (details) too, if set?
 	// TODO: if live lookup fails due to API error, that should be reflected; it doesn't seem like that, currently?
-	var allowed bool
-	if req.ForceLive {
-		allowed, _, err = a.crowdsec.bouncer.IsAllowed(ip, true)
-	} else {
-		allowed, _, err = a.crowdsec.IsAllowed(ip)
-	}
+	allowed, _, err := a.admin.check(r.Context(), ip, req.ForceLive)
 	if err != nil {
 		return caddyAPIError(http.StatusInternalServerError, fmt.Errorf("failed checking IP %q: %w", ip.String(), err))
 	}
@@ -172,15 +166,33 @@ func (a *adminAPI) handleCheck(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *adminAPI) handleInfo(w http.ResponseWriter, r *http.Request) error {
+	info := a.admin.info(r.Context())
+	interval := info.tickerInterval
+	if !info.streamingEnabled {
+		interval = "-"
+	}
+	liveMode := "live"
+	if info.streamingEnabled {
+		liveMode = "adhoc"
+	}
 	b, err := json.Marshal(adminapi.InfoResponse{
-		BouncerEnabled:          a.crowdsec.APIUrl != "",
-		AppSecEnabled:           a.crowdsec.AppSecUrl != "",
-		StreamingEnabled:        a.crowdsec.isStreamingEnabled(),
-		ShouldFailHard:          a.crowdsec.shouldFailHard(),
-		UserAgent:               a.crowdsec.bouncer.UserAgent(),
-		InstanceID:              a.crowdsec.bouncer.InstanceID(),
-		Uptime:                  time.Since(a.crowdsec.bouncer.StartedAt()),
-		NumberOfActiveDecisions: a.crowdsec.bouncer.NumberOfActiveDecisions(),
+		Streaming: adminapi.Streaming{
+			Enabled:  info.streamingEnabled,
+			Interval: interval,
+		},
+		Live: adminapi.Live{
+			Enabled: true,
+			Mode:    liveMode,
+		},
+		AppSec: adminapi.AppSec{
+			Enabled: info.appSecURL != "",
+		},
+		ShouldFailHard:          info.shouldFailHard,
+		AuthType:                "apikey",
+		UserAgent:               info.userAgent,
+		InstanceID:              info.instanceID,
+		Uptime:                  info.uptime,
+		NumberOfActiveDecisions: info.numberOfActiveDecisions,
 	})
 	if err != nil {
 		return caddyAPIError(http.StatusInternalServerError, fmt.Errorf("failed marshaling CrowdSec status status: %w", err))
@@ -190,7 +202,7 @@ func (a *adminAPI) handleInfo(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *adminAPI) handlePing(w http.ResponseWriter, r *http.Request) error {
-	ok := a.crowdsec.Ping(r.Context())
+	ok := a.admin.ping(r.Context())
 	b, err := json.Marshal(adminapi.PingResponse{
 		Ok: ok,
 	})

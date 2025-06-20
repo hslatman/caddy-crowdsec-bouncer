@@ -62,7 +62,7 @@ func newFakeAdminAPIHandler(t *testing.T) caddy.AdminHandler {
 	require.NoError(t, err)
 
 	a := &adminAPI{
-		crowdsec: &CrowdSec{
+		admin: &CrowdSec{
 			APIUrl:  "fake",
 			bouncer: b,
 		},
@@ -85,10 +85,9 @@ func TestAdminAPIHandlesRequests(t *testing.T) {
 		var r adminapi.InfoResponse
 		err = json.Unmarshal(w.Body.Bytes(), &r)
 		require.NoError(t, err)
-		assert.True(t, r.BouncerEnabled)
-		assert.False(t, r.AppSecEnabled)
+		assert.True(t, r.Streaming.Enabled)
+		assert.False(t, r.AppSec.Enabled)
 		assert.Equal(t, 0, r.NumberOfActiveDecisions)
-		assert.True(t, r.StreamingEnabled)
 		assert.False(t, r.ShouldFailHard)
 		assert.NotEmpty(t, r.InstanceID)
 		assert.NotEmpty(t, r.UserAgent)

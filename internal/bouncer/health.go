@@ -17,7 +17,7 @@ func (b *Bouncer) Healthy(ctx context.Context) (bool, error) {
 // that a connection could be made.
 func (b *Bouncer) Ping(ctx context.Context) (bool, error) {
 	if _, err := b.liveBouncer.Get("127.0.0.255"); err != nil {
-		return false, fmt.Errorf("failed reaching CrowdSec LAPI: %w", err)
+		return false, fmt.Errorf("failed reaching CrowdSec LAPI: %w", err) // TODO: distinguish specific types of errors
 	}
 
 	return true, nil

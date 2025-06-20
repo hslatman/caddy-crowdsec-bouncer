@@ -27,9 +27,9 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
-
 	"go.uber.org/zap"
+
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
 )
 
 const (
@@ -60,10 +60,9 @@ type Bouncer struct {
 	logger              *zap.Logger
 	useStreamingBouncer bool
 	shouldFailHard      bool
-
-	userAgent      string
-	instantiatedAt time.Time
-	instanceID     string
+	userAgent           string
+	instantiatedAt      time.Time
+	instanceID          string
 
 	ctx       context.Context
 	started   bool

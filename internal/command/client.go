@@ -112,7 +112,7 @@ func (c *adminClient) Check(ip netip.Addr, forceLive bool) (*adminapi.CheckRespo
 		return nil, fmt.Errorf("failed marshaling CrowdSec check request: %w", err)
 	}
 
-	b, err := c.doRequest("/crowdsec/info", bytes.NewReader(reqBytes))
+	b, err := c.doRequest("/crowdsec/check", bytes.NewReader(reqBytes))
 	if err != nil {
 		return nil, err
 	}
