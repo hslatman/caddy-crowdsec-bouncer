@@ -13,7 +13,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/command"
 )
 
 func init() {
@@ -26,7 +25,7 @@ func init() {
 type adminAPI struct {
 	ctx   caddy.Context
 	log   *zap.Logger
-	admin admin
+	admin adminapi.Admin
 }
 
 // CaddyModule returns the Caddy module information.
@@ -47,6 +46,8 @@ func (a *adminAPI) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("getting crowdsec app: %v", err)
 	}
 
+	// the CrowdSec module adheres to the [adminapi.Admin]
+	// interface itself
 	a.admin = crowdsec.(*CrowdSec)
 
 	return nil
@@ -101,8 +102,8 @@ type clientVersionContextKey struct{}
 
 func extractClientVersion(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		if ua := r.Header.Get("User-Agent"); strings.HasPrefix(ua, fmt.Sprintf("%s/", command.UserAgentName)) { // caddy-crowdsec-cmd
-			v := strings.TrimSpace(strings.TrimPrefix(ua, fmt.Sprintf("%s/", command.UserAgentName)))
+		if ua := r.Header.Get("User-Agent"); strings.HasPrefix(ua, fmt.Sprintf("%s/", adminapi.UserAgentName)) { // caddy-crowdsec-cmd
+			v := strings.TrimSpace(strings.TrimPrefix(ua, fmt.Sprintf("%s/", adminapi.UserAgentName)))
 			r = r.WithContext(context.WithValue(r.Context(), clientVersionContextKey{}, v))
 		}
 
@@ -123,7 +124,7 @@ func extractRequestID(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
 }
 
 func (a *adminAPI) handleHealth(w http.ResponseWriter, r *http.Request) error {
-	ok := a.admin.healthy(r.Context())
+	ok := a.admin.Healthy(r.Context())
 	b, err := json.Marshal(adminapi.HealthResponse{
 		Ok: ok,
 	})
@@ -152,7 +153,7 @@ func (a *adminAPI) handleCheck(w http.ResponseWriter, r *http.Request) error {
 
 	// TODO: return decision (details) too, if set?
 	// TODO: if live lookup fails due to API error, that should be reflected; it doesn't seem like that, currently?
-	allowed, _, err := a.admin.check(r.Context(), ip, req.ForceLive)
+	allowed, _, err := a.admin.Check(r.Context(), ip, req.ForceLive)
 	if err != nil {
 		return caddyAPIError(http.StatusInternalServerError, fmt.Errorf("failed checking IP %q: %w", ip.String(), err))
 	}
@@ -166,18 +167,18 @@ func (a *adminAPI) handleCheck(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *adminAPI) handleInfo(w http.ResponseWriter, r *http.Request) error {
-	info := a.admin.info(r.Context())
-	interval := info.tickerInterval
-	if !info.streamingEnabled {
+	info := a.admin.Info(r.Context())
+	interval := info.TickerInterval
+	if !info.StreamingEnabled {
 		interval = "-"
 	}
 	liveMode := "live"
-	if info.streamingEnabled {
+	if info.StreamingEnabled {
 		liveMode = "adhoc"
 	}
 	b, err := json.Marshal(adminapi.InfoResponse{
 		Streaming: adminapi.Streaming{
-			Enabled:  info.streamingEnabled,
+			Enabled:  info.StreamingEnabled,
 			Interval: interval,
 		},
 		Live: adminapi.Live{
@@ -185,14 +186,14 @@ func (a *adminAPI) handleInfo(w http.ResponseWriter, r *http.Request) error {
 			Mode:    liveMode,
 		},
 		AppSec: adminapi.AppSec{
-			Enabled: info.appSecURL != "",
+			Enabled: info.AppSecURL != "",
 		},
-		ShouldFailHard:          info.shouldFailHard,
+		ShouldFailHard:          info.ShouldFailHard,
 		AuthType:                "apikey",
-		UserAgent:               info.userAgent,
-		InstanceID:              info.instanceID,
-		Uptime:                  info.uptime,
-		NumberOfActiveDecisions: info.numberOfActiveDecisions,
+		UserAgent:               info.UserAgent,
+		InstanceID:              info.InstanceID,
+		Uptime:                  info.Uptime,
+		NumberOfActiveDecisions: info.NumberOfActiveDecisions,
 	})
 	if err != nil {
 		return caddyAPIError(http.StatusInternalServerError, fmt.Errorf("failed marshaling CrowdSec status status: %w", err))
@@ -202,7 +203,7 @@ func (a *adminAPI) handleInfo(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *adminAPI) handlePing(w http.ResponseWriter, r *http.Request) error {
-	ok := a.admin.ping(r.Context())
+	ok := a.admin.Ping(r.Context())
 	b, err := json.Marshal(adminapi.PingResponse{
 		Ok: ok,
 	})

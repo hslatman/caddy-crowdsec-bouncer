@@ -10,6 +10,7 @@ import (
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
 	"github.com/spf13/cobra"
 
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
 )
 
@@ -68,8 +69,16 @@ const (
 	exitCodeSuccess = caddy.ExitCodeSuccess
 )
 
+func withClientConfigFromFlags(fl caddycmd.Flags) adminapi.ClientConfig {
+	return adminapi.ClientConfig{
+		Address:    fl.String("address"),
+		ConfigFile: fl.String("config"),
+		Adapter:    fl.String("adapter"),
+	}
+}
+
 func cmdInfo(fl caddycmd.Flags) (int, error) {
-	c, err := newAdminClient(fl)
+	c, err := adminapi.NewClient(withClientConfigFromFlags(fl))
 	if err != nil {
 		return exitCodeError, err
 	}
@@ -90,7 +99,7 @@ func cmdInfo(fl caddycmd.Flags) (int, error) {
 }
 
 func cmdHealth(fl caddycmd.Flags) (int, error) {
-	c, err := newAdminClient(fl)
+	c, err := adminapi.NewClient(withClientConfigFromFlags(fl))
 	if err != nil {
 		return exitCodeError, err
 	}
@@ -108,7 +117,7 @@ func cmdHealth(fl caddycmd.Flags) (int, error) {
 }
 
 func cmdPing(fl caddycmd.Flags) (int, error) {
-	c, err := newAdminClient(fl)
+	c, err := adminapi.NewClient(withClientConfigFromFlags(fl))
 	if err != nil {
 		return exitCodeError, err
 	}
@@ -128,7 +137,7 @@ func cmdPing(fl caddycmd.Flags) (int, error) {
 }
 
 func cmdCheck(fl caddycmd.Flags) (int, error) {
-	c, err := newAdminClient(fl)
+	c, err := adminapi.NewClient(withClientConfigFromFlags(fl))
 	if err != nil {
 		return exitCodeError, err
 	}

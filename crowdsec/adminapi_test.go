@@ -63,8 +63,9 @@ func newFakeAdminAPIHandler(t *testing.T) caddy.AdminHandler {
 
 	a := &adminAPI{
 		admin: &CrowdSec{
-			APIUrl:  "fake",
-			bouncer: b,
+			APIUrl:         "fake",
+			TickerInterval: "10s",
+			bouncer:        b,
 		},
 	}
 
@@ -86,11 +87,15 @@ func TestAdminAPIHandlesRequests(t *testing.T) {
 		err = json.Unmarshal(w.Body.Bytes(), &r)
 		require.NoError(t, err)
 		assert.True(t, r.Streaming.Enabled)
+		assert.True(t, r.Live.Enabled)
 		assert.False(t, r.AppSec.Enabled)
 		assert.Equal(t, 0, r.NumberOfActiveDecisions)
 		assert.False(t, r.ShouldFailHard)
 		assert.NotEmpty(t, r.InstanceID)
 		assert.NotEmpty(t, r.UserAgent)
+		assert.Equal(t, "apikey", r.AuthType)
+		assert.Equal(t, "adhoc", r.Live.Mode)
+		assert.Equal(t, "10s", r.Streaming.Interval)
 
 		d, err := time.ParseDuration("0s")
 		require.NoError(t, err)

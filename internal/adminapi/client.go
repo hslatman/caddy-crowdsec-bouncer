@@ -1,4 +1,4 @@
-package command
+package adminapi
 
 import (
 	"bytes"
@@ -11,7 +11,6 @@ import (
 	caddycmd "github.com/caddyserver/caddy/v2/cmd"
 	"github.com/google/uuid"
 
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
 )
 
@@ -19,13 +18,19 @@ const (
 	UserAgentName = "caddy-crowdsec-cmd"
 )
 
-type adminClient struct {
+type Client struct {
 	address   string
 	userAgent string
 }
 
-func newAdminClient(fl caddycmd.Flags) (*adminClient, error) {
-	adminAddress, err := caddycmd.DetermineAdminAPIAddress(fl.String("address"), nil, fl.String("config"), fl.String("adapter"))
+type ClientConfig struct {
+	Address    string
+	ConfigFile string
+	Adapter    string
+}
+
+func NewClient(cfg ClientConfig) (*Client, error) {
+	adminAddress, err := caddycmd.DetermineAdminAPIAddress(cfg.Address, nil, cfg.ConfigFile, cfg.Adapter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine admin API address: %w", err)
 	}
@@ -33,13 +38,13 @@ func newAdminClient(fl caddycmd.Flags) (*adminClient, error) {
 	userAgentVersion := version.Current()
 	userAgent := UserAgentName + "/" + userAgentVersion
 
-	return &adminClient{
+	return &Client{
 		address:   adminAddress,
 		userAgent: userAgent,
 	}, nil
 }
 
-func (c *adminClient) doRequest(path string, body io.Reader) ([]byte, error) {
+func (c *Client) doRequest(path string, body io.Reader) ([]byte, error) {
 	resp, err := caddycmd.AdminAPIRequest(c.address, http.MethodPost, path, c.headers(), body)
 	if err != nil {
 		return nil, fmt.Errorf("admin API request failed: %w", err)
@@ -54,20 +59,20 @@ func (c *adminClient) doRequest(path string, body io.Reader) ([]byte, error) {
 	return b, nil
 }
 
-func (c *adminClient) headers() http.Header {
+func (c *Client) headers() http.Header {
 	return http.Header{
 		"User-Agent":   []string{c.userAgent},
 		"X-Request-ID": []string{uuid.New().String()},
 	}
 }
 
-func (c *adminClient) Health() (*adminapi.HealthResponse, error) {
+func (c *Client) Health() (*HealthResponse, error) {
 	b, err := c.doRequest("/crowdsec/health", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var s adminapi.HealthResponse
+	var s HealthResponse
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("failed unmarshaling CrowdSec health: %w", err)
 	}
@@ -75,13 +80,13 @@ func (c *adminClient) Health() (*adminapi.HealthResponse, error) {
 	return &s, nil
 }
 
-func (c *adminClient) Ping() (*adminapi.PingResponse, error) {
+func (c *Client) Ping() (*PingResponse, error) {
 	b, err := c.doRequest("/crowdsec/ping", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var p adminapi.PingResponse
+	var p PingResponse
 	if err := json.Unmarshal(b, &p); err != nil {
 		return nil, fmt.Errorf("failed unmarshaling CrowdSec LAPI ping response: %w", err)
 	}
@@ -89,13 +94,13 @@ func (c *adminClient) Ping() (*adminapi.PingResponse, error) {
 	return &p, nil
 }
 
-func (c *adminClient) Info() (*adminapi.InfoResponse, error) {
+func (c *Client) Info() (*InfoResponse, error) {
 	b, err := c.doRequest("/crowdsec/info", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var i adminapi.InfoResponse
+	var i InfoResponse
 	if err := json.Unmarshal(b, &i); err != nil {
 		return nil, fmt.Errorf("failed unmarshaling CrowdSec info: %w", err)
 	}
@@ -103,8 +108,8 @@ func (c *adminClient) Info() (*adminapi.InfoResponse, error) {
 	return &i, nil
 }
 
-func (c *adminClient) Check(ip netip.Addr, forceLive bool) (*adminapi.CheckResponse, error) {
-	reqBytes, err := json.Marshal(adminapi.CheckRequest{
+func (c *Client) Check(ip netip.Addr, forceLive bool) (*CheckResponse, error) {
+	reqBytes, err := json.Marshal(CheckRequest{
 		IP:        ip.String(),
 		ForceLive: forceLive,
 	})
@@ -117,7 +122,7 @@ func (c *adminClient) Check(ip netip.Addr, forceLive bool) (*adminapi.CheckRespo
 		return nil, err
 	}
 
-	var r adminapi.CheckResponse
+	var r CheckResponse
 	if err := json.Unmarshal(b, &r); err != nil {
 		return nil, fmt.Errorf("failed unmarshaling CrowdSec check response: %w", err)
 	}
