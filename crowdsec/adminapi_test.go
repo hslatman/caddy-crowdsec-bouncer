@@ -1,19 +1,21 @@
 package crowdsec
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 )
 
 func TestAdminAPIRoutes(t *testing.T) {
@@ -54,19 +56,38 @@ func newTestAdminHandler(t *testing.T, a *adminAPI) *testAdminHandler {
 	return &testAdminHandler{t: t, routes: a.Routes()}
 }
 
+type testAdmin struct{}
+
+func (a *testAdmin) Info(_ context.Context) adminapi.Info {
+	return adminapi.Info{
+		StreamingEnabled:        true,
+		TickerInterval:          "10s",
+		AppSecURL:               "",
+		ShouldFailHard:          false,
+		UserAgent:               "user-agent",
+		InstanceID:              "instance-id",
+		Uptime:                  time.Duration(10 * time.Second),
+		NumberOfActiveDecisions: 1337,
+	}
+}
+
+func (a *testAdmin) Healthy(ctx context.Context) bool {
+	return true
+}
+
+func (a *testAdmin) Ping(ctx context.Context) bool {
+	return true
+}
+
+func (a *testAdmin) Check(_ context.Context, ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
+	return true, nil, nil
+}
+
 func newFakeAdminAPIHandler(t *testing.T) caddy.AdminHandler {
 	t.Helper()
 
-	logger := zaptest.NewLogger(t)
-	b, err := bouncer.New("key", "fake", "", 0, "10s", logger)
-	require.NoError(t, err)
-
 	a := &adminAPI{
-		admin: &CrowdSec{
-			APIUrl:         "fake",
-			TickerInterval: "10s",
-			bouncer:        b,
-		},
+		admin: &testAdmin{},
 	}
 
 	return newTestAdminHandler(t, a)
@@ -89,7 +110,7 @@ func TestAdminAPIHandlesRequests(t *testing.T) {
 		assert.True(t, r.Streaming.Enabled)
 		assert.True(t, r.Live.Enabled)
 		assert.False(t, r.AppSec.Enabled)
-		assert.Equal(t, 0, r.NumberOfActiveDecisions)
+		assert.Equal(t, 1337, r.NumberOfActiveDecisions)
 		assert.False(t, r.ShouldFailHard)
 		assert.NotEmpty(t, r.InstanceID)
 		assert.NotEmpty(t, r.UserAgent)
@@ -100,6 +121,50 @@ func TestAdminAPIHandlesRequests(t *testing.T) {
 		d, err := time.ParseDuration("0s")
 		require.NoError(t, err)
 		assert.Greater(t, r.Uptime, d)
+	})
+
+	t.Run("ping", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/crowdsec/ping", http.NoBody)
+		w := httptest.NewRecorder()
+		err := handler.ServeHTTP(w, req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+		var r adminapi.PingResponse
+		err = json.Unmarshal(w.Body.Bytes(), &r)
+		require.NoError(t, err)
+		assert.True(t, r.Ok)
+	})
+
+	t.Run("health", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/crowdsec/health", http.NoBody)
+		w := httptest.NewRecorder()
+		err := handler.ServeHTTP(w, req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+		var r adminapi.HealthResponse
+		err = json.Unmarshal(w.Body.Bytes(), &r)
+		require.NoError(t, err)
+		assert.True(t, r.Ok)
+	})
+
+	t.Run("check", func(t *testing.T) {
+		body := bytes.NewReader([]byte(`{"ip": "127.0.0.1", "live": false}`))
+		req := httptest.NewRequest(http.MethodPost, "/crowdsec/check", body)
+		w := httptest.NewRecorder()
+		err := handler.ServeHTTP(w, req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+
+		var r adminapi.CheckResponse
+		err = json.Unmarshal(w.Body.Bytes(), &r)
+		require.NoError(t, err)
+		assert.False(t, r.Blocked)
+		assert.Empty(t, r.Reason)
 	})
 
 	t.Run("not-found", func(t *testing.T) {

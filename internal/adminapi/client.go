@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	UserAgentName = "caddy-crowdsec-cmd"
+	UserAgentName = "caddy-crowdsec-admin"
 )
 
 type Client struct {
