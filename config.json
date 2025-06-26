@@ -107,9 +107,9 @@
           "policies": [
             {
               "subjects": ["localhost"],
-              "issuer":{
+              "issuers":[{
                 "module": "internal"
-              },
+              }],
               "on_demand": true
             }
           ]

@@ -4,27 +4,30 @@ A [Caddy](https://caddyserver.com/) module that blocks malicious traffic based o
 
 ## Description
 
-CrowdSec is a free and open source security automation tool that uses local logs and a set of scenarios to infer malicious intent. 
-In addition to operating locally, an optional community integration is also available, through which crowd-sourced IP reputation lists are distributed.
-
-The architecture of CrowdSec is very modular.
-At its core is the CrowdSec Agent, which keeps track of all data and related systems.
-Bouncers are pieces of software that perform specific actions based on the decisions of the Agent.
-
-This repository contains a custom CrowdSec Bouncer that can be embedded as a Caddy module.
-It consists of the following four main pieces:
+The Caddy CrowdSec Bouncer consists of the following five main pieces:
 
 * A Caddy App
 * A Caddy Bouncer HTTP Handler
 * A Caddy [Layer 4](https://github.com/mholt/caddy-l4) Connection Matcher
 * A Caddy AppSec HTTP Handler
+* The `caddy crowdsec` command
 
 The App is responsible for communicating with a CrowdSec Agent via the CrowdSec *Local API* and keeping track of the decisions of the Agent.
 The Bouncer HTTP Handler checks client IPs of incoming requests against the decisions stored by the App.
 This way, multiple independent HTTP Handlers and Connection Matchers can use the storage exposed by the App.
 The App can be configured to use either the StreamBouncer, which gets decisions via a HTTP polling mechanism, or the LiveBouncer, which sends a request on every incoming HTTP request or Layer 4 connection setup.
 The Layer 4 Connection Matcher matches TCP and UDP IP addresses against the CrowdSec *Local API*.
-Finally, the AppSec HTTP Handler communicates with an AppSec component configured on your CrowdSec deployment, and will check incoming HTTP requests against the rulesets configured.
+The AppSec HTTP Handler communicates with an AppSec component configured on your CrowdSec deployment, and will check incoming HTTP requests against the rulesets configured.
+Finally, the `caddy crowdsec` command offers some useful commands for you CrowdSec integration.
+
+### What is CrowdSec?
+
+CrowdSec is a free and open source security automation tool that uses local logs and a set of scenarios to infer malicious intent. 
+In addition to operating locally, an optional community integration is also available, through which crowd-sourced IP reputation lists are distributed.
+
+The architecture of CrowdSec is very modular.
+At its core is the CrowdSec Agent, which keeps track of all data and related systems.
+Bouncers are pieces of software that perform specific actions based on the decisions of the Agent.
 
 ## Usage
 
@@ -119,7 +122,7 @@ Run the Caddy server
 
 ```bash
 # with a Caddyfile
-go run main.go run -config Caddyfile 
+caddy run --config Caddyfile 
 ```
 
 ## Demo
@@ -150,6 +153,45 @@ $ docker compose logs -tf
 
 You can then access https://localhost:9443 and https://localhost:8443.
 The latter is an example of using the [Layer 4 App](https://github.com/mholt/caddy-l4) and will simply proxy to port 9443 in this case. 
+
+## Utilities
+
+When Caddy is built with this module enabled, a new `caddy crowdsec` command will be enabled.
+Its subcommands allow you to interact with your CrowdSec integration at runtime using [Caddy's Admin API](https://caddyserver.com/docs/api).
+This is useful to verify the status of your integration, and check if it's configured and working properly.
+The command requires the Admin API to be reachable from the system it is run from.
+
+Support for the command is currently experimental, and will be improved and extended in future releases.
+Output of the commands should not be relied upon in automated processes (yet).
+
+### Usage
+
+```console
+$ caddy crowdsec
+
+Commands related to the CrowdSec integration (experimental)
+
+Usage:
+  caddy crowdsec [command]
+
+Available Commands:
+  check       Checks an IP to be banned or not
+  health      Checks CrowdSec integration health
+  info        Shows CrowdSec runtime information
+  ping        Pings the CrowdSec LAPI endpoint
+
+Flags:
+  -a, --adapter string   Name of config adapter to apply (when --config is used)
+      --address string   The address to use to reach the admin API endpoint, if not the default
+  -c, --config string    Configuration file to use to parse the admin address, if --address is not used
+  -h, --help             help for crowdsec
+  -v, --version          version for crowdsec
+
+Use "caddy crowdsec [command] --help" for more information about a command.
+
+Full documentation is available at:
+https://caddyserver.com/docs/command-line
+```
 
 ## Client IP
 

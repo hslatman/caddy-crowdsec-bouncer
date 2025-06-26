@@ -27,6 +27,12 @@ var (
 		Name: "lapi_appsec_requests_failures_total",
 		Help: "The total number of failed calls to CrowdSec LAPI AppSec component",
 	})
+
+	// TODO: additional metrics for number of blocked IPs / requests?
+	// TODO: referencing the global metrics from csbouncer may not be the right
+	// thing to do with how the CrowdSec module operates as part of Caddy. On
+	// configuration reloads it would be pointing to the same counters. Thay may,
+	// or may not be what we want.
 )
 
 func newMetricsProvider(client *apiclient.ApiClient, updater csbouncer.MetricsUpdater, interval time.Duration) (*csbouncer.MetricsProvider, error) {

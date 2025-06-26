@@ -106,9 +106,9 @@
           "policies": [
             {
               "subjects": ["caddy", "localhost"],
-              "issuer":{
+              "issuers": [{
                 "module": "internal"
-              },
+              }],
               "on_demand": true
             }
           ]
