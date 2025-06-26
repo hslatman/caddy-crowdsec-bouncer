@@ -18,10 +18,14 @@ func Register() {
 	caddycmd.RegisterCommand(caddycmd.Command{
 		Name:  "crowdsec",
 		Usage: ``,
-		Short: "Commands related to the CrowdSec integration",
-		Long:  ``,
+		Short: "Commands related to the CrowdSec integration (experimental)",
+		Long: `Commands related to the CrowdSec integration (experimental)
+
+The subcommands can help assessing the status of the CrowdSec integration.
+
+Output of the commands can change, so shouldn't be relied upon (yet).`,
 		CobraFunc: func(cmd *cobra.Command) {
-			statusCmd := &cobra.Command{
+			infoCmd := &cobra.Command{
 				Use:   "info [--config <path> [--adapter <name>]] [--address <interface>]",
 				Short: "Shows CrowdSec runtime information",
 				Long:  ``,
@@ -29,7 +33,7 @@ func Register() {
 			}
 			healthCmd := &cobra.Command{
 				Use:   "health [--config <path> [--adapter <name>]] [--address <interface>]",
-				Short: "Checks CrowdSec health",
+				Short: "Checks CrowdSec integration health",
 				Long:  ``,
 				RunE:  caddycmd.WrapCommandFuncForCobra(cmdHealth),
 			}
@@ -53,7 +57,7 @@ func Register() {
 			cmd.PersistentFlags().StringP("address", "", "", "The address to use to reach the admin API endpoint, if not the default")
 
 			// add the subcommands
-			cmd.AddCommand(statusCmd)
+			cmd.AddCommand(infoCmd)
 			cmd.AddCommand(healthCmd)
 			cmd.AddCommand(checkCmd)
 			cmd.AddCommand(pingCmd)
