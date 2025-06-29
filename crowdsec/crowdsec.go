@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"os"
 	"reflect"
 	"runtime/debug"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -166,7 +168,24 @@ func (c *CrowdSec) checkModules() error {
 		c.logger.Warn(fmt.Sprintf("%s module is not available", httpHandlerName))
 	}
 
+	// check if running combined with docker_proxy, and trigger warning log if event throttle interval is low
+	if dockerProxy, err := matchModules("docker_proxy"); err == nil && len(dockerProxy) > 0 && c.isStreamingEnabled() {
+		if dockerProxyUsesLowEventThrottleInterval() {
+			c.logger.Warn("using docker_proxy module with a low event throttle interval (<2s) can result in errors; see https://github.com/hslatman/caddy-crowdsec-bouncer/issues/61")
+		}
+	}
+
 	return nil
+}
+
+func dockerProxyUsesLowEventThrottleInterval() bool {
+	if v := os.Getenv("CADDY_DOCKER_EVENT_THROTTLE_INTERVAL"); v != "" {
+		if interval, err := time.ParseDuration(v); err == nil {
+			return interval < 2*time.Second
+		}
+	}
+
+	return true
 }
 
 type moduleInfo struct {
@@ -188,7 +207,7 @@ func hasModule(modules []moduleInfo, moduleIdentifier string) bool {
 func matchModules(moduleIdentifiers ...string) (modules []moduleInfo, err error) {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
-		err = fmt.Errorf("no build info")
+		err = errors.New("no build info")
 		return
 	}
 

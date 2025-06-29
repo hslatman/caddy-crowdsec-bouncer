@@ -29,6 +29,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type fakeModule struct{}
@@ -44,7 +47,7 @@ func init() {
 	caddy.RegisterModule(fakeModule{}) // prevents module warning logs
 }
 
-func TestCrowdSec_Provision(t *testing.T) {
+func TestCrowdSecProvisions(t *testing.T) {
 	tests := []struct {
 		name      string
 		config    string
@@ -123,7 +126,7 @@ func TestCrowdSec_Provision(t *testing.T) {
 	}
 }
 
-func TestCrowdSec_Validate(t *testing.T) {
+func TestCrowdSecValidates(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  string
@@ -170,7 +173,7 @@ func TestCrowdSec_Validate(t *testing.T) {
 	}
 }
 
-func TestCrowdSec_streamingBouncerRuntime(t *testing.T) {
+func TestCrowdSecStreamingBouncerRuntime(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent()) // ignore current ones; they're deep in the Caddy stack
 	requestCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +235,7 @@ func TestCrowdSec_streamingBouncerRuntime(t *testing.T) {
 	assert.Equal(t, 1, requestCount)
 }
 
-func TestCrowdSec_liveBouncerRuntime(t *testing.T) {
+func TestCrowdSecliveBouncerRuntime(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent()) // ignore current ones; they're deep in the Caddy stack
 	requestCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -279,4 +282,87 @@ func TestCrowdSec_liveBouncerRuntime(t *testing.T) {
 
 	// expect a single request to have been performed
 	assert.Equal(t, 1, requestCount)
+}
+
+type fakeDockerProxyModule struct{}
+
+func (m fakeDockerProxyModule) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "docker_proxy", // fake github.com/lucaslorentz/caddy-docker-proxy/v2
+		New: func() caddy.Module { return new(fakeModule) },
+	}
+}
+
+func TestModuleLogsLowDockerProxyEventThrottleInterval(t *testing.T) {
+	caddy.RegisterModule(fakeDockerProxyModule{})
+
+	t.Run("ok/streaming", func(t *testing.T) {
+		t.Setenv("CADDY_DOCKER_EVENT_THROTTLE_INTERVAL", "3s")
+
+		core, logs := observer.New(zapcore.InfoLevel)
+		logger := zap.New(core)
+
+		c := &CrowdSec{logger: logger}
+
+		err := c.checkModules()
+		require.NoError(t, err)
+
+		assert.Equal(t, 0, logs.Len())
+	})
+
+	t.Run("ok/live", func(t *testing.T) {
+		core, logs := observer.New(zapcore.InfoLevel)
+		logger := zap.New(core)
+
+		v := false
+		c := &CrowdSec{logger: logger, EnableStreaming: &v}
+
+		err := c.checkModules()
+		require.NoError(t, err)
+
+		assert.Equal(t, 0, logs.Len())
+	})
+
+	t.Run("warn-too-low", func(t *testing.T) {
+		t.Setenv("CADDY_DOCKER_EVENT_THROTTLE_INTERVAL", "1s")
+
+		core, logs := observer.New(zapcore.InfoLevel)
+		logger := zap.New(core)
+
+		c := &CrowdSec{logger: logger}
+
+		err := c.checkModules()
+		require.NoError(t, err)
+
+		require.Equal(t, 1, logs.Len())
+		assert.Equal(t, "using docker_proxy module with a low event throttle interval (<2s) can result in errors; see https://github.com/hslatman/caddy-crowdsec-bouncer/issues/61", logs.All()[0].Message)
+	})
+
+	t.Run("warn-not-set", func(t *testing.T) {
+		core, logs := observer.New(zapcore.InfoLevel)
+		logger := zap.New(core)
+
+		c := &CrowdSec{logger: logger}
+
+		err := c.checkModules()
+		require.NoError(t, err)
+
+		require.Equal(t, 1, logs.Len())
+		assert.Equal(t, "using docker_proxy module with a low event throttle interval (<2s) can result in errors; see https://github.com/hslatman/caddy-crowdsec-bouncer/issues/61", logs.All()[0].Message)
+	})
+
+	t.Run("warn-invalid-duration", func(t *testing.T) {
+		t.Setenv("CADDY_DOCKER_EVENT_THROTTLE_INTERVAL", "1x")
+
+		core, logs := observer.New(zapcore.InfoLevel)
+		logger := zap.New(core)
+
+		c := &CrowdSec{logger: logger}
+
+		err := c.checkModules()
+		require.NoError(t, err)
+
+		require.Equal(t, 1, logs.Len())
+		assert.Equal(t, "using docker_proxy module with a low event throttle interval (<2s) can result in errors; see https://github.com/hslatman/caddy-crowdsec-bouncer/issues/61", logs.All()[0].Message)
+	})
 }
