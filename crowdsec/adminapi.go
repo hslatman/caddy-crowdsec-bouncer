@@ -43,8 +43,7 @@ func (a *adminAPI) Provision(ctx caddy.Context) error {
 
 	crowdsec, err := ctx.AppIfConfigured("crowdsec")
 	if err == nil {
-		// the CrowdSec module adheres to the [adminapi.Admin]
-		// interface itself
+		// the CrowdSec module adheres to the [adminapi.Admin] interface itself
 		a.admin = crowdsec.(*CrowdSec)
 	}
 
@@ -87,10 +86,10 @@ func (a *adminAPI) handlerWithMiddleware(next caddy.AdminHandlerFunc) caddy.Admi
 
 func (a *adminAPI) ensureAdminInitialized(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		if a.admin == nil {
-			crowdsec, err := a.ctx.App("crowdsec")
+		if a.admin == nil { // TODO: guard by sync.Once?
+			crowdsec, err := a.ctx.AppIfConfigured("crowdsec")
 			if err != nil {
-				return fmt.Errorf("getting crowdsec app: %w", err)
+				return fmt.Errorf("failed getting crowdsec app: %w", err)
 			}
 			a.admin = crowdsec.(*CrowdSec)
 		}
