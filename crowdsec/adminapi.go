@@ -11,6 +11,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/adminapi"
 )
@@ -23,9 +24,10 @@ func init() {
 // runtime information about the CrowdSec remediation component
 // built into, and running as part of Caddy.
 type adminAPI struct {
-	ctx   caddy.Context
-	log   *zap.Logger
-	admin adminapi.Admin
+	ctx              caddy.Context
+	log              *zap.Logger
+	admin            adminapi.Admin
+	lazyLoadCrowdSec *singleflight.Group
 }
 
 // CaddyModule returns the Caddy module information.
@@ -40,15 +42,13 @@ func (adminAPI) CaddyModule() caddy.ModuleInfo {
 func (a *adminAPI) Provision(ctx caddy.Context) error {
 	a.ctx = ctx
 	a.log = ctx.Logger(a)
+	a.lazyLoadCrowdSec = new(singleflight.Group)
 
-	crowdsec, err := ctx.App("crowdsec")
-	if err != nil {
-		return fmt.Errorf("getting crowdsec app: %v", err)
+	crowdsec, err := ctx.AppIfConfigured("crowdsec")
+	if err == nil {
+		// the CrowdSec module adheres to the [adminapi.Admin] interface itself
+		a.admin = crowdsec.(*CrowdSec)
 	}
-
-	// the CrowdSec module adheres to the [adminapi.Admin]
-	// interface itself
-	a.admin = crowdsec.(*CrowdSec)
 
 	return nil
 }
@@ -66,25 +66,43 @@ func (a *adminAPI) Routes() []caddy.AdminRoute {
 	return []caddy.AdminRoute{
 		{
 			Pattern: path("ping"),
-			Handler: handlerWithMiddleware(a.handlePing),
+			Handler: a.handlerWithMiddleware(a.handlePing),
 		},
 		{
 			Pattern: path("check"),
-			Handler: handlerWithMiddleware(a.handleCheck),
+			Handler: a.handlerWithMiddleware(a.handleCheck),
 		},
 		{
 			Pattern: path("info"),
-			Handler: handlerWithMiddleware(a.handleInfo),
+			Handler: a.handlerWithMiddleware(a.handleInfo),
 		},
 		{
 			Pattern: path("health"),
-			Handler: handlerWithMiddleware(a.handleHealth),
+			Handler: a.handlerWithMiddleware(a.handleHealth),
 		},
 	}
 }
 
-func handlerWithMiddleware(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
-	return requirePost(extractRequestID(extractClientVersion(next)))
+func (a *adminAPI) handlerWithMiddleware(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
+	return a.ensureAdminInitialized(requirePost(extractRequestID(extractClientVersion(next))))
+}
+
+func (a *adminAPI) ensureAdminInitialized(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		if a.admin == nil {
+			v, err, _ := a.lazyLoadCrowdSec.Do("admin", func() (any, error) {
+				crowdsec, err := a.ctx.AppIfConfigured("crowdsec")
+				return crowdsec, err
+			})
+			if err != nil {
+				return fmt.Errorf("failed getting crowdsec app: %w", err)
+			}
+
+			a.admin = v.(*CrowdSec)
+		}
+
+		return next(w, r)
+	}
 }
 
 func requirePost(next caddy.AdminHandlerFunc) caddy.AdminHandlerFunc {
