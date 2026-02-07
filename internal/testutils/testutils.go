@@ -43,6 +43,7 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 				"BOUNCER_KEY_testbouncer1": testAPIKey,
 				"DISABLE_ONLINE_API":       "true",
 				"NO_HUB_UPGRADE":           "true",
+				"CROWDSEC_BYPASS_DB_VOLUME_CHECK": "true",
 			},
 		},
 		Started: true,
