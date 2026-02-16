@@ -1,7 +1,6 @@
 package test
 
 import (
-	"context"
 	"fmt"
 	"net/netip"
 	"testing"
@@ -15,11 +14,10 @@ import (
 )
 
 func TestLiveBouncer(t *testing.T) {
-	ctx := context.Background()
 
 	// TODO: do tests with the handlers/matchers (instead)?
 
-	container := testutils.NewCrowdSecContainer(t, ctx)
+	container := testutils.NewCrowdSecContainer(t)
 
 	config := fmt.Sprintf(`{
 		"api_url": %q,
@@ -27,6 +25,7 @@ func TestLiveBouncer(t *testing.T) {
 		"enable_streaming": false
 	}`, container.APIUrl(), container.APIKey())
 
+	ctx := t.Context()
 	crowdsec := testutils.NewCrowdSecModule(t, ctx, config)
 
 	err := crowdsec.Start()

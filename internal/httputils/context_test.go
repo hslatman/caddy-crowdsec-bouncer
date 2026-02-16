@@ -25,12 +25,12 @@ import (
 )
 
 func TestEnsureIP(t *testing.T) {
-	ipFromRequest := newCaddyVarsContext()
+	ipFromRequest := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(ipFromRequest, caddyhttp.ClientIPVarKey, "127.0.0.1")
-	ipFromContext := newCaddyVarsContext()
+	ipFromContext := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(ipFromContext, caddyhttp.ClientIPVarKey, "127.0.0.2")
 	ipFromContext = newContext(ipFromContext, netip.MustParseAddr("127.0.0.3"))
-	invalidIPCtx := newCaddyVarsContext()
+	invalidIPCtx := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(invalidIPCtx, caddyhttp.ClientIPVarKey, "127.0.0.1.x")
 
 	type args struct {
@@ -75,20 +75,20 @@ func TestEnsureIP(t *testing.T) {
 }
 
 func TestFromContext(t *testing.T) {
-	ctx := context.WithValue(context.Background(), contextKey{}, nil)
+	ctx := context.WithValue(t.Context(), contextKey{}, nil)
 	got, ok := FromContext(ctx)
 	require.False(t, ok)
 	require.Equal(t, netip.Addr{}, got)
 	require.False(t, got.IsValid())
 
-	ctx = context.WithValue(context.Background(), contextKey{}, netip.Addr{})
+	ctx = context.WithValue(t.Context(), contextKey{}, netip.Addr{})
 	got, ok = FromContext(ctx)
 	require.False(t, ok)
 	require.Equal(t, netip.Addr{}, got)
 	require.False(t, got.IsValid())
 
 	ip := netip.MustParseAddr("127.0.0.1")
-	ctx = context.WithValue(context.Background(), contextKey{}, ip)
+	ctx = context.WithValue(t.Context(), contextKey{}, ip)
 	got, ok = FromContext(ctx)
 	require.True(t, ok)
 	require.Equal(t, ip, got)
