@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/exec"
+	"github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
@@ -47,7 +48,7 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 			},
 		},
 		Started: true,
-		Logger:  testcontainers.TestLogger(t),
+		Logger:  log.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
@@ -120,7 +121,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 			},
 		},
 		Started: true,
-		Logger:  testcontainers.TestLogger(t),
+		Logger:  log.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, initContainer)
@@ -168,7 +169,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 			},
 		},
 		Started: true,
-		Logger:  testcontainers.TestLogger(t),
+		Logger:  log.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
