@@ -110,7 +110,3 @@ var levelAdapter = map[logrus.Level]zapcore.Level{
 }
 
 var _ logrus.Hook = (*zapAdapterHook)(nil)
-
-func newMetricsLogger() *logrus.Logger {
-	return logrus.StandardLogger()
-}

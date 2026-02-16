@@ -50,7 +50,7 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
 	require.NoError(t, err)
 
-	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, bouncer.updateMetrics, time.Minute)
+	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, time.Minute, bouncer.logger, bouncer.instanceID)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 

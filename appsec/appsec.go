@@ -92,6 +92,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
+	r = r.WithContext(ctx)
 	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
 		a := &bouncer.AppSecError{}
 		if !errors.As(err, &a) {
@@ -109,7 +110,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	}
 
 	// Continue down the handler stack
-	if err := next.ServeHTTP(w, r.WithContext(ctx)); err != nil {
+	if err := next.ServeHTTP(w, r); err != nil {
 		return err
 	}
 

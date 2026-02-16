@@ -54,7 +54,7 @@ func init() {
 type Bouncer struct {
 	streamingBouncer    *csbouncer.StreamBouncer
 	liveBouncer         *csbouncer.LiveBouncer
-	metricsProvider     *csbouncer.MetricsProvider
+	metricsProvider     *metricsProvider
 	appsec              *appsec
 	store               *store
 	logger              *zap.Logger
@@ -97,9 +97,9 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")),
+		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")), // TODO add fields here?
 		store:          newStore(),
-		logger:         logger,
+		logger:         logger, // TODO add fields here?
 		userAgent:      userAgent,
 		instantiatedAt: instantiatedAt,
 		instanceID:     instanceID,
@@ -166,7 +166,7 @@ func (b *Bouncer) Init() (err error) {
 		}
 	}
 
-	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, b.updateMetrics, metricsInterval); err != nil {
+	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, metricsInterval, b.logger, b.instanceID); err != nil {
 		return err
 	}
 
@@ -238,8 +238,19 @@ func (b *Bouncer) Shutdown() error {
 
 // IsAllowed checks if an IP is allowed or not
 func (b *Bouncer) IsAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
+	isAllowed, decision, err := b.isAllowed(ip, forceLive)
+
+	if !isAllowed {
+		blockedRequestsCounter.Inc()
+	}
+
+	return isAllowed, decision, err
+}
+
+func (b *Bouncer) isAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
+
 	if !ip.IsValid() {
 		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
 	}

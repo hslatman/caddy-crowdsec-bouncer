@@ -72,6 +72,9 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 					}
 					b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions), b.zapField())
 				}
+
+				// update the count of active decisions
+				activeDecisionsGauge.With(nil).Set(float64(b.store.store.Len()))
 			}
 		}
 	}()
@@ -101,10 +104,10 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decis
 		return b.store.get(ip)
 	}
 
-	totalLAPICalls.Inc() // increment; not built into liveBouncer
+	totalLAPICallsCounter.Inc() // increment; not built into liveBouncer
 	decisions, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
-		totalLAPIErrors.Inc() // increment; not built into liveBouncer
+		totalLAPIErrorsCounter.Inc() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
 			b.zapField(),
 			zap.String("address", b.liveBouncer.APIUrl),

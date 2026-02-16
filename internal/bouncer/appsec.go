@@ -122,10 +122,10 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	// includes the patch.
 	req.ContentLength = int64(contentLength)
 
-	totalAppSecCalls.Inc()
+	totalAppSecCallsCounter.Inc()
 	resp, err := a.client.Do(req)
 	if err != nil {
-		totalAppSecErrors.Inc()
+		totalAppSecErrorsCounter.Inc()
 		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
 		return a.failOpenOrErr(err)
 	}
