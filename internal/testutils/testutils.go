@@ -33,8 +33,10 @@ type container struct {
 	appsec   string
 }
 
-func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
+func NewCrowdSecContainer(t *testing.T) *container {
 	t.Helper()
+	ctx := t.Context()
+
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        containerImage,
@@ -52,7 +54,11 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
+	t.Cleanup(func() {
+		tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = c.Terminate(tctx)
+		cancel()
+	})
 
 	endpointPort, err := c.MappedPort(ctx, "8080/tcp")
 	require.NoError(t, err)
@@ -87,8 +93,9 @@ labels:
   type: appsec
 `
 
-func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
+func NewAppSecContainer(t *testing.T) *container {
 	t.Helper()
+	ctx := t.Context()
 
 	// shared data between initialization and actual AppSec container
 	mounts := testcontainers.ContainerMounts{
@@ -173,7 +180,11 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
-	t.Cleanup(func() { _ = c.Terminate(ctx) })
+	t.Cleanup(func() {
+		tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = c.Terminate(tctx)
+		cancel()
+	})
 
 	endpointPort, err := c.MappedPort(ctx, "8080/tcp")
 	require.NoError(t, err)

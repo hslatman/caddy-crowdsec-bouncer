@@ -15,7 +15,6 @@
 package crowdsec
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -115,7 +114,7 @@ func TestCrowdSecProvisions(t *testing.T) {
 				t.Setenv(k, v)
 			}
 
-			ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+			ctx, _ := caddy.NewContext(caddy.Context{Context: t.Context()})
 			err = c.Provision(ctx)
 			require.NoError(t, err)
 
@@ -158,7 +157,7 @@ func TestCrowdSecValidates(t *testing.T) {
 			err := json.Unmarshal([]byte(tt.config), &c)
 			require.NoError(t, err)
 
-			ctx, _ := caddy.NewContext(caddy.Context{Context: context.Background()})
+			ctx, _ := caddy.NewContext(caddy.Context{Context: t.Context()})
 			err = c.Provision(ctx)
 			require.NoError(t, err)
 
@@ -192,7 +191,7 @@ func TestCrowdSecStreamingBouncerRuntime(t *testing.T) {
 	err := json.Unmarshal([]byte(config), &c)
 	require.NoError(t, err)
 
-	caddyCtx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	caddyCtx, cancel := caddy.NewContext(caddy.Context{Context: t.Context()})
 	defer cancel()
 
 	err = c.Provision(caddyCtx)
@@ -255,7 +254,7 @@ func TestCrowdSecliveBouncerRuntime(t *testing.T) {
 	err := json.Unmarshal([]byte(config), &c)
 	require.NoError(t, err)
 
-	caddyCtx, cancel := caddy.NewContext(caddy.Context{Context: context.Background()})
+	caddyCtx, cancel := caddy.NewContext(caddy.Context{Context: t.Context()})
 	defer cancel()
 
 	err = c.Provision(caddyCtx)

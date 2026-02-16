@@ -1,7 +1,6 @@
 package test
 
 import (
-	"context"
 	"fmt"
 	"net/netip"
 	"testing"
@@ -15,9 +14,7 @@ import (
 )
 
 func TestStreamingBouncer(t *testing.T) {
-	ctx := context.Background()
-
-	container := testutils.NewCrowdSecContainer(t, ctx)
+	container := testutils.NewCrowdSecContainer(t)
 
 	config := fmt.Sprintf(`{
 		"api_url": %q,
@@ -25,6 +22,7 @@ func TestStreamingBouncer(t *testing.T) {
 		"ticker_interval": "1s"
 	}`, container.APIUrl(), container.APIKey())
 
+	ctx := t.Context()
 	crowdsec := testutils.NewCrowdSecModule(t, ctx, config)
 
 	err := crowdsec.Start()

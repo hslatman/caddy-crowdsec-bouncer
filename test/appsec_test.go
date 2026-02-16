@@ -20,15 +20,12 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/testutils"
 )
 
-func newCaddyVarsContext() (ctx context.Context) {
-	ctx = context.WithValue(context.Background(), caddyhttp.VarsCtxKey, map[string]any{})
-	return
+func newCaddyVarsContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, caddyhttp.VarsCtxKey, map[string]any{})
 }
 
 func TestAppSec(t *testing.T) {
-	ctx := newCaddyVarsContext()
-
-	container := testutils.NewAppSecContainer(t, ctx)
+	container := testutils.NewAppSecContainer(t)
 
 	config := fmt.Sprintf(`{
 		"api_url": %q,
@@ -37,6 +34,8 @@ func TestAppSec(t *testing.T) {
 		"appsec_url": %q
 	}`, container.APIUrl(), container.APIKey(), container.AppSecUrl())
 
+	ctx := t.Context()
+	ctx = newCaddyVarsContext(ctx)
 	caddyhttp.SetVar(ctx, caddyhttp.ClientIPVarKey, "127.0.0.1")
 	ctx, _ = httputils.EnsureIP(ctx)
 	crowdsec := testutils.NewCrowdSecModule(t, ctx, config)

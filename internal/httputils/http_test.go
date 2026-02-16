@@ -23,20 +23,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newCaddyVarsContext() (ctx context.Context) {
-	ctx = context.WithValue(context.Background(), caddyhttp.VarsCtxKey, map[string]any{})
-	return
+func newCaddyVarsContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, caddyhttp.VarsCtxKey, map[string]any{})
 }
 
 func Test_determineIPFromRequest(t *testing.T) {
-	okCtx := newCaddyVarsContext()
+	okCtx := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(okCtx, caddyhttp.ClientIPVarKey, "127.0.0.1")
-	noIPCtx := newCaddyVarsContext()
-	wrongTypeCtx := newCaddyVarsContext()
+	noIPCtx := newCaddyVarsContext(t.Context())
+	wrongTypeCtx := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(wrongTypeCtx, caddyhttp.ClientIPVarKey, 42)
-	emptyIPCtx := newCaddyVarsContext()
+	emptyIPCtx := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(emptyIPCtx, caddyhttp.ClientIPVarKey, "")
-	invalidIPCtx := newCaddyVarsContext()
+	invalidIPCtx := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(invalidIPCtx, caddyhttp.ClientIPVarKey, "127.0.0.1.x")
 	type args struct {
 		ctx context.Context

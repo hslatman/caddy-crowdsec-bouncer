@@ -16,17 +16,16 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
 )
 
-func newCaddyVarsContext() (ctx context.Context) {
-	ctx = context.WithValue(context.Background(), caddyhttp.VarsCtxKey, map[string]any{})
-	return
+func newCaddyVarsContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, caddyhttp.VarsCtxKey, map[string]any{})
 }
 
 func Test_appsec_checkRequest(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	ctx := newCaddyVarsContext()
+	ctx := newCaddyVarsContext(t.Context())
 	caddyhttp.SetVar(ctx, caddyhttp.ClientIPVarKey, "10.0.0.10")
 	ctx, _ = httputils.EnsureIP(ctx)
-	noIPCtx := newCaddyVarsContext()
+	noIPCtx := newCaddyVarsContext(t.Context())
 
 	noIPRequest := httptest.NewRequest(http.MethodGet, "/path", http.NoBody)
 	noIPRequest.Header.Set("User-Agent", "test-appsec")
