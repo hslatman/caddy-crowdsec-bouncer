@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/exec"
+	"github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
@@ -40,14 +41,14 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
 			Env: map[string]string{
-				"BOUNCER_KEY_testbouncer1": testAPIKey,
-				"DISABLE_ONLINE_API":       "true",
-				"NO_HUB_UPGRADE":           "true",
+				"BOUNCER_KEY_testbouncer1":        testAPIKey,
+				"DISABLE_ONLINE_API":              "true",
+				"NO_HUB_UPGRADE":                  "true",
 				"CROWDSEC_BYPASS_DB_VOLUME_CHECK": "true",
 			},
 		},
 		Started: true,
-		Logger:  testcontainers.TestLogger(t),
+		Logger:  log.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
@@ -120,7 +121,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 			},
 		},
 		Started: true,
-		Logger:  testcontainers.TestLogger(t),
+		Logger:  log.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, initContainer)
@@ -168,7 +169,7 @@ func NewAppSecContainer(t *testing.T, ctx context.Context) *container {
 			},
 		},
 		Started: true,
-		Logger:  testcontainers.TestLogger(t),
+		Logger:  log.TestLogger(t),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, c)
