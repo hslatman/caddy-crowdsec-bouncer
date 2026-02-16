@@ -40,9 +40,9 @@ func NewCrowdSecContainer(t *testing.T, ctx context.Context) *container {
 			ExposedPorts: []string{"8080/tcp"},
 			WaitingFor:   wait.ForLog("CrowdSec Local API listening on 0.0.0.0:8080"),
 			Env: map[string]string{
-				"BOUNCER_KEY_testbouncer1": testAPIKey,
-				"DISABLE_ONLINE_API":       "true",
-				"NO_HUB_UPGRADE":           "true",
+				"BOUNCER_KEY_testbouncer1":        testAPIKey,
+				"DISABLE_ONLINE_API":              "true",
+				"NO_HUB_UPGRADE":                  "true",
 				"CROWDSEC_BYPASS_DB_VOLUME_CHECK": "true",
 			},
 		},
