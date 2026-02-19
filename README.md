@@ -81,6 +81,7 @@ Example Caddyfile:
     appsec_url http://localhost:7422
     #disable_streaming
     #enable_hard_fails
+    enable_caddy_error
   }
 
   layer4 {
