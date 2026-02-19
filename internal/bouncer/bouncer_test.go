@@ -125,6 +125,8 @@ func TestStreamingBouncer(t *testing.T) {
 	b, err := newBouncer(t)
 	require.NoError(t, err)
 
+	t.Cleanup(func() { _ = b.Shutdown() })
+
 	// activate httpmock so that responses can be mocked
 	httpmock.Activate()
 	defer httpmock.DeactivateAndReset()
