@@ -26,6 +26,11 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	ErrBanned    = errors.New("banned by crowdsec")
+	ErrThrottled = errors.New("throttled by crowdsec")
+)
+
 // determineIPFromRequest returns the IP of the client based on the value that
 // Caddy extracts from the original request and stores in the request context.
 // Support for setting the real client IP in case a proxy sits in front of
@@ -82,12 +87,11 @@ func writeBanResponse(w http.ResponseWriter, statusCode int, useCaddyError bool)
 		code = http.StatusForbidden
 	}
 	if useCaddyError {
-		return caddyhttp.Error(code, fmt.Errorf("banned by crowdsec"))
-	} else {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(code)
-		return nil
+		return caddyhttp.Error(code, ErrBanned)
 	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(code)
+	return nil
 }
 
 // writeCaptchaResponse (currently) writes a 403 status as response
@@ -108,9 +112,8 @@ func writeThrottleResponse(w http.ResponseWriter, duration string, useCaddyError
 	w.Header().Add("Retry-After", retryAfter)
 
 	if useCaddyError {
-		return caddyhttp.Error(http.StatusTooManyRequests, fmt.Errorf("banned by crowdsec"))
-	} else {
-		w.WriteHeader(http.StatusTooManyRequests)
-		return nil
+		return caddyhttp.Error(http.StatusTooManyRequests, ErrThrottled)
 	}
+	w.WriteHeader(http.StatusTooManyRequests)
+	return nil
 }
