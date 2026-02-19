@@ -104,7 +104,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		case "log":
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
 		default:
-			return httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+			return httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode, h.crowdsec.EnableCaddyError)
 		}
 	}
 
