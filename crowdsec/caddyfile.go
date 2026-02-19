@@ -75,7 +75,7 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 			if d.NextArg() {
 				return nil, d.ArgErr()
 			}
-			cs.EnableCaddyError = &tv
+			cs.EnableCaddyError = true
 		case "appsec_url":
 			if !d.NextArg() {
 				return nil, d.ArgErr()

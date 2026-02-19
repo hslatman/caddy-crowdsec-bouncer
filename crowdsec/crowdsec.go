@@ -76,7 +76,7 @@ type CrowdSec struct {
 	// EnableCaddyError indicates whether access denied responses should be
 	// propagated as Caddy errors (allowing for custom error pages via handle_errors)
 	// instead of writing a raw HTTP response directly. Defaults to false.
-	EnableCaddyError *bool `json:"enable_caddy_error,omitempty"`
+	EnableCaddyError bool `json:"enable_caddy_error,omitempty"`
 	// AppSecUrl is the URL of the AppSec component served by your
 	// CrowdSec installation. Disabled by default.
 	AppSecUrl string `json:"appsec_url,omitempty"`
@@ -87,10 +87,6 @@ type CrowdSec struct {
 	ctx     caddy.Context
 	logger  *zap.Logger
 	bouncer *bouncer.Bouncer
-}
-
-func (c *CrowdSec) ShouldReturnCaddyError() bool {
-	return c.EnableCaddyError != nil && *c.EnableCaddyError
 }
 
 // Provision sets up the CrowdSec app.

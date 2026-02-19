@@ -104,9 +104,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		typ := *decision.Type
 		value := *decision.Value
 		duration := *decision.Duration
-		useCaddyError := h.crowdsec.ShouldReturnCaddyError()
 
-		return httputils.WriteResponse(w, h.logger, typ, value, duration, 0, useCaddyError)
+		return httputils.WriteResponse(w, h.logger, typ, value, duration, 0, h.crowdsec.EnableCaddyError)
 	}
 
 	// Continue down the handler stack
