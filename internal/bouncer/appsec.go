@@ -123,7 +123,8 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	resp, err := a.client.Do(req)
 	if err != nil {
 		totalAppSecErrors.Inc()
-		return err
+		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
+		return nil // this fails open, currently; make it fail hard if configured to do so?
 	}
 	defer func() { _ = resp.Body.Close() }()
 
