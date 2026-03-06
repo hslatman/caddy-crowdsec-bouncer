@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -85,6 +86,15 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 				return nil, d.Errf("invalid maximum number of bytes %q: %v", d.Val(), err)
 			}
 			cs.AppSecMaxBodySize = v
+		case "appsec_timeout":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			dur, err := time.ParseDuration(d.Val())
+			if err != nil {
+				return nil, d.Errf("invalid duration %q: %v", d.Val(), err)
+			}
+			cs.AppSecTimeout = caddy.Duration(dur)
 		default:
 			return nil, d.Errf("invalid configuration token %q provided", d.Val())
 		}

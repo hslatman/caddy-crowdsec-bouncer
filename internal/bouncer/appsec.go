@@ -25,24 +25,24 @@ type appsec struct {
 	pool        *bpool.BufferPool
 }
 
-func newAppSec(apiURL, apiKey string, maxBodySize int, logger *zap.Logger) *appsec {
+func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, logger *zap.Logger) *appsec {
 	return &appsec{
 		apiURL:      apiURL,
 		apiKey:      apiKey,
 		maxBodySize: maxBodySize,
 		logger:      logger,
 		client: &http.Client{
-			Timeout: 2 * time.Second,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				DialContext: (&net.Dialer{
-					Timeout:   500 * time.Millisecond,
+					Timeout:   timeout,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
 				ForceAttemptHTTP2:     true,
 				MaxIdleConns:          100,
 				IdleConnTimeout:       60 * time.Second,
-				TLSHandshakeTimeout:   500 * time.Millisecond,
+				TLSHandshakeTimeout:   timeout,
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},

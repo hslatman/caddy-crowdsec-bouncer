@@ -79,6 +79,11 @@ type CrowdSec struct {
 	// AppSecMaxBodySize is the maximum number of request body bytes that
 	// will be sent to your AppSec component.
 	AppSecMaxBodySize int `json:"appsec_max_body_bytes,omitempty"`
+	// AppSecTimeout is the maximum time to wait for a response from the
+	// AppSec component. Defaults to 2s. When the AppSec component is
+	// unavailable, requests fail open after this timeout, so keep it
+	// short relative to acceptable request latency.
+	AppSecTimeout caddy.Duration `json:"appsec_timeout,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
@@ -104,7 +109,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		c.TickerInterval = "60s"
 	}
 
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.TickerInterval, c.logger)
+	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.TickerInterval, c.logger)
 	if err != nil {
 		return err
 	}
@@ -291,6 +296,13 @@ func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
 // CheckRequest checks the incoming request against AppSec.
 func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
 	return c.bouncer.CheckRequest(ctx, r)
+}
+
+func (c *CrowdSec) appSecTimeout() time.Duration {
+	if c.AppSecTimeout == 0 {
+		return 2 * time.Second
+	}
+	return time.Duration(c.AppSecTimeout)
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {

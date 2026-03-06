@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/stretchr/testify/assert"
@@ -126,7 +127,7 @@ func Test_appsec_checkRequest(t *testing.T) {
 				t.Cleanup(s.Close)
 			}
 
-			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, logger)
+			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, 2*time.Second, logger)
 			err := a.checkRequest(tt.args.ctx, tt.args.r)
 			if tt.wantErr {
 				require.Error(t, err)
