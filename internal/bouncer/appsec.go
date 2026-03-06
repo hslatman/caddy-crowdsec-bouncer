@@ -32,17 +32,17 @@ func newAppSec(apiURL, apiKey string, maxBodySize int, logger *zap.Logger) *apps
 		maxBodySize: maxBodySize,
 		logger:      logger,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 2 * time.Second,
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				DialContext: (&net.Dialer{
-					Timeout:   30 * time.Second,
+					Timeout:   500 * time.Millisecond,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
 				ForceAttemptHTTP2:     true,
 				MaxIdleConns:          100,
 				IdleConnTimeout:       60 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
+				TLSHandshakeTimeout:   500 * time.Millisecond,
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
