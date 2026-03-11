@@ -1,0 +1,45 @@
+{
+  debug
+
+  crowdsec {
+    api_url http://localhost:8080
+    api_key <api_key>
+    ticker_interval 15s
+    appsec_url http://localhost:7422
+    #disable_streaming
+    #enable_hard_fails
+  }
+
+  layer4 {
+    localhost:4444 {
+      @crowdsec crowdsec
+      route @crowdsec {
+        proxy {
+          upstream localhost:6443
+        }
+      }
+    }
+  }
+}
+
+localhost:8443 {
+  route {
+    crowdsec
+    respond "Allowed by Bouncer!"
+  }
+}
+
+localhost:7443 {
+  route {
+    appsec
+    respond "Allowed by AppSec!"
+  }
+}
+
+localhost:6443 {
+  route {
+    crowdsec
+    appsec
+    respond "Allowed by Bouncer and AppSec!"
+  }
+}
