@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/stretchr/testify/assert"
@@ -36,7 +37,6 @@ func Test_appsec_checkRequest(t *testing.T) {
 	okPostRequest := httptest.NewRequest(http.MethodPost, "/path", bytes.NewBufferString("body"))
 	okPostRequest.Header.Set("User-Agent", "test-appsec")
 
-	// TODO: add test for no connection; reading error?
 	// TODO: add assertions for responses and how they're handled
 	type fields struct {
 		maxBodySize int
@@ -52,6 +52,7 @@ func Test_appsec_checkRequest(t *testing.T) {
 		expectedMethod string
 		expectedBody   []byte
 		wantErr        bool
+		serverDown     bool
 	}{
 		{
 			name: "ok get",
@@ -90,6 +91,14 @@ func Test_appsec_checkRequest(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "fail open on connection error",
+			args: args{
+				ctx: ctx,
+				r:   okGetRequest,
+			},
+			serverDown: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,9 +121,13 @@ func Test_appsec_checkRequest(t *testing.T) {
 			})
 
 			s := httptest.NewServer(h)
-			t.Cleanup(s.Close)
+			if tt.serverDown {
+				s.Close()
+			} else {
+				t.Cleanup(s.Close)
+			}
 
-			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, logger)
+			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, 2*time.Second, logger)
 			err := a.checkRequest(tt.args.ctx, tt.args.r)
 			if tt.wantErr {
 				require.Error(t, err)

@@ -25,24 +25,24 @@ type appsec struct {
 	pool        *bpool.BufferPool
 }
 
-func newAppSec(apiURL, apiKey string, maxBodySize int, logger *zap.Logger) *appsec {
+func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, logger *zap.Logger) *appsec {
 	return &appsec{
 		apiURL:      apiURL,
 		apiKey:      apiKey,
 		maxBodySize: maxBodySize,
 		logger:      logger,
 		client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				DialContext: (&net.Dialer{
-					Timeout:   30 * time.Second,
+					Timeout:   timeout,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
 				ForceAttemptHTTP2:     true,
 				MaxIdleConns:          100,
 				IdleConnTimeout:       60 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
+				TLSHandshakeTimeout:   timeout,
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
@@ -123,7 +123,8 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	resp, err := a.client.Do(req)
 	if err != nil {
 		totalAppSecErrors.Inc()
-		return err
+		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
+		return nil // this fails open, currently; make it fail hard if configured to do so?
 	}
 	defer func() { _ = resp.Body.Close() }()
 
