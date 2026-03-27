@@ -86,6 +86,11 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 				return nil, d.Errf("invalid maximum number of bytes %q: %v", d.Val(), err)
 			}
 			cs.AppSecMaxBodySize = v
+		case "enable_appsec_fail_open":
+			if d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			cs.EnableAppSecFailOpen = &tv
 		case "appsec_timeout":
 			if !d.NextArg() {
 				return nil, d.ArgErr()

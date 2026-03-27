@@ -23,7 +23,8 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 	tickerInterval := "10s"
 	logger := zaptest.NewLogger(t)
 
-	bouncer, err := New(key, host, "", 0, 2*time.Second, tickerInterval, logger)
+	appSecTimeout := 2 * time.Second
+	bouncer, err := New(key, host, "", 0, appSecTimeout, false, tickerInterval, logger)
 	require.NoError(t, err)
 
 	bouncer.EnableStreaming()

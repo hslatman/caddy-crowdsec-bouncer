@@ -37,9 +37,12 @@ func Test_appsec_checkRequest(t *testing.T) {
 	okPostRequest := httptest.NewRequest(http.MethodPost, "/path", bytes.NewBufferString("body"))
 	okPostRequest.Header.Set("User-Agent", "test-appsec")
 
+	appSecTimeout := 2 * time.Second
+
 	// TODO: add assertions for responses and how they're handled
 	type fields struct {
 		maxBodySize int
+		failOpen    bool
 	}
 	type args struct {
 		ctx context.Context
@@ -93,11 +96,23 @@ func Test_appsec_checkRequest(t *testing.T) {
 		},
 		{
 			name: "fail open on connection error",
+			fields: fields{
+				failOpen: true,
+			},
 			args: args{
 				ctx: ctx,
 				r:   okGetRequest,
 			},
 			serverDown: true,
+		},
+		{
+			name: "fail hard on connection error",
+			args: args{
+				ctx: ctx,
+				r:   okGetRequest,
+			},
+			serverDown: true,
+			wantErr:    true,
 		},
 	}
 	for _, tt := range tests {
@@ -127,7 +142,7 @@ func Test_appsec_checkRequest(t *testing.T) {
 				t.Cleanup(s.Close)
 			}
 
-			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, 2*time.Second, logger)
+			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, appSecTimeout, tt.fields.failOpen, logger)
 			err := a.checkRequest(tt.args.ctx, tt.args.r)
 			if tt.wantErr {
 				require.Error(t, err)

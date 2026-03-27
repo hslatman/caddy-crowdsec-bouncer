@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -20,16 +21,18 @@ type appsec struct {
 	apiURL      string
 	apiKey      string
 	maxBodySize int
+	failOpen    bool
 	logger      *zap.Logger
 	client      *http.Client
 	pool        *bpool.BufferPool
 }
 
-func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, logger *zap.Logger) *appsec {
+func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, failOpen bool, logger *zap.Logger) *appsec {
 	return &appsec{
 		apiURL:      apiURL,
 		apiKey:      apiKey,
 		maxBodySize: maxBodySize,
+		failOpen:    failOpen,
 		logger:      logger,
 		client: &http.Client{
 			Timeout: timeout,
@@ -124,7 +127,7 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	if err != nil {
 		totalAppSecErrors.Inc()
 		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
-		return nil // this fails open, currently; make it fail hard if configured to do so?
+		return a.failOpenOrErr(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -138,7 +141,7 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return nil
 	case 401:
 		a.logger.Error("appsec component not authenticated", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
-		return nil // this fails open, currently; make it fail hard if configured to do so?
+		return a.failOpenOrErr(fmt.Errorf("appsec component not authenticated: %s", resp.Status))
 	case 403:
 		var r appsecResponse
 		if err := json.Unmarshal(responseBody, &r); err != nil {
@@ -151,11 +154,18 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return nil
 	case 500:
 		a.logger.Error("appsec component internal error", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
-		return nil // this fails open, currently; make it fail hard if configured to do so?
+		return a.failOpenOrErr(fmt.Errorf("appsec component internal error: %s", resp.Status))
 	default:
 		a.logger.Error("appsec component returned unsupported status", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
 		return nil
 	}
+}
+
+func (a *appsec) failOpenOrErr(err error) error {
+	if a.failOpen {
+		return nil
+	}
+	return err
 }
 
 func (b *Bouncer) logAppSecStatus() {
