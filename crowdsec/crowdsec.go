@@ -83,11 +83,11 @@ type CrowdSec struct {
 	// AppSec component. Defaults to 2s. Keep it short relative to
 	// acceptable request latency.
 	AppSecTimeout caddy.Duration `json:"appsec_timeout,omitempty"`
-	// EnableAppSecFailOpen indicates whether requests should be allowed
+	// AppSecFailOpen indicates whether requests should be allowed
 	// through when the AppSec component is unavailable or returns errors.
 	// When false (the default), AppSec errors will result in requests
 	// being blocked.
-	EnableAppSecFailOpen *bool `json:"enable_appsec_fail_open,omitempty"`
+	AppSecFailOpen *bool `json:"appsec_fail_open,omitempty"`
 
 	ctx     caddy.Context
 	logger  *zap.Logger
