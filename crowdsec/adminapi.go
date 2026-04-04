@@ -80,6 +80,8 @@ func (a *adminAPI) Routes() []caddy.AdminRoute {
 			Pattern: path("health"),
 			Handler: a.handlerWithMiddleware(a.handleHealth),
 		},
+		// TODO: add "metrics" endpoint for just the CrowdSec metrics? Can
+		// be useful in some use cases.
 	}
 }
 

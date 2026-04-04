@@ -27,6 +27,7 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
@@ -52,17 +53,19 @@ func init() {
 // backed by an immutable radix tree storing known bad IPs and IP ranges.
 // The live bouncer will reach out to the CrowdSec LAPI on every check.
 type Bouncer struct {
-	streamingBouncer    *csbouncer.StreamBouncer
-	liveBouncer         *csbouncer.LiveBouncer
-	metricsProvider     *metricsProvider
-	appsec              *appsec
-	store               *store
-	logger              *zap.Logger
-	useStreamingBouncer bool
-	shouldFailHard      bool
-	userAgent           string
-	instantiatedAt      time.Time
-	instanceID          string
+	streamingBouncer     *csbouncer.StreamBouncer
+	liveBouncer          *csbouncer.LiveBouncer
+	metricsProvider      *metricsProvider
+	appsec               *appsec
+	store                *store
+	logger               *zap.Logger
+	metricsRegistry      *prometheus.Registry
+	caddyMetricsRegistry *prometheus.Registry
+	useStreamingBouncer  bool
+	shouldFailHard       bool
+	userAgent            string
+	instantiatedAt       time.Time
+	instanceID           string
 
 	ctx       context.Context
 	started   bool
@@ -74,7 +77,7 @@ type Bouncer struct {
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry) (*Bouncer, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -97,12 +100,13 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")), // TODO add fields here?
-		store:          newStore(),
-		logger:         logger, // TODO add fields here?
-		userAgent:      userAgent,
-		instantiatedAt: instantiatedAt,
-		instanceID:     instanceID,
+		appsec:               newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")), // TODO add fields here?
+		store:                newStore(),
+		caddyMetricsRegistry: caddyMetricsRegistry,
+		logger:               logger, // TODO add fields here?
+		userAgent:            userAgent,
+		instantiatedAt:       instantiatedAt,
+		instanceID:           instanceID,
 	}, nil
 }
 
@@ -166,7 +170,7 @@ func (b *Bouncer) Init() (err error) {
 		}
 	}
 
-	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, metricsInterval, b.logger, b.instanceID); err != nil {
+	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, b.metricsRegistry, b.caddyMetricsRegistry, metricsInterval, b.logger, b.instanceID); err != nil {
 		return err
 	}
 

@@ -24,7 +24,7 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 	logger := zaptest.NewLogger(t)
 
 	appSecTimeout := 2 * time.Second
-	bouncer, err := New(key, host, "", 0, appSecTimeout, false, tickerInterval, logger)
+	bouncer, err := New(key, host, "", 0, appSecTimeout, false, tickerInterval, logger, nil)
 	require.NoError(t, err)
 
 	bouncer.EnableStreaming()
@@ -50,7 +50,7 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
 	require.NoError(t, err)
 
-	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, time.Minute, bouncer.logger, bouncer.instanceID)
+	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, nil, nil, time.Minute, bouncer.logger, bouncer.instanceID)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 

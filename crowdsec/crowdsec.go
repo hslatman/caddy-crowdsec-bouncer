@@ -113,7 +113,8 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		c.TickerInterval = "60s"
 	}
 
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger)
+	registry := ctx.GetMetricsRegistry() // TODO: only pass conditionally, when integration with Caddy metrics is enabled?
+	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry)
 	if err != nil {
 		return err
 	}

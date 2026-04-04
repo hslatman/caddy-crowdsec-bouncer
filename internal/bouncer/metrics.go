@@ -70,6 +70,10 @@ type metricConfig struct {
 type metricMap map[metricName]*metricConfig
 
 func (m metricMap) RegisterAll(registry *prometheus.Registry) error {
+	if registry == nil {
+		return nil
+	}
+
 	for _, metric := range m {
 		if err := registry.Register(metric.Collector); err != nil {
 			return err
@@ -79,10 +83,9 @@ func (m metricMap) RegisterAll(registry *prometheus.Registry) error {
 	return nil
 }
 
-func newMetricsProvider(client *apiclient.ApiClient, interval time.Duration, logger *zap.Logger, instanceID string) (*metricsProvider, error) {
+func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, instanceID string) (*metricsProvider, error) {
 	osName, osVersion := version.DetectOS()
 	interval = 10 * time.Second // TODO: remove
-	registry := prometheus.NewRegistry()
 	metricMap := &metricMap{
 		activeDecisionsName: {
 			Name:         "active_decisions",
@@ -135,22 +138,30 @@ func newMetricsProvider(client *apiclient.ApiClient, interval time.Duration, log
 	}
 
 	// register the metrics with the registry
-	if err := metricMap.RegisterAll(registry); err != nil {
+	if err := metricMap.RegisterAll(metricsRegistry); err != nil {
 		return nil, fmt.Errorf("failed registering metrics: %w", err)
 	}
 
+	// register the metrics with the Caddy metrics registry
+	if err := metricMap.RegisterAll(caddyMetricsRegistry); err != nil {
+		// TODO: only do this conditionally, when explicitly enabled?
+		// TODO: register the metrics on this registry under different names?
+		return nil, fmt.Errorf("failed registering metrics with Caddy registry: %w", err)
+	}
+
 	m := &metricsProvider{
-		apiClient:      client,
-		interval:       interval,
-		metricMap:      metricMap,
-		registry:       registry,
-		bouncerType:    userAgentName,
-		bouncerVersion: userAgentVersion,
+		apiClient:            client,
+		interval:             interval,
+		metricMap:            metricMap,
+		metricsRegistry:      metricsRegistry,
+		caddyMetricsRegistry: caddyMetricsRegistry,
+		bouncerType:          userAgentName,
+		bouncerVersion:       userAgentVersion,
 		bouncerOS: models.OSversion{
 			Name:    &osName,
 			Version: &osVersion,
 		},
-		bouncerFeatureFlags: []string{},
+		bouncerFeatureFlags: []string{}, // TODO: set this, but to what?
 		logger:              logger.With(zap.String("instance_id", instanceID)),
 		instanceID:          instanceID,
 	}
@@ -159,17 +170,18 @@ func newMetricsProvider(client *apiclient.ApiClient, interval time.Duration, log
 }
 
 type metricsProvider struct {
-	apiClient           *apiclient.ApiClient
-	interval            time.Duration
-	metricMap           *metricMap
-	registry            *prometheus.Registry
-	logger              *zap.Logger
-	bouncerType         string
-	bouncerVersion      string
-	bouncerOS           models.OSversion
-	bouncerFeatureFlags []string
-	instanceID          string
-	startedAtTimestamp  int64
+	apiClient            *apiclient.ApiClient
+	interval             time.Duration
+	metricMap            *metricMap
+	metricsRegistry      *prometheus.Registry
+	caddyMetricsRegistry *prometheus.Registry
+	logger               *zap.Logger
+	bouncerType          string
+	bouncerVersion       string
+	bouncerOS            models.OSversion
+	bouncerFeatureFlags  []string
+	instanceID           string
+	startedAtTimestamp   int64
 }
 
 func (m *metricsProvider) metricsPayload() *models.AllMetrics {
@@ -211,7 +223,7 @@ func (m *metricsProvider) updateMetrics(metrics *models.RemediationComponentsMet
 
 	// TODO: store/cache the previous metric value; only send the difference to LAPI?
 
-	metricFamilies, err := m.registry.Gather()
+	metricFamilies, err := m.metricsRegistry.Gather()
 	if err != nil {
 		m.logger.Error("failed gathering metrics", zap.Error(err))
 		return
