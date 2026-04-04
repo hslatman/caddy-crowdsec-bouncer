@@ -73,6 +73,10 @@ type CrowdSec struct {
 	// Caddy continuing operation (with a chance of not performing)
 	// validations. Defaults to false.
 	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
+	// EnableCaddyError indicates whether access denied responses should be
+	// propagated as Caddy errors (allowing for custom error pages via handle_errors)
+	// instead of writing a raw HTTP response directly. Defaults to false.
+	EnableCaddyError bool `json:"enable_caddy_error,omitempty"`
 	// AppSecUrl is the URL of the AppSec component served by your
 	// CrowdSec installation. Disabled by default.
 	AppSecUrl string `json:"appsec_url,omitempty"`

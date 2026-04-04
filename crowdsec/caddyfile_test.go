@@ -126,6 +126,16 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			wantParseErr: true,
 		},
 		{
+			name:     "fail/enable-caddy-error-with-args",
+			expected: &CrowdSec{},
+			input: `crowdsec {
+					api_url http://127.0.0.1:8080
+					api_key some_random_key
+					enable_caddy_error true
+				}`,
+			wantParseErr: true,
+		},
+		{
 			name: "ok/basic",
 			expected: &CrowdSec{
 				APIUrl:          "http://127.0.0.1:8080/",
@@ -133,6 +143,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				TickerInterval:  "60s",
 				EnableStreaming: &tv,
 				EnableHardFails: &fv,
+				EnableCaddyError: false,
 			},
 			input: `crowdsec {
 					api_url http://127.0.0.1:8080 
@@ -148,6 +159,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				TickerInterval:  "33s",
 				EnableStreaming: &fv,
 				EnableHardFails: &tv,
+				EnableCaddyError: true,
 			},
 			input: `crowdsec {
 					api_url http://127.0.0.1:8080 
@@ -155,6 +167,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 					ticker_interval 33s
 					disable_streaming
 					enable_hard_fails
+					enable_caddy_error
 				}`,
 			wantParseErr: false,
 		},
@@ -166,6 +179,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 				TickerInterval:  "25s",
 				EnableStreaming: &tv,
 				EnableHardFails: &fv,
+				EnableCaddyError: false,
 			},
 			env: map[string]string{
 				"CROWDSEC_TEST_API_URL":         "http://127.0.0.2:8080/",
@@ -206,6 +220,7 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			assert.Equal(t, tt.expected.TickerInterval, c.TickerInterval)
 			assert.Equal(t, tt.expected.isStreamingEnabled(), c.isStreamingEnabled())
 			assert.Equal(t, tt.expected.shouldFailHard(), c.shouldFailHard())
+			assert.Equal(t, tt.expected.EnableCaddyError, c.EnableCaddyError)
 		})
 	}
 }

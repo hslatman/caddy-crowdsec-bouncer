@@ -16,11 +16,16 @@ package httputils
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"testing"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 )
 
 func newCaddyVarsContext(ctx context.Context) context.Context {
@@ -65,4 +70,57 @@ func Test_determineIPFromRequest(t *testing.T) {
 			require.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestWriteResponse_Ban(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	t.Run("useCaddyError=false writes directly to ResponseWriter", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, logger, "ban", "192.168.1.1", "", 0, false)
+
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusForbidden, w.Code)
+		assert.Equal(t, "text/plain; charset=utf-8", w.Header().Get("Content-Type"))
+	})
+
+	t.Run("useCaddyError=true returns Caddy HandlerError", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, logger, "ban", "192.168.1.1", "", 0, true)
+
+		require.Error(t, err)
+		var handlerErr caddyhttp.HandlerError
+		require.True(t, errors.As(err, &handlerErr))
+		assert.Equal(t, http.StatusForbidden, handlerErr.StatusCode)
+		assert.ErrorIs(t, err, ErrBanned)
+
+		// ResponseWriter shouldn't be touched
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+}
+
+func TestWriteResponse_Throttle(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	t.Run("useCaddyError=false writes throttle directly to ResponseWriter", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, logger, "throttle", "192.168.1.1", "10s", 0, false)
+
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusTooManyRequests, w.Code)
+		assert.Equal(t, "10", w.Header().Get("Retry-After"))
+	})
+
+	t.Run("useCaddyError=true delegates Caddy HandlerError for throttle", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, logger, "throttle", "192.168.1.1", "10s", 0, true)
+
+		require.Error(t, err)
+		var handlerErr caddyhttp.HandlerError
+		require.True(t, errors.As(err, &handlerErr))
+		assert.Equal(t, http.StatusTooManyRequests, handlerErr.StatusCode)
+		assert.ErrorIs(t, err, ErrThrottled)
+
+		assert.Equal(t, "10", w.Header().Get("Retry-After"))
+	})
 }
