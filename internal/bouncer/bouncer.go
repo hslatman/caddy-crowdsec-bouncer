@@ -74,7 +74,7 @@ type Bouncer struct {
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -97,7 +97,7 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, tickerInterval
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, logger.Named("appsec")),
+		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")),
 		store:          newStore(),
 		logger:         logger,
 		userAgent:      userAgent,
