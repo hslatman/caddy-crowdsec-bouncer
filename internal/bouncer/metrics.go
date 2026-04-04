@@ -85,7 +85,6 @@ func (m metricMap) RegisterAll(registry *prometheus.Registry) error {
 
 func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, instanceID string) (*metricsProvider, error) {
 	osName, osVersion := version.DetectOS()
-	interval = 10 * time.Second // TODO: remove
 	metricMap := &metricMap{
 		activeDecisionsName: {
 			Name:         "active_decisions",
@@ -303,12 +302,12 @@ func (m *metricsProvider) updateMetrics(metrics *models.RemediationComponentsMet
 }
 
 func (m *metricsProvider) run(ctx context.Context, startedAt time.Time) error {
-	m.startedAtTimestamp = startedAt.Unix()
-
 	if m.interval == 0 {
 		m.logger.Info("usage metrics disabled")
 		return nil
 	}
+
+	m.startedAtTimestamp = startedAt.Unix()
 
 	ticker := time.NewTicker(m.interval)
 

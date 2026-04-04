@@ -62,6 +62,9 @@ type CrowdSec struct {
 	// TickerInterval is the interval the StreamBouncer uses for querying
 	// the CrowdSec Local API. Defaults to "60s".
 	TickerInterval string `json:"ticker_interval,omitempty"`
+	// MetricsInterval is the interval with which the metrics get pushed
+	// to the CrowdSec Local API. Disabled by default.
+	MetricsInterval caddy.Duration `json:"metrics_interval,omitempty"`
 	// EnableStreaming indicates whether the StreamBouncer should be used.
 	// If it's false, the LiveBouncer is used. The StreamBouncer keeps
 	// CrowdSec decisions in memory, resulting in quicker lookups. The
@@ -114,7 +117,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	}
 
 	registry := ctx.GetMetricsRegistry() // TODO: only pass conditionally, when integration with Caddy metrics is enabled?
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry)
+	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
 	}
@@ -303,10 +306,15 @@ func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
 	return c.bouncer.CheckRequest(ctx, r)
 }
 
+func (c *CrowdSec) metricsInterval() time.Duration {
+	return time.Duration(c.MetricsInterval)
+}
+
 func (c *CrowdSec) appSecTimeout() time.Duration {
 	if c.AppSecTimeout == 0 {
 		return 2 * time.Second
 	}
+
 	return time.Duration(c.AppSecTimeout)
 }
 

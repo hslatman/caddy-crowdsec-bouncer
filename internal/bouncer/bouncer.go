@@ -56,11 +56,12 @@ type Bouncer struct {
 	streamingBouncer     *csbouncer.StreamBouncer
 	liveBouncer          *csbouncer.LiveBouncer
 	metricsProvider      *metricsProvider
+	metricsInterval      time.Duration
+	metricsRegistry      *prometheus.Registry
+	caddyMetricsRegistry *prometheus.Registry
 	appsec               *appsec
 	store                *store
 	logger               *zap.Logger
-	metricsRegistry      *prometheus.Registry
-	caddyMetricsRegistry *prometheus.Registry
 	useStreamingBouncer  bool
 	shouldFailHard       bool
 	userAgent            string
@@ -77,7 +78,7 @@ type Bouncer struct {
 }
 
 // New creates a new (streaming) Bouncer with a storage based on immutable radix tree
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry) (*Bouncer, error) {
+func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Bouncer, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -102,7 +103,9 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		},
 		appsec:               newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")), // TODO add fields here?
 		store:                newStore(),
+		metricsRegistry:      prometheus.NewRegistry(),
 		caddyMetricsRegistry: caddyMetricsRegistry,
+		metricsInterval:      metricsInterval,
 		logger:               logger, // TODO add fields here?
 		userAgent:            userAgent,
 		instantiatedAt:       instantiatedAt,
@@ -143,11 +146,6 @@ func (b *Bouncer) Init() (err error) {
 	// override CrowdSec's default logrus logging
 	b.overrideLogrusLogger()
 
-	// TODO: make metrics gathering/integration optional? I.e. if the metrics
-	// interval is configured to be 0 or smaller, don't start the metrics
-	// provider? Separate setting for gathering metrics vs. pushing to LAPI?
-	metricsInterval := 1 * time.Minute
-
 	// conditionally initialize the CrowdSec live bouncer
 	if !b.useStreamingBouncer {
 		b.logger.Info("initializing live bouncer", b.zapField())
@@ -170,7 +168,7 @@ func (b *Bouncer) Init() (err error) {
 		}
 	}
 
-	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, b.metricsRegistry, b.caddyMetricsRegistry, metricsInterval, b.logger, b.instanceID); err != nil {
+	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, b.metricsRegistry, b.caddyMetricsRegistry, b.metricsInterval, b.logger, b.instanceID); err != nil {
 		return err
 	}
 

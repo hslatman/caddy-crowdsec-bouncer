@@ -62,6 +62,15 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 				return nil, d.Errf("invalid duration %s: %v", d.Val(), err)
 			}
 			cs.TickerInterval = interval.String()
+		case "metrics_interval":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			dur, err := time.ParseDuration(d.Val())
+			if err != nil {
+				return nil, d.Errf("invalid duration %q: %v", d.Val(), err)
+			}
+			cs.MetricsInterval = caddy.Duration(dur)
 		case "disable_streaming":
 			if d.NextArg() {
 				return nil, d.ArgErr()
