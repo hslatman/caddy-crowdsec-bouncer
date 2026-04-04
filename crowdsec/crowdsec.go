@@ -310,7 +310,7 @@ func (c *CrowdSec) appSecTimeout() time.Duration {
 }
 
 func (c *CrowdSec) isAppSecFailOpenEnabled() bool {
-	return c.EnableAppSecFailOpen != nil && *c.EnableAppSecFailOpen
+	return c.AppSecFailOpen != nil && *c.AppSecFailOpen
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
