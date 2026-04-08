@@ -37,6 +37,7 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				// TODO: process in separate goroutines/waitgroup?
+				mustRecalculateDecisionCounts := false
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					for _, decision := range decisions.Deleted {
@@ -52,6 +53,7 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 						b.logger.Debug(fmt.Sprintf("skipped logging for %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					}
 					b.logger.Debug(fmt.Sprintf("finished processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
+					mustRecalculateDecisionCounts = true
 				}
 
 				// TODO: process in separate goroutines/waitgroup?
@@ -71,10 +73,20 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 						b.logger.Debug(fmt.Sprintf("skipped logging for %d new decisions", numberOfNewDecisions), b.zapField())
 					}
 					b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions), b.zapField())
+					mustRecalculateDecisionCounts = true
+				}
+
+				if mustRecalculateDecisionCounts { //nolint:staticcheck // future functionality
+					// TODO: implement support for ranging over stored decisions, and getting the new
+					// counts of decisions. That way there's no overhead of doing these on each add/delete
+					// operation, and could prevent wrong values from being reported.
 				}
 
 				// update the count of active decisions
-				activeDecisionsGauge.With(nil).Set(float64(b.store.store.Len()))
+				activeDecisionsGauge.With(map[string]string{"origin": "crowdsec"}).Set(float64(b.store.store.Len())) // TODO: set different origin(s)?
+
+				// send the (initial) metrics (once)
+				b.metricsProvider.sendInitialMetricsOnce(ctx)
 			}
 		}
 	}()
@@ -104,10 +116,10 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decis
 		return b.store.get(ip)
 	}
 
-	totalLAPICallsCounter.Inc() // increment; not built into liveBouncer
+	totalBouncerCallsCounter.Inc() // increment; not built into liveBouncer
 	decisions, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
-		totalLAPIErrorsCounter.Inc() // increment; not built into liveBouncer
+		totalBouncerErrorsCounter.Inc() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
 			b.zapField(),
 			zap.String("address", b.liveBouncer.APIUrl),

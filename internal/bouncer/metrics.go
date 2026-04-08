@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
@@ -17,45 +19,65 @@ import (
 	"go.uber.org/zap"
 )
 
+func init() {
+	csbouncer.TotalLAPICalls = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: string(totalBouncerCallsName),
+		Help: "The total number of calls to CrowdSec LAPI",
+	})
+	csbouncer.TotalLAPIError = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: string(totalBouncerErrorsName),
+		Help: "The total number of failed calls to CrowdSec LAPI",
+	})
+
+	totalBouncerCallsCounter = csbouncer.TotalLAPICalls
+	totalBouncerErrorsCounter = csbouncer.TotalLAPIError
+}
+
 var (
-	// metrics provided by the go-cs-bouncer package
-	totalLAPICallsCounter  = csbouncer.TotalLAPICalls
-	totalLAPIErrorsCounter = csbouncer.TotalLAPIError
+	// metrics provided by the go-cs-bouncer package; overridden in init to have more consistent name
+	totalBouncerCallsCounter  prometheus.Counter
+	totalBouncerErrorsCounter prometheus.Counter
 
 	// appsec metrics; not provided by the go-cs-bouncer package
 	totalAppSecCallsCounter = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: string(totalAppSecCallsName),
-		Help: "The total number of calls to CrowdSec LAPI AppSec component",
+		Help: "The total number of calls to the CrowdSec LAPI AppSec component",
 	})
 	totalAppSecErrorsCounter = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: string(totalAppSecErrorsName),
-		Help: "The total number of failed calls to CrowdSec LAPI AppSec component",
-	})
-	activeDecisionsGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: string(activeDecisionsName),
-		Help: "Denotes the current number of active decisions",
-	}, []string{}) // TODO: additional labels, similar to firewall bouncer?
-	blockedRequestsCounter = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: string(blockedRequestsCounterName),
-		Help: "The total number of requests blocked", // TODO: split between bouncer / appsec?
+		Help: "The total number of failed calls to the CrowdSec LAPI AppSec component",
 	})
 
-	// TODO: additional metrics for number of blocked IPs / requests?
+	// decision metrics; not provided by the go-cs-bouncer package
+	activeDecisionsGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: string(activeDecisionsName),
+		Help: "The current number of active decisions",
+	}, []string{"origin"}) // TODO: additional labels, similar to firewall bouncer?
+	blockedRequestsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: string(blockedRequestsCounterName),
+		Help: "The total number of requests blocked", // TODO: split between bouncer / appsec? Also, decision origin?
+	})
+	processedRequestsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: string(processedRequestsCounterName),
+		Help: "The total number of requests handled",
+	})
+
 	// TODO: referencing the global metrics from csbouncer may not be the right
 	// thing to do with how the CrowdSec module operates as part of Caddy. On
 	// configuration reloads it would be pointing to the same counters. Thay may,
-	// or may not be what we want.
+	// or may not be what we want. To be tested.
 )
 
 type metricName string
 
 var (
-	activeDecisionsName        metricName = "caddy_bouncer_active_decisions"
-	blockedRequestsCounterName metricName = "caddy_bouncer_blocked_requests"
-	totalLAPICallsName         metricName = "lapi_requests_total"          // TODO: name not to be changed, unless counter overridden too
-	totalLAPIErrorsName        metricName = "lapi_requests_failures_total" // TODO: name not to be changed, unless counter overridden too
-	totalAppSecCallsName       metricName = "caddy_bouncer_lapi_appsec_requests_total"
-	totalAppSecErrorsName      metricName = "caddy_bouncer_lapi_appsec_requests_failures_total"
+	activeDecisionsName          metricName = "crowdsec_decisions_active"
+	blockedRequestsCounterName   metricName = "crowdsec_requests_blocked"
+	processedRequestsCounterName metricName = "crowdsec_requests_processed"
+	totalBouncerCallsName        metricName = "crowdsec_bouncer_lapi_requests_total"
+	totalBouncerErrorsName       metricName = "crowdsec_bouncer_lapi_requests_failures_total"
+	totalAppSecCallsName         metricName = "crowdsec_appsec_lapi_requests_total"
+	totalAppSecErrorsName        metricName = "crowdsec_appsec_lapi_requests_failures_total"
 )
 
 type metricConfig struct {
@@ -63,8 +85,9 @@ type metricConfig struct {
 	Unit         string
 	Collector    prometheus.Collector
 	LabelKeys    []string
-	LastValueMap map[string]float64 // keep last value to send deltas -- nil if absolute
+	LastValueMap map[string]float64 // keeps value that was sent last, and used to calculate the delta
 	KeyFunc      func(labels []*model.LabelPair) string
+	SendToLAPI   bool
 }
 
 type metricMap map[metricName]*metricConfig
@@ -84,43 +107,53 @@ func (m metricMap) RegisterAll(registry *prometheus.Registry) error {
 }
 
 func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, instanceID string) (*metricsProvider, error) {
-	osName, osVersion := version.DetectOS()
 	metricMap := &metricMap{
 		activeDecisionsName: {
 			Name:         "active_decisions",
 			Unit:         "ip",
 			Collector:    activeDecisionsGauge,
 			LabelKeys:    []string{},
-			LastValueMap: nil, // TODO: should this be set?
-			KeyFunc:      func([]*model.LabelPair) string { return "" },
+			LastValueMap: nil,                                           // absolute value
+			KeyFunc:      func([]*model.LabelPair) string { return "" }, // TODO: implement these
+			SendToLAPI:   true,
 		},
 		blockedRequestsCounterName: {
-			Name:         "blocked_requests", // TODO: change name? Check other bouncers
+			Name:         "dropped",
 			Unit:         "request",
 			Collector:    blockedRequestsCounter,
 			LabelKeys:    []string{},
 			LastValueMap: make(map[string]float64),
-			KeyFunc:      func([]*model.LabelPair) string { return "" },
+			KeyFunc:      func([]*model.LabelPair) string { return "" }, // TODO: implement these
+			SendToLAPI:   true,
 		},
-		totalLAPICallsName: {
-			Name:         "lapi_calls",
-			Unit:         "integer",
-			Collector:    totalLAPICallsCounter,
+		processedRequestsCounterName: {
+			Name:         "processed",
+			Unit:         "request",
+			Collector:    processedRequestsCounter,
+			LabelKeys:    []string{},
+			LastValueMap: make(map[string]float64),
+			KeyFunc:      func([]*model.LabelPair) string { return "" }, // TODO: implement these
+			SendToLAPI:   true,
+		},
+		totalBouncerCallsName: {
+			Name:         "bouncer_calls",
+			Unit:         "request",
+			Collector:    totalBouncerCallsCounter,
 			LabelKeys:    []string{},
 			LastValueMap: make(map[string]float64),
 			KeyFunc:      func([]*model.LabelPair) string { return "" },
 		},
-		totalLAPIErrorsName: {
-			Name:         "lapi_errors",
-			Unit:         "integer",
-			Collector:    totalLAPIErrorsCounter,
+		totalBouncerErrorsName: {
+			Name:         "bouncer_errors",
+			Unit:         "request",
+			Collector:    totalBouncerErrorsCounter,
 			LabelKeys:    []string{},
 			LastValueMap: make(map[string]float64),
 			KeyFunc:      func([]*model.LabelPair) string { return "" },
 		},
 		totalAppSecCallsName: {
 			Name:         "appsec_calls",
-			Unit:         "integer",
+			Unit:         "request",
 			Collector:    totalAppSecCallsCounter,
 			LabelKeys:    []string{},
 			LastValueMap: make(map[string]float64),
@@ -128,7 +161,7 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 		},
 		totalAppSecErrorsName: {
 			Name:         "appsec_errors",
-			Unit:         "integer",
+			Unit:         "request",
 			Collector:    totalAppSecErrorsCounter,
 			LabelKeys:    []string{},
 			LastValueMap: make(map[string]float64),
@@ -143,10 +176,13 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 
 	// register the metrics with the Caddy metrics registry
 	if err := metricMap.RegisterAll(caddyMetricsRegistry); err != nil {
-		// TODO: only do this conditionally, when explicitly enabled?
-		// TODO: register the metrics on this registry under different names?
 		return nil, fmt.Errorf("failed registering metrics with Caddy registry: %w", err)
 	}
+
+	// initialize the gauge, so that it shows up in the metrics
+	activeDecisionsGauge.With(map[string]string{"origin": "crowdsec"}).Set(10) // TODO: ensure this has the right number/names of labels
+
+	osName, osVersion := version.DetectOS()
 
 	m := &metricsProvider{
 		apiClient:            client,
@@ -181,27 +217,43 @@ type metricsProvider struct {
 	bouncerFeatureFlags  []string
 	instanceID           string
 	startedAtTimestamp   int64
+	started              atomic.Bool
+	initialMetricsSent   atomic.Bool
 }
 
-func (m *metricsProvider) metricsPayload() *models.AllMetrics {
-	base := &models.BaseMetrics{
-		Os:                  &m.bouncerOS,
-		Version:             &m.bouncerVersion,
-		FeatureFlags:        m.bouncerFeatureFlags,
-		Metrics:             make([]*models.DetailedMetrics, 0),
-		UtcStartupTimestamp: &m.startedAtTimestamp,
+func (m *metricsProvider) metricsPayload() (metrics *models.AllMetrics) {
+	metrics = &models.AllMetrics{
+		RemediationComponents: []*models.RemediationComponentsMetrics{
+			{
+				Name: userAgentName, // TODO: verify this is OK to use as-is
+				Type: m.bouncerType,
+				BaseMetrics: models.BaseMetrics{
+					Os:                  &m.bouncerOS,
+					Version:             &m.bouncerVersion,
+					FeatureFlags:        m.bouncerFeatureFlags,
+					UtcStartupTimestamp: &m.startedAtTimestamp,
+				},
+			},
+		},
 	}
 
-	metric := &models.RemediationComponentsMetrics{
-		BaseMetrics: *base,
-		Type:        m.bouncerType,
+	items, err := getMetricItems(m.metricsRegistry, m.metricMap)
+	if err != nil {
+		m.logger.Error("failed getting metrics", zap.Error(err))
+		return
 	}
 
-	m.updateMetrics(metric) // TODO: extract?
-
-	return &models.AllMetrics{
-		RemediationComponents: []*models.RemediationComponentsMetrics{metric},
+	metrics.RemediationComponents[0].Metrics = []*models.DetailedMetrics{
+		{
+			Meta: &models.MetricsMeta{
+				UtcNowTimestamp:   ptr.Of(time.Now().Unix()),
+				WindowSizeSeconds: ptr.Of(int64(m.interval.Seconds())), // TODO: subtract with previous time instead?
+			},
+			Items: items,
+		},
 	}
+
+	return metrics
 }
 
 func getLabelValue(labels []*model.LabelPair, key string) string {
@@ -214,100 +266,74 @@ func getLabelValue(labels []*model.LabelPair, key string) string {
 	return ""
 }
 
-// TODO: refactor; this doesn't need to be a callback in the new implementation
-func (m *metricsProvider) updateMetrics(metrics *models.RemediationComponentsMetrics) {
-	//m.Name = userAgentName // instance ID? Is name provided when creating bouncer in CrowdSec, it seems
-	//m.Version = ptr.Of(userAgentVersion)
-	//m.Type = userAgentName
-
-	// TODO: store/cache the previous metric value; only send the difference to LAPI?
-
-	metricFamilies, err := m.metricsRegistry.Gather()
+func getMetricItems(registry *prometheus.Registry, metricMap *metricMap) ([]*models.MetricsDetailItem, error) {
+	metricFamilies, err := registry.Gather()
 	if err != nil {
-		m.logger.Error("failed gathering metrics", zap.Error(err))
-		return
+		return nil, fmt.Errorf("failed gathering metrics: %w", err)
 	}
 
-	var items = make([]*models.MetricsDetailItem, 0, len(metricFamilies))
+	items := make([]*models.MetricsDetailItem, 0, len(metricFamilies))
 
 	for _, mf := range metricFamilies {
-		cfg, ok := ptr.OrEmpty(m.metricMap)[metricName(mf.GetName())]
+		// filter out metrics for which no configuration is present
+		cfg, ok := ptr.OrEmpty(metricMap)[metricName(mf.GetName())]
 		if !ok {
 			continue
 		}
 
+		// only include metrics explicitly enabled to be sent to CrowdSec Local API.
+		if !cfg.SendToLAPI {
+			continue
+		}
+
 		for _, metric := range mf.GetMetric() {
-			labels := metric.GetLabel()
-			var value float64
+
+			var counterValue float64
 			if counter := metric.GetCounter(); counter != nil {
-				value = counter.GetValue()
+				counterValue = counter.GetValue()
 			} else if gauge := metric.GetGauge(); gauge != nil {
-				value = gauge.GetValue()
+				counterValue = gauge.GetValue()
 			} else {
-				continue
+				continue // no support for other metric types, currently
 			}
 
+			labels := metric.GetLabel()
 			labelMap := make(map[string]string)
 			for _, key := range cfg.LabelKeys {
 				labelMap[key] = getLabelValue(labels, key)
 			}
 
-			finalValue := value
-
-			if cfg.LastValueMap == nil {
-				// always send absolute values
-				//log.Debugf("Sending %s for %+v %f", cfg.Name, labelMap, finalValue)
-			} else {
-				// the final value to send must be relative, and never negative
-				// because the firewall counter may have been reset since last collection.
+			value := counterValue
+			if cfg.LastValueMap != nil { // calculate delta for non-absolute values
 				key := cfg.KeyFunc(labels)
-
-				// no need to guard access to LastValueMap, as we are in the main thread -- it's
-				// the gauge that is updated by the requests
-				finalValue = value - cfg.LastValueMap[key]
-
-				if finalValue < 0 {
-					finalValue = -finalValue
-
-					//log.Warningf("metric value for %s %+v is negative, assuming external counter was reset", cfg.Name, labelMap)
-				}
-
+				value = math.Abs(value - cfg.LastValueMap[key])
 				cfg.LastValueMap[key] = value
-				//log.Debugf("Sending %s for %+v %f | current value: %f | previous value: %f", cfg.Name, labelMap, finalValue, value, cfg.LastValueMap[key])
 			}
 
-			fmt.Println("appending item", mf.GetName(), value, finalValue)
-
-			items = append(items, &models.MetricsDetailItem{ // TODO: add additional metrics
+			items = append(items, &models.MetricsDetailItem{
 				Name:   ptr.Of(cfg.Name),
-				Value:  &finalValue,
+				Value:  &value,
 				Labels: labelMap,
 				Unit:   ptr.Of(cfg.Unit),
 			})
 		}
 	}
 
-	fmt.Println(metricFamilies)
-
-	// number := getMetricValue(totalLAPICallsCounter)
-	// fmt.Println("number", number)
-
-	metrics.Metrics = append(metrics.Metrics, &models.DetailedMetrics{
-		Meta: &models.MetricsMeta{
-			UtcNowTimestamp:   ptr.Of(time.Now().Unix()),
-			WindowSizeSeconds: ptr.Of(int64(m.interval.Seconds())),
-		},
-		Items: items,
-	})
+	return items, nil
 }
 
 func (m *metricsProvider) run(ctx context.Context, startedAt time.Time) error {
+	if m.started.Load() {
+		return nil
+	}
+
 	if m.interval == 0 {
 		m.logger.Info("usage metrics disabled")
 		return nil
 	}
 
 	m.startedAtTimestamp = startedAt.Unix()
+	m.started.Store(true)
 
 	ticker := time.NewTicker(m.interval)
 
@@ -320,32 +346,57 @@ func (m *metricsProvider) run(ctx context.Context, startedAt time.Time) error {
 
 			return errors.New("metric provider halted")
 		case <-ticker.C:
-			met := m.metricsPayload()
-
-			ctxTime, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-
-			_, resp, err := m.apiClient.UsageMetrics.Add(ctxTime, met)
-			switch {
-			case errors.Is(err, context.DeadlineExceeded):
-				m.logger.Warn("timeout sending metrics")
-				continue
-			case resp != nil && resp.Response != nil && resp.Response.StatusCode == http.StatusNotFound:
-				m.logger.Warn("metrics endpoint not found, older LAPI?")
-				continue
-			case err != nil:
-				m.logger.Warn("failed to send metrics: %s", zap.Error(err))
-				continue
-			}
-
-			if resp.Response.StatusCode != http.StatusCreated {
-				m.logger.Warn("failed to send metrics", zap.Int("status", resp.Response.StatusCode))
-				continue
-			}
-
-			m.logger.Debug("usage metrics sent")
+			_ = m.sendMetrics(ctx)
 		}
 	}
+}
+
+func (m *metricsProvider) sendMetrics(ctx context.Context) (sent bool) {
+	if !m.started.Load() { // metrics disabled, or not started (yet)
+		return
+	}
+
+	metrics := m.metricsPayload()
+
+	ctxTime, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	_, resp, err := m.apiClient.UsageMetrics.Add(ctxTime, metrics)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		m.logger.Warn("timeout sending metrics")
+		return
+	case resp != nil && resp.Response != nil && resp.Response.StatusCode == http.StatusNotFound:
+		m.logger.Warn("metrics endpoint not found, older LAPI?")
+		return
+	case err != nil:
+		m.logger.Warn("failed to send metrics", zap.Error(err))
+		return
+	}
+
+	if resp.Response.StatusCode != http.StatusCreated {
+		m.logger.Warn("failed to send metrics", zap.Int("status", resp.Response.StatusCode))
+		return
+	}
+
+	sent = true
+
+	isInitial := !m.initialMetricsSent.Load()
+	if isInitial {
+		m.initialMetricsSent.Store(sent)
+	}
+
+	m.logger.Debug("usage metrics sent", zap.Any("metrics", metrics), zap.Bool("initial", isInitial))
+
+	return
+}
+
+func (m *metricsProvider) sendInitialMetricsOnce(ctx context.Context) {
+	if m.initialMetricsSent.Load() {
+		return
+	}
+
+	_ = m.sendMetrics(ctx)
 }
 
 func (b *Bouncer) startMetricsProvider(ctx context.Context) {

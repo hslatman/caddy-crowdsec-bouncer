@@ -77,7 +77,7 @@ type Bouncer struct {
 	wg        *sync.WaitGroup
 }
 
-// New creates a new (streaming) Bouncer with a storage based on immutable radix tree
+// New creates a new Bouncer with a storage based on immutable radix tree.
 func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Bouncer, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()

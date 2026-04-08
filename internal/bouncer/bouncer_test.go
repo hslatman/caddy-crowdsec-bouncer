@@ -11,6 +11,7 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jarcoal/httpmock"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
 )
@@ -50,7 +51,9 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
 	require.NoError(t, err)
 
-	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, nil, nil, time.Minute, bouncer.logger, bouncer.instanceID)
+	metricsRegistry := prometheus.NewRegistry()
+	fakeCaddyMetricsRegistry := prometheus.NewRegistry()
+	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, metricsRegistry, fakeCaddyMetricsRegistry, time.Minute, bouncer.logger, bouncer.instanceID)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
