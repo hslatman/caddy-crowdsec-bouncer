@@ -330,6 +330,8 @@ func getMetricItems(registry *prometheus.Registry, metricMap *metricMap) ([]*mod
 	return items, nil
 }
 
+var errMetricsProviderHalted = errors.New("metrics provider halted")
+
 func (m *metricsProvider) run(ctx context.Context, startedAt time.Time) error {
 	if m.started.Load() {
 		return nil
@@ -353,10 +355,11 @@ func (m *metricsProvider) run(ctx context.Context, startedAt time.Time) error {
 		select {
 		case <-ctx.Done():
 			if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
-				return fmt.Errorf("metric provider halted: %w", err)
+				m.logger.Error("metrics provider stopped", zap.Error(err))
+				return nil
 			}
 
-			return errors.New("metric provider halted")
+			return errMetricsProviderHalted
 		case <-ticker.C:
 			_ = m.sendMetrics(ctx)
 		}
@@ -382,15 +385,16 @@ func (m *metricsProvider) sendMetrics(ctx context.Context) (sent bool) {
 	case errors.Is(err, context.DeadlineExceeded):
 		m.logger.Warn("timeout sending metrics")
 		return
-	case resp != nil && resp.Response != nil && resp.Response.StatusCode == http.StatusNotFound:
-		m.logger.Warn("metrics endpoint not found, older LAPI?")
-		return
 	case err != nil:
 		m.logger.Warn("failed to send metrics", zap.Error(err))
 		return
-	}
-
-	if resp.Response.StatusCode != http.StatusCreated {
+	case resp == nil || resp.Response == nil:
+		m.logger.Warn("no response from metrics endpoint")
+		return
+	case resp.Response.StatusCode == http.StatusNotFound:
+		m.logger.Warn("metrics endpoint not found; older LAPI?")
+		return
+	case resp.Response.StatusCode != http.StatusCreated:
 		m.logger.Warn("failed to send metrics", zap.Int("status", resp.Response.StatusCode))
 		return
 	}
@@ -417,17 +421,14 @@ func (m *metricsProvider) sendInitialMetricsOnce(ctx context.Context) {
 }
 
 func (b *Bouncer) startMetricsProvider(ctx context.Context) {
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-
+	b.wg.Go(func() {
 		b.logger.Debug("starting metrics provider", b.zapField())
 		if err := b.metricsProvider.run(ctx, b.startedAt); err != nil {
-			if err.Error() == "metric provider halted" { // TODO: don't rely on the error being returned
+			if errors.Is(err, errMetricsProviderHalted) {
 				b.logger.Info("metrics provider stopped", b.zapField())
 			} else {
 				b.logger.Error("failed running metrics provider", b.zapField(), zap.Error(err))
 			}
 		}
-	}()
+	})
 }
