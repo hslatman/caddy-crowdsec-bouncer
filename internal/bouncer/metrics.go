@@ -327,9 +327,13 @@ func (m *metricsProvider) run(ctx context.Context, startedAt time.Time) error {
 		return nil
 	}
 
-	if m.interval == 0 {
+	if m.interval <= 0 {
 		m.logger.Info("usage metrics disabled")
 		return nil
+	}
+
+	if m.interval < 15*time.Minute {
+		m.logger.Warn("low metrics push interval detected; CrowdSec suggest a minimum of 15 minutes", zap.Duration("interval", m.interval))
 	}
 
 	m.startedAtTimestamp = startedAt.Unix()
