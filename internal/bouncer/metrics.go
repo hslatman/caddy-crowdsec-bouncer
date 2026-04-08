@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -219,9 +220,11 @@ type metricsProvider struct {
 	startedAtTimestamp   int64
 	started              atomic.Bool
 	initialMetricsSent   atomic.Bool
+	lastMetricsSentAt    time.Time
+	sending              sync.Mutex
 }
 
-func (m *metricsProvider) metricsPayload() (metrics *models.AllMetrics) {
+func (m *metricsProvider) metricsPayload(now time.Time) (metrics *models.AllMetrics) {
 	metrics = &models.AllMetrics{
 		RemediationComponents: []*models.RemediationComponentsMetrics{
 			{
@@ -243,11 +246,16 @@ func (m *metricsProvider) metricsPayload() (metrics *models.AllMetrics) {
 		return
 	}
 
+	windowSizeSeconds := float64(0)
+	if !m.lastMetricsSentAt.IsZero() {
+		windowSizeSeconds = max(math.Abs(now.Sub(m.lastMetricsSentAt).Seconds()), windowSizeSeconds)
+	}
+
 	metrics.RemediationComponents[0].Metrics = []*models.DetailedMetrics{
 		{
 			Meta: &models.MetricsMeta{
-				UtcNowTimestamp:   ptr.Of(time.Now().Unix()),
-				WindowSizeSeconds: ptr.Of(int64(m.interval.Seconds())), // TODO: subtract with previous time instead?
+				UtcNowTimestamp:   ptr.Of(now.Unix()),
+				WindowSizeSeconds: ptr.Of(int64(windowSizeSeconds)),
 			},
 			Items: items,
 		},
@@ -360,12 +368,16 @@ func (m *metricsProvider) sendMetrics(ctx context.Context) (sent bool) {
 		return
 	}
 
-	metrics := m.metricsPayload()
+	m.sending.Lock()
+	defer m.sending.Unlock()
 
-	ctxTime, cancel := context.WithTimeout(ctx, 10*time.Second)
+	now := time.Now()
+	metrics := m.metricsPayload(now)
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	_, resp, err := m.apiClient.UsageMetrics.Add(ctxTime, metrics)
+	_, resp, err := m.apiClient.UsageMetrics.Add(ctx, metrics)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		m.logger.Warn("timeout sending metrics")
@@ -384,13 +396,14 @@ func (m *metricsProvider) sendMetrics(ctx context.Context) (sent bool) {
 	}
 
 	sent = true
+	m.lastMetricsSentAt = now
 
 	isInitial := !m.initialMetricsSent.Load()
 	if isInitial {
 		m.initialMetricsSent.Store(sent)
 	}
 
-	m.logger.Debug("usage metrics sent", zap.Any("metrics", metrics), zap.Bool("initial", isInitial))
+	m.logger.Debug("usage metrics sent", zap.Any("metrics", metrics), zap.Bool("initial", isInitial), zap.Time("next", now.Add(m.interval).Truncate(time.Second)))
 
 	return
 }
