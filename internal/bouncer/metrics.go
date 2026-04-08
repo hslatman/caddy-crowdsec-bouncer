@@ -54,10 +54,10 @@ var (
 		Name: string(activeDecisionsName),
 		Help: "The current number of active decisions",
 	}, []string{"origin"}) // TODO: additional labels, similar to firewall bouncer?
-	blockedRequestsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+	blockedRequestsCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: string(blockedRequestsCounterName),
-		Help: "The total number of requests blocked", // TODO: split between bouncer / appsec? Also, decision origin?
-	})
+		Help: "The total number of requests blocked",
+	}, []string{"origin", "remediation"})
 	processedRequestsCounter = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: string(processedRequestsCounterName),
 		Help: "The total number of requests handled",
@@ -113,19 +113,23 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Name:         "active_decisions",
 			Unit:         "ip",
 			Collector:    activeDecisionsGauge,
-			LabelKeys:    []string{},
-			LastValueMap: nil,                                           // absolute value
-			KeyFunc:      func([]*model.LabelPair) string { return "" }, // TODO: implement these
-			SendToLAPI:   true,
+			LabelKeys:    []string{"origin"},
+			LastValueMap: nil, // absolute value
+			KeyFunc: func(labels []*model.LabelPair) string {
+				return getLabelValue(labels, "origin")
+			},
+			SendToLAPI: true,
 		},
 		blockedRequestsCounterName: {
 			Name:         "dropped",
 			Unit:         "request",
 			Collector:    blockedRequestsCounter,
-			LabelKeys:    []string{},
+			LabelKeys:    []string{"origin", "remediation"},
 			LastValueMap: make(map[string]float64),
-			KeyFunc:      func([]*model.LabelPair) string { return "" }, // TODO: implement these
-			SendToLAPI:   true,
+			KeyFunc: func(labels []*model.LabelPair) string {
+				return getLabelValue(labels, "origin") + getLabelValue(labels, "remediation")
+			},
+			SendToLAPI: true,
 		},
 		processedRequestsCounterName: {
 			Name:         "processed",
@@ -133,7 +137,7 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Collector:    processedRequestsCounter,
 			LabelKeys:    []string{},
 			LastValueMap: make(map[string]float64),
-			KeyFunc:      func([]*model.LabelPair) string { return "" }, // TODO: implement these
+			KeyFunc:      func([]*model.LabelPair) string { return "" },
 			SendToLAPI:   true,
 		},
 		totalBouncerCallsName: {
@@ -180,9 +184,6 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 		return nil, fmt.Errorf("failed registering metrics with Caddy registry: %w", err)
 	}
 
-	// initialize the gauge, so that it shows up in the metrics
-	activeDecisionsGauge.With(map[string]string{"origin": "crowdsec"}).Set(10) // TODO: ensure this has the right number/names of labels
-
 	osName, osVersion := version.DetectOS()
 
 	m := &metricsProvider{
@@ -197,7 +198,7 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Name:    &osName,
 			Version: &osVersion,
 		},
-		bouncerFeatureFlags: []string{}, // TODO: set this, but to what?
+		bouncerFeatureFlags: []string{}, // not used in bouncers
 		logger:              logger.With(zap.String("instance_id", instanceID)),
 		instanceID:          instanceID,
 	}
@@ -295,12 +296,11 @@ func getMetricItems(registry *prometheus.Registry, metricMap *metricMap) ([]*mod
 		}
 
 		for _, metric := range mf.GetMetric() {
-
-			var counterValue float64
+			var metricValue float64
 			if counter := metric.GetCounter(); counter != nil {
-				counterValue = counter.GetValue()
+				metricValue = counter.GetValue()
 			} else if gauge := metric.GetGauge(); gauge != nil {
-				counterValue = gauge.GetValue()
+				metricValue = gauge.GetValue()
 			} else {
 				continue // no support for other metric types, currently
 			}
@@ -311,11 +311,13 @@ func getMetricItems(registry *prometheus.Registry, metricMap *metricMap) ([]*mod
 				labelMap[key] = getLabelValue(labels, key)
 			}
 
-			value := counterValue
-			if cfg.LastValueMap != nil { // calculate delta for non-absolute values
+			var value float64
+			if cfg.LastValueMap == nil {
+				value = metricValue // absolute value
+			} else {
 				key := cfg.KeyFunc(labels)
-				value = math.Abs(value - cfg.LastValueMap[key])
-				cfg.LastValueMap[key] = value
+				value = math.Abs(metricValue - cfg.LastValueMap[key]) // calculate delta for non-absolute values
+				cfg.LastValueMap[key] = metricValue
 			}
 
 			items = append(items, &models.MetricsDetailItem{

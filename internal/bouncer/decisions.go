@@ -11,19 +11,14 @@ import (
 )
 
 func (b *Bouncer) startStreamingBouncer(ctx context.Context) {
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
+	b.wg.Go(func() {
 		b.logger.Debug("starting streaming bouncer", b.zapField())
 		b.streamingBouncer.Run(ctx)
-	}()
+	})
 }
 
 func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-
+	b.wg.Go(func() {
 		b.logger.Debug("starting decision processing", b.zapField())
 
 		for {
@@ -76,20 +71,15 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 					mustRecalculateDecisionCounts = true
 				}
 
-				if mustRecalculateDecisionCounts { //nolint:staticcheck // future functionality
-					// TODO: implement support for ranging over stored decisions, and getting the new
-					// counts of decisions. That way there's no overhead of doing these on each add/delete
-					// operation, and could prevent wrong values from being reported.
+				if mustRecalculateDecisionCounts {
+					b.recalculateAndRecordDecisionCounts()
 				}
-
-				// update the count of active decisions
-				activeDecisionsGauge.With(map[string]string{"origin": "crowdsec"}).Set(float64(b.store.store.Len())) // TODO: set different origin(s)?
 
 				// send the (initial) metrics (once)
 				b.metricsProvider.sendInitialMetricsOnce(ctx)
 			}
 		}
-	}()
+	})
 }
 
 // Add adds a Decision to the storage
@@ -140,4 +130,28 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decis
 	}
 
 	return nil, nil
+}
+
+func (b *Bouncer) recalculateAndRecordDecisionCounts() {
+	// initialize map, so that these origins are always
+	// known and recorded
+	m := map[string]float64{
+		"CAPI":             0,
+		"crowdsec":         0,
+		"cscli":            0,
+		"cscli-import":     0,
+		"console":          0,
+		"appsec":           0,
+		"remediation_sync": 0,
+	}
+
+	for _, v := range b.store.store.All() {
+		origin := *v.Origin
+		m[origin] += 1
+	}
+
+	for origin, count := range m {
+		// update the count of active decisions
+		activeDecisionsGauge.With(map[string]string{"origin": origin}).Set(count)
+	}
 }
