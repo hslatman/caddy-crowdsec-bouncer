@@ -30,6 +30,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
@@ -76,6 +77,9 @@ type CrowdSec struct {
 	// Caddy continuing operation (with a chance of not performing)
 	// validations. Defaults to false.
 	EnableHardFails *bool `json:"enable_hard_fails,omitempty"`
+	// EnableCaddyMetrics enables metrics maintained by the CrowdSec
+	// module to be emitted at Caddy's /metrics endpoint.
+	EnableCaddyMetrics *bool `json:"enable_caddy_metrics,omitempty"`
 	// AppSecUrl is the URL of the AppSec component served by your
 	// CrowdSec installation. Disabled by default.
 	AppSecUrl string `json:"appsec_url,omitempty"`
@@ -116,7 +120,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		c.TickerInterval = "60s"
 	}
 
-	registry := ctx.GetMetricsRegistry() // TODO: only pass conditionally, when integration with Caddy metrics is enabled?
+	var registry *prometheus.Registry
+	if c.enableCaddyMetrics() {
+		registry = ctx.GetMetricsRegistry()
+	}
 	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
@@ -308,6 +315,10 @@ func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
 
 func (c *CrowdSec) metricsInterval() time.Duration {
 	return time.Duration(c.MetricsInterval)
+}
+
+func (c *CrowdSec) enableCaddyMetrics() bool {
+	return c.EnableCaddyMetrics != nil && *c.EnableCaddyMetrics
 }
 
 func (c *CrowdSec) appSecTimeout() time.Duration {
