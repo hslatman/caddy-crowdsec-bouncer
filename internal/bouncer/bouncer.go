@@ -241,11 +241,6 @@ func (b *Bouncer) Shutdown() error {
 // IsAllowed checks if an IP is allowed or not
 func (b *Bouncer) IsAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
 	isAllowed, decision, err := b.isAllowed(ip, forceLive)
-
-	if !isAllowed {
-		blockedRequestsCounter.Inc()
-	}
-
 	return isAllowed, decision, err
 }
 
@@ -274,6 +269,23 @@ func (b *Bouncer) isAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decisi
 
 func (b *Bouncer) CheckRequest(ctx context.Context, r *http.Request) error {
 	return b.appsec.checkRequest(ctx, r)
+}
+
+func toIPType(isIPv6 bool) (ipType string) {
+	ipType = "ipv4"
+	if isIPv6 {
+		ipType = "ipv6"
+	}
+
+	return
+}
+
+func (b *Bouncer) IncrementProcessedRequests(server string, isIPv6 bool) {
+	processedRequestsCounter.With(prometheus.Labels{"server": server, "ip_type": toIPType(isIPv6)}).Inc() // TODO: test whether these globals are OK to use
+}
+
+func (b *Bouncer) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {
+	blockedRequestsCounter.With(prometheus.Labels{"server": server, "origin": origin, "remediation": remediation, "ip_type": toIPType(isIPv6)}).Inc() // TODO: test whether these globals are OK to use
 }
 
 func generateInstanceID(t time.Time) (string, error) {

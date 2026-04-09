@@ -29,6 +29,7 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/servername"
 )
 
 func init() {
@@ -87,11 +88,14 @@ func (h *Handler) Cleanup() error {
 // ServeHTTP is the Caddy handler for serving HTTP requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	var (
-		ctx = r.Context()
-		ip  netip.Addr
+		ctx    = r.Context()
+		ip     netip.Addr
+		server = servername.FromContext(ctx)
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
+	defer h.crowdsec.IncrementProcessedRequests(server, ip.Is6())
+
 	r = r.WithContext(ctx)
 	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
 		a := &bouncer.AppSecError{}
@@ -102,10 +106,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		switch a.Action {
 		case "allow":
 			// nothing to do
+			h.crowdsec.IncrementBlockedRequests(server, "appsec", "bypass", ip.Is6()) // TODO: properly set the action that was performed
 		case "log":
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
+			h.crowdsec.IncrementBlockedRequests(server, "appsec", "log", ip.Is6()) // TODO: properly set the action that was performed
 		default:
-			return httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+			if err := httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode); err != nil {
+				h.crowdsec.IncrementBlockedRequests(server, "appsec", a.Action, ip.Is6()) // TODO: properly set the action that was performed
+				return err
+			}
+
+			h.crowdsec.IncrementBlockedRequests(server, "appsec", a.Action, ip.Is6()) // TODO: properly set the action that was performed
+			return nil
 		}
 	}
 

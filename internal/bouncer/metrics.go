@@ -53,15 +53,15 @@ var (
 	activeDecisionsGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: string(activeDecisionsName),
 		Help: "The current number of active decisions",
-	}, []string{"origin"}) // TODO: additional labels, similar to firewall bouncer?
+	}, []string{"origin", "ip_type"})
 	blockedRequestsCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: string(blockedRequestsCounterName),
 		Help: "The total number of requests blocked",
-	}, []string{"origin", "remediation"})
-	processedRequestsCounter = prometheus.NewCounter(prometheus.CounterOpts{
+	}, []string{"server", "origin", "remediation", "ip_type"})
+	processedRequestsCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: string(processedRequestsCounterName),
 		Help: "The total number of requests handled",
-	})
+	}, []string{"server", "ip_type"})
 
 	// TODO: referencing the global metrics from csbouncer may not be the right
 	// thing to do with how the CrowdSec module operates as part of Caddy. On
@@ -113,10 +113,10 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Name:         "active_decisions",
 			Unit:         "ip",
 			Collector:    activeDecisionsGauge,
-			LabelKeys:    []string{"origin"},
+			LabelKeys:    []string{"origin", "ip_type"},
 			LastValueMap: nil, // absolute value
 			KeyFunc: func(labels []*model.LabelPair) string {
-				return getLabelValue(labels, "origin")
+				return getLabelValue(labels, "origin") + getLabelValue(labels, "ip_type")
 			},
 			SendToLAPI: true,
 		},
@@ -124,10 +124,10 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Name:         "dropped",
 			Unit:         "request",
 			Collector:    blockedRequestsCounter,
-			LabelKeys:    []string{"origin", "remediation"},
+			LabelKeys:    []string{"server", "origin", "remediation", "ip_type"},
 			LastValueMap: make(map[string]float64),
 			KeyFunc: func(labels []*model.LabelPair) string {
-				return getLabelValue(labels, "origin") + getLabelValue(labels, "remediation")
+				return getLabelValue(labels, "server") + getLabelValue(labels, "origin") + getLabelValue(labels, "remediation") + getLabelValue(labels, "ip_type")
 			},
 			SendToLAPI: true,
 		},
@@ -135,10 +135,12 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Name:         "processed",
 			Unit:         "request",
 			Collector:    processedRequestsCounter,
-			LabelKeys:    []string{},
+			LabelKeys:    []string{"server", "ip_type"},
 			LastValueMap: make(map[string]float64),
-			KeyFunc:      func([]*model.LabelPair) string { return "" },
-			SendToLAPI:   true,
+			KeyFunc: func(labels []*model.LabelPair) string {
+				return getLabelValue(labels, "server") + getLabelValue(labels, "ip_type")
+			},
+			SendToLAPI: true,
 		},
 		totalBouncerCallsName: {
 			Name:         "bouncer_calls",
@@ -198,7 +200,7 @@ func newMetricsProvider(client *apiclient.ApiClient, metricsRegistry, caddyMetri
 			Name:    &osName,
 			Version: &osVersion,
 		},
-		bouncerFeatureFlags: []string{}, // not used in bouncers
+		bouncerFeatureFlags: []string{}, // not used in bouncers?
 		logger:              logger.With(zap.String("instance_id", instanceID)),
 		instanceID:          instanceID,
 	}
@@ -229,7 +231,7 @@ func (m *metricsProvider) metricsPayload(now time.Time) (metrics *models.AllMetr
 	metrics = &models.AllMetrics{
 		RemediationComponents: []*models.RemediationComponentsMetrics{
 			{
-				Name: userAgentName, // TODO: verify this is OK to use as-is
+				Name: userAgentName,
 				Type: m.bouncerType,
 				BaseMetrics: models.BaseMetrics{
 					Os:                  &m.bouncerOS,

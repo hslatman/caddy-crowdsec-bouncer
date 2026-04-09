@@ -132,26 +132,46 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decis
 	return nil, nil
 }
 
+type ipType string
+
+const (
+	ipv4 ipType = "ipv4"
+	ipv6 ipType = "ipv6"
+)
+
 func (b *Bouncer) recalculateAndRecordDecisionCounts() {
 	// initialize map, so that these origins are always
 	// known and recorded
-	m := map[string]float64{
-		"CAPI":             0,
-		"crowdsec":         0,
-		"cscli":            0,
-		"cscli-import":     0,
-		"console":          0,
-		"appsec":           0,
-		"remediation_sync": 0,
+	m := map[string]map[ipType]int{
+		"CAPI":             {ipv4: 0, ipv6: 0},
+		"crowdsec":         {ipv4: 0, ipv6: 0},
+		"cscli":            {ipv4: 0, ipv6: 0},
+		"cscli-import":     {ipv4: 0, ipv6: 0},
+		"console":          {ipv4: 0, ipv6: 0},
+		"appsec":           {ipv4: 0, ipv6: 0},
+		"remediation_sync": {ipv4: 0, ipv6: 0},
 	}
 
-	for _, v := range b.store.store.All() {
+	for prefix, v := range b.store.store.All() {
 		origin := *v.Origin
-		m[origin] += 1
+		isIPv6 := prefix.Bits() > 32
+		n, ok := m[origin]
+		if !ok {
+			n = map[ipType]int{ipv4: 0, ipv6: 0}
+			m[origin] = n
+		}
+
+		if isIPv6 {
+			n[ipv6] += 1
+		} else {
+			n[ipv4] += 1
+		}
 	}
 
-	for origin, count := range m {
-		// update the count of active decisions
-		activeDecisionsGauge.With(map[string]string{"origin": origin}).Set(count)
+	// update the count of active decisions per origin and IP type
+	for origin, tuple := range m {
+		for ipType, count := range tuple {
+			activeDecisionsGauge.With(map[string]string{"origin": origin, "ip_type": string(ipType)}).Set(float64(count))
+		}
 	}
 }
