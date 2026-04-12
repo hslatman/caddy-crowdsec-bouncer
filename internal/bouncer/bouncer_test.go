@@ -14,6 +14,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
+
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 )
 
 func newBouncer(t *testing.T) (*Bouncer, error) {
@@ -53,7 +55,7 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 
 	metricsRegistry := prometheus.NewRegistry()
 	fakeCaddyMetricsRegistry := prometheus.NewRegistry()
-	bouncer.metricsProvider, err = newMetricsProvider(bouncer.streamingBouncer.APIClient, metricsRegistry, fakeCaddyMetricsRegistry, time.Minute, bouncer.logger, bouncer.instanceID)
+	bouncer.metricsProvider, err = metrics.NewProvider(metricsRegistry, fakeCaddyMetricsRegistry, time.Minute, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 

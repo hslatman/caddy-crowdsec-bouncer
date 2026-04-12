@@ -313,8 +313,8 @@ func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
 	return c.bouncer.CheckRequest(ctx, r)
 }
 
-func (c *CrowdSec) IncrementProcessedRequests(server string, isIPv6 bool) {
-	c.bouncer.IncrementProcessedRequests(server, isIPv6)
+func (c *CrowdSec) IncrementProcessedRequests(ctx context.Context, server, module string, isIPv6 bool) context.Context {
+	return c.bouncer.IncrementProcessedRequests(ctx, server, module, isIPv6)
 }
 
 func (c *CrowdSec) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {

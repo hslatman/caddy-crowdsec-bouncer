@@ -74,8 +74,12 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 		return false, err
 	}
 
-	server := servername.FromConnection(cx)
-	defer m.crowdsec.IncrementProcessedRequests(server, clientIP.Is6())
+	var (
+		server = servername.FromConnection(cx)
+		module = "layer4"
+	)
+
+	cx.Context = m.crowdsec.IncrementProcessedRequests(cx.Context, server, module, clientIP.Is6())
 
 	isAllowed, decision, err := m.crowdsec.IsAllowed(clientIP)
 	if err != nil {

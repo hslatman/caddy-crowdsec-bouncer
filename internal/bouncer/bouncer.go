@@ -30,6 +30,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
 )
 
@@ -53,20 +54,18 @@ func init() {
 // backed by an immutable radix tree storing known bad IPs and IP ranges.
 // The live bouncer will reach out to the CrowdSec LAPI on every check.
 type Bouncer struct {
-	streamingBouncer     *csbouncer.StreamBouncer
-	liveBouncer          *csbouncer.LiveBouncer
-	metricsProvider      *metricsProvider
-	metricsInterval      time.Duration
-	metricsRegistry      *prometheus.Registry
-	caddyMetricsRegistry *prometheus.Registry
-	appsec               *appsec
-	store                *store
-	logger               *zap.Logger
-	useStreamingBouncer  bool
-	shouldFailHard       bool
-	userAgent            string
-	instantiatedAt       time.Time
-	instanceID           string
+	streamingBouncer    *csbouncer.StreamBouncer
+	liveBouncer         *csbouncer.LiveBouncer
+	metricsProvider     *metrics.Provider
+	metricsInterval     time.Duration
+	appsec              *appsec
+	store               *store
+	logger              *zap.Logger
+	useStreamingBouncer bool
+	shouldFailHard      bool
+	userAgent           string
+	instantiatedAt      time.Time
+	instanceID          string
 
 	ctx       context.Context
 	started   bool
@@ -86,6 +85,12 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		return nil, fmt.Errorf("failed generating instance ID: %w", err)
 	}
 
+	metricsRegistry := prometheus.NewRegistry()
+	metricsProvider, err := metrics.NewProvider(metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, instanceID, userAgentName, userAgentVersion)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Bouncer{
 		streamingBouncer: &csbouncer.StreamBouncer{
 			APIKey:              apiKey,
@@ -101,15 +106,13 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
 		},
-		appsec:               newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")), // TODO add fields here?
-		store:                newStore(),
-		metricsRegistry:      prometheus.NewRegistry(),
-		caddyMetricsRegistry: caddyMetricsRegistry,
-		metricsInterval:      metricsInterval,
-		logger:               logger, // TODO add fields here?
-		userAgent:            userAgent,
-		instantiatedAt:       instantiatedAt,
-		instanceID:           instanceID,
+		appsec:          newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider), // TODO add fields here?
+		store:           newStore(),
+		metricsProvider: metricsProvider,
+		logger:          logger, // TODO add fields here?
+		userAgent:       userAgent,
+		instantiatedAt:  instantiatedAt,
+		instanceID:      instanceID,
 	}, nil
 }
 
@@ -168,9 +171,7 @@ func (b *Bouncer) Init() (err error) {
 		}
 	}
 
-	if b.metricsProvider, err = newMetricsProvider(b.liveBouncer.APIClient, b.metricsRegistry, b.caddyMetricsRegistry, b.metricsInterval, b.logger, b.instanceID); err != nil {
-		return err
-	}
+	b.metricsProvider.SetAPIClient(b.liveBouncer.APIClient) // TODO: refactor API client init
 
 	b.logAppSecStatus()
 
@@ -269,23 +270,6 @@ func (b *Bouncer) isAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decisi
 
 func (b *Bouncer) CheckRequest(ctx context.Context, r *http.Request) error {
 	return b.appsec.checkRequest(ctx, r)
-}
-
-func toIPType(isIPv6 bool) (ipType string) {
-	ipType = "ipv4"
-	if isIPv6 {
-		ipType = "ipv6"
-	}
-
-	return
-}
-
-func (b *Bouncer) IncrementProcessedRequests(server string, isIPv6 bool) {
-	processedRequestsCounter.With(prometheus.Labels{"server": server, "ip_type": toIPType(isIPv6)}).Inc() // TODO: test whether these globals are OK to use
-}
-
-func (b *Bouncer) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {
-	blockedRequestsCounter.With(prometheus.Labels{"server": server, "origin": origin, "remediation": remediation, "ip_type": toIPType(isIPv6)}).Inc() // TODO: test whether these globals are OK to use
 }
 
 func generateInstanceID(t time.Time) (string, error) {

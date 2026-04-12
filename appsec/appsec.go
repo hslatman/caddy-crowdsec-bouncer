@@ -91,10 +91,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		ctx    = r.Context()
 		ip     netip.Addr
 		server = servername.FromContext(ctx)
+		module = "appsec"
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
-	defer h.crowdsec.IncrementProcessedRequests(server, ip.Is6())
+	ctx = h.crowdsec.IncrementProcessedRequests(ctx, server, module, ip.Is6())
 
 	r = r.WithContext(ctx)
 	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
@@ -106,17 +107,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		switch a.Action {
 		case "allow":
 			// nothing to do
-			h.crowdsec.IncrementBlockedRequests(server, "appsec", "bypass", ip.Is6()) // TODO: properly set the action that was performed
+			h.crowdsec.IncrementBlockedRequests(server, module, "bypass", ip.Is6()) // TODO: properly set the action that was performed
 		case "log":
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
-			h.crowdsec.IncrementBlockedRequests(server, "appsec", "log", ip.Is6()) // TODO: properly set the action that was performed
+			h.crowdsec.IncrementBlockedRequests(server, module, "log", ip.Is6()) // TODO: properly set the action that was performed
 		default:
 			if err := httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode); err != nil {
-				h.crowdsec.IncrementBlockedRequests(server, "appsec", a.Action, ip.Is6()) // TODO: properly set the action that was performed
+				h.crowdsec.IncrementBlockedRequests(server, module, a.Action, ip.Is6()) // TODO: properly set the action that was performed
 				return err
 			}
 
-			h.crowdsec.IncrementBlockedRequests(server, "appsec", a.Action, ip.Is6()) // TODO: properly set the action that was performed
+			h.crowdsec.IncrementBlockedRequests(server, module, a.Action, ip.Is6()) // TODO: properly set the action that was performed
 			return nil
 		}
 	}

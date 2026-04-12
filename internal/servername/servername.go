@@ -15,7 +15,7 @@ const unknownServerName = "UNKNOWN"
 func FromContext(ctx context.Context) string {
 	srv, ok := ctx.Value(caddyhttp.ServerCtxKey).(*caddyhttp.Server)
 	if !ok || srv == nil {
-		return ""
+		return unknownServerName
 	}
 
 	if srv.Name() == "" {
@@ -28,12 +28,12 @@ func FromContext(ctx context.Context) string {
 // FromConnection extracts the current server name from the
 // [l4.Connection]. Returns "UNKNOWN" string if none is available.
 func FromConnection(cx *l4.Connection) string {
-	server := FromContext(cx.Context) // TODO: change layer4 to also have a server name; they're named
-	if server == "" {
+	server := FromContext(cx.Context) // TODO: change layer4 to also have a server name; they're named, but no method to set/retrieve it
+	if server == unknownServerName {
 		server = cx.LocalAddr().String()
 	}
 
-	if server == "" {
+	if server == "" || server == unknownServerName {
 		return unknownServerName
 	}
 

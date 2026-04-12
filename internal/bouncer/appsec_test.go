@@ -142,7 +142,7 @@ func Test_appsec_checkRequest(t *testing.T) {
 				t.Cleanup(s.Close)
 			}
 
-			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, appSecTimeout, tt.fields.failOpen, logger)
+			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, appSecTimeout, tt.fields.failOpen, logger, nil)
 			err := a.checkRequest(tt.args.ctx, tt.args.r)
 			if tt.wantErr {
 				require.Error(t, err)

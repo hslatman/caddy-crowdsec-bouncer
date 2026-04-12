@@ -90,10 +90,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		ctx    = r.Context()
 		ip     netip.Addr
 		server = servername.FromContext(ctx)
+		module = "http"
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
-	defer h.crowdsec.IncrementProcessedRequests(server, ip.Is6())
+	ctx = h.crowdsec.IncrementProcessedRequests(ctx, server, module, ip.Is6())
 
 	isAllowed, decision, err := h.crowdsec.IsAllowed(ip)
 	if err != nil {

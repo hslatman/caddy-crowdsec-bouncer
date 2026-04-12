@@ -15,19 +15,21 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 )
 
 type appsec struct {
-	apiURL      string
-	apiKey      string
-	maxBodySize int
-	failOpen    bool
-	logger      *zap.Logger
-	client      *http.Client
-	pool        *bpool.BufferPool
+	apiURL          string
+	apiKey          string
+	maxBodySize     int
+	failOpen        bool
+	logger          *zap.Logger
+	client          *http.Client
+	metricsProvider *metrics.Provider
+	pool            *bpool.BufferPool
 }
 
-func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, failOpen bool, logger *zap.Logger) *appsec {
+func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, failOpen bool, logger *zap.Logger, metricsProvider *metrics.Provider) *appsec {
 	return &appsec{
 		apiURL:      apiURL,
 		apiKey:      apiKey,
@@ -49,7 +51,8 @@ func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, fa
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
-		pool: bpool.NewBufferPool(64),
+		metricsProvider: metricsProvider,
+		pool:            bpool.NewBufferPool(64),
 	}
 }
 
@@ -122,10 +125,10 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	// includes the patch.
 	req.ContentLength = int64(contentLength)
 
-	totalAppSecCallsCounter.Inc()
+	a.metricsProvider.IncrementTotalAppSecCalls()
 	resp, err := a.client.Do(req)
 	if err != nil {
-		totalAppSecErrorsCounter.Inc()
+		a.metricsProvider.IncrementTotalAppSecErrors()
 		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
 		return a.failOpenOrErr(err)
 	}

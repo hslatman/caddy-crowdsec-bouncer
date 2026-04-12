@@ -72,11 +72,11 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 				}
 
 				if mustRecalculateDecisionCounts {
-					b.recalculateAndRecordDecisionCounts()
+					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.store)
 				}
 
 				// send the (initial) metrics (once)
-				b.metricsProvider.sendInitialMetricsOnce(ctx)
+				b.metricsProvider.SendInitialMetricsOnce(ctx)
 			}
 		}
 	})
@@ -106,10 +106,10 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decis
 		return b.store.get(ip)
 	}
 
-	totalBouncerCallsCounter.Inc() // increment; not built into liveBouncer
+	b.metricsProvider.IncrementTotalBouncerCalls() // increment; not built into liveBouncer
 	decisions, err := b.liveBouncer.Get(ip.String())
 	if err != nil {
-		totalBouncerErrorsCounter.Inc() // increment; not built into liveBouncer
+		b.metricsProvider.IncrementTotalBouncerErrors() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
 			b.zapField(),
 			zap.String("address", b.liveBouncer.APIUrl),
@@ -130,48 +130,4 @@ func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decis
 	}
 
 	return nil, nil
-}
-
-type ipType string
-
-const (
-	ipv4 ipType = "ipv4"
-	ipv6 ipType = "ipv6"
-)
-
-func (b *Bouncer) recalculateAndRecordDecisionCounts() {
-	// initialize map, so that these origins are always
-	// known and recorded
-	m := map[string]map[ipType]int{
-		"CAPI":             {ipv4: 0, ipv6: 0},
-		"crowdsec":         {ipv4: 0, ipv6: 0},
-		"cscli":            {ipv4: 0, ipv6: 0},
-		"cscli-import":     {ipv4: 0, ipv6: 0},
-		"console":          {ipv4: 0, ipv6: 0},
-		"appsec":           {ipv4: 0, ipv6: 0},
-		"remediation_sync": {ipv4: 0, ipv6: 0},
-	}
-
-	for prefix, v := range b.store.store.All() {
-		origin := *v.Origin
-		isIPv6 := prefix.Bits() > 32
-		n, ok := m[origin]
-		if !ok {
-			n = map[ipType]int{ipv4: 0, ipv6: 0}
-			m[origin] = n
-		}
-
-		if isIPv6 {
-			n[ipv6] += 1
-		} else {
-			n[ipv4] += 1
-		}
-	}
-
-	// update the count of active decisions per origin and IP type
-	for origin, tuple := range m {
-		for ipType, count := range tuple {
-			activeDecisionsGauge.With(map[string]string{"origin": origin, "ip_type": string(ipType)}).Set(float64(count))
-		}
-	}
 }
