@@ -85,7 +85,7 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 	}
 
 	metricsRegistry := prometheus.NewRegistry()
-	metricsProvider, err := metrics.NewProvider(metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, instanceID, userAgentName, userAgentVersion)
+	metricsProvider, err := metrics.NewProvider(metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, userAgentName, userAgentVersion, instanceID)
 	if err != nil {
 		return nil, err
 	}
