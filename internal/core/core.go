@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package bouncer
+package core
 
 import (
 	"context"
@@ -26,9 +26,11 @@ import (
 	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
-	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/version"
 )
 
@@ -47,14 +49,14 @@ func init() {
 	userAgent = userAgentName + "/" + userAgentVersion
 }
 
-// Bouncer is a wrapper for a CrowdSec bouncer. It supports both the
+// Core is a wrapper for a CrowdSec bouncer. It supports both the
 // streaming and live bouncer implementations. The streaming bouncer is
 // backed by an immutable radix tree storing known bad IPs and IP ranges.
 // The live bouncer will reach out to the CrowdSec LAPI on every check.
-type Bouncer struct {
-	streamingBouncer    *csbouncer.StreamBouncer
-	liveBouncer         *csbouncer.LiveBouncer
-	metricsProvider     *csbouncer.MetricsProvider
+type Core struct {
+	streamingBouncer    *bouncer.StreamBouncer
+	liveBouncer         *bouncer.LiveBouncer
+	metricsProvider     *metrics.Provider
 	appsec              *appsec
 	store               *store
 	logger              *zap.Logger
@@ -73,8 +75,8 @@ type Bouncer struct {
 	wg        *sync.WaitGroup
 }
 
-// New creates a new (streaming) Bouncer with a storage based on immutable radix tree
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger) (*Bouncer, error) {
+// New creates a new Bouncer with a storage based on immutable radix tree.
+func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -82,67 +84,71 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		return nil, fmt.Errorf("failed generating instance ID: %w", err)
 	}
 
-	return &Bouncer{
-		streamingBouncer: &csbouncer.StreamBouncer{
+	metricsRegistry := prometheus.NewRegistry()
+	metricsProvider, err := metrics.NewProvider(metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, instanceID, userAgentName, userAgentVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Core{
+		streamingBouncer: &bouncer.StreamBouncer{ // TODO: refactor init
 			APIKey:              apiKey,
 			APIUrl:              apiURL,
 			InsecureSkipVerify:  &insecureSkipVerify,
 			TickerInterval:      tickerInterval,
 			UserAgent:           userAgent,
 			RetryInitialConnect: true,
+			MetricsProvider:     metricsProvider,
 		},
-		liveBouncer: &csbouncer.LiveBouncer{
+		liveBouncer: &bouncer.LiveBouncer{ // TODO: refactor init
 			APIKey:             apiKey,
 			APIUrl:             apiURL,
 			InsecureSkipVerify: &insecureSkipVerify,
 			UserAgent:          userAgent,
+			MetricsProvider:    metricsProvider,
 		},
-		appsec:         newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec")),
-		store:          newStore(),
-		logger:         logger,
-		userAgent:      userAgent,
-		instantiatedAt: instantiatedAt,
-		instanceID:     instanceID,
+		appsec:          newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider), // TODO add fields here?
+		store:           newStore(),
+		metricsProvider: metricsProvider,
+		logger:          logger, // TODO add fields here?
+		userAgent:       userAgent,
+		instantiatedAt:  instantiatedAt,
+		instanceID:      instanceID,
 	}, nil
 }
 
 // EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer).
-func (b *Bouncer) EnableStreaming() {
+func (b *Core) EnableStreaming() {
 	b.useStreamingBouncer = true
 }
 
 // EnableHardFails will make the bouncer fail hard on (connection) errors
 // when contacting the CrowdSec Local API.
-func (b *Bouncer) EnableHardFails() {
+func (b *Core) EnableHardFails() {
 	b.shouldFailHard = true
 	b.streamingBouncer.RetryInitialConnect = false
 }
 
-func (b *Bouncer) NumberOfActiveDecisions() int {
+func (b *Core) NumberOfActiveDecisions() int {
 	return b.store.store.Len()
 }
 
-func (b *Bouncer) UserAgent() string {
+func (b *Core) UserAgent() string {
 	return b.userAgent
 }
 
-func (b *Bouncer) StartedAt() time.Time {
+func (b *Core) StartedAt() time.Time {
 	return b.instantiatedAt
 }
 
-func (b *Bouncer) InstanceID() string {
+func (b *Core) InstanceID() string {
 	return b.instanceID
 }
 
 // Init initializes the Bouncer
-func (b *Bouncer) Init() (err error) {
+func (b *Core) Init() (err error) {
 	// override CrowdSec's default logrus logging
 	b.overrideLogrusLogger()
-
-	// TODO: make metrics gathering/integration optional? I.e. if the metrics
-	// interval is configured to be 0 or smaller, don't start the metrics
-	// provider? Separate setting for gathering metrics vs. pushing to LAPI?
-	metricsInterval := 0 * time.Minute // 1 * time.Minute
 
 	// conditionally initialize the CrowdSec live bouncer
 	if !b.useStreamingBouncer {
@@ -166,9 +172,7 @@ func (b *Bouncer) Init() (err error) {
 		}
 	}
 
-	if b.metricsProvider, err = newMetricsProvider(b.streamingBouncer.APIClient, b.updateMetrics, metricsInterval); err != nil {
-		return err
-	}
+	b.metricsProvider.SetAPIClient(b.liveBouncer.APIClient) // TODO: refactor API client init
 
 	b.logAppSecStatus()
 
@@ -176,7 +180,7 @@ func (b *Bouncer) Init() (err error) {
 }
 
 // Run starts the Bouncer processes
-func (b *Bouncer) Run(ctx context.Context) {
+func (b *Core) Run(ctx context.Context) {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
 	if b.started {
@@ -214,7 +218,7 @@ func (b *Bouncer) Run(ctx context.Context) {
 }
 
 // Shutdown stops the Bouncer
-func (b *Bouncer) Shutdown() error {
+func (b *Core) Shutdown() error {
 	b.startMu.Lock()
 	defer b.startMu.Unlock()
 	if !b.started || b.stopped {
@@ -237,14 +241,20 @@ func (b *Bouncer) Shutdown() error {
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Bouncer) IsAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
+func (b *Core) IsAllowed(ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
+	isAllowed, decision, err := b.isAllowed(ip, forceLive, method)
+	return isAllowed, decision, err
+}
+
+func (b *Core) isAllowed(ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
+
 	if !ip.IsValid() {
 		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
 	}
 
-	decision, err := b.retrieveDecision(ip, forceLive)
+	decision, err := b.retrieveDecision(ip, forceLive, method)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
 	}
@@ -259,7 +269,7 @@ func (b *Bouncer) IsAllowed(ip netip.Addr, forceLive bool) (bool, *models.Decisi
 	return isAllowed, nil, nil
 }
 
-func (b *Bouncer) CheckRequest(ctx context.Context, r *http.Request) error {
+func (b *Core) CheckRequest(ctx context.Context, r *http.Request) error {
 	return b.appsec.checkRequest(ctx, r)
 }
 

@@ -27,8 +27,9 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/core"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/servername"
 )
 
 func init() {
@@ -87,13 +88,18 @@ func (h *Handler) Cleanup() error {
 // ServeHTTP is the Caddy handler for serving HTTP requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	var (
-		ctx = r.Context()
-		ip  netip.Addr
+		ctx    = r.Context()
+		ip     netip.Addr
+		server = servername.FromContext(ctx)
+		module = "appsec"
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
+	ctx = h.crowdsec.IncrementProcessedRequests(ctx, server, module, ip.Is6())
+
+	r = r.WithContext(ctx)
 	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
-		a := &bouncer.AppSecError{}
+		a := &core.AppSecError{}
 		if !errors.As(err, &a) {
 			return err
 		}
@@ -101,15 +107,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		switch a.Action {
 		case "allow":
 			// nothing to do
+			h.crowdsec.IncrementBlockedRequests(server, module, "bypass", ip.Is6()) // TODO: properly set the action that was performed
 		case "log":
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
+			h.crowdsec.IncrementBlockedRequests(server, module, "log", ip.Is6()) // TODO: properly set the action that was performed
 		default:
-			return httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode)
+			if err := httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode); err != nil {
+				h.crowdsec.IncrementBlockedRequests(server, module, a.Action, ip.Is6()) // TODO: properly set the action that was performed
+				return err
+			}
+
+			h.crowdsec.IncrementBlockedRequests(server, module, a.Action, ip.Is6()) // TODO: properly set the action that was performed
+			return nil
 		}
 	}
 
 	// Continue down the handler stack
-	if err := next.ServeHTTP(w, r.WithContext(ctx)); err != nil {
+	if err := next.ServeHTTP(w, r); err != nil {
 		return err
 	}
 

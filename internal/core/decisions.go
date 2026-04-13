@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"context"
@@ -10,20 +10,15 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func (b *Bouncer) startStreamingBouncer(ctx context.Context) {
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
+func (b *Core) startStreamingBouncer(ctx context.Context) {
+	b.wg.Go(func() {
 		b.logger.Debug("starting streaming bouncer", b.zapField())
 		b.streamingBouncer.Run(ctx)
-	}()
+	})
 }
 
-func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-
+func (b *Core) startProcessingDecisions(ctx context.Context) {
+	b.wg.Go(func() {
 		b.logger.Debug("starting decision processing", b.zapField())
 
 		for {
@@ -37,6 +32,7 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				// TODO: process in separate goroutines/waitgroup?
+				mustRecalculateDecisionCounts := false
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					for _, decision := range decisions.Deleted {
@@ -52,6 +48,7 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 						b.logger.Debug(fmt.Sprintf("skipped logging for %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					}
 					b.logger.Debug(fmt.Sprintf("finished processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
+					mustRecalculateDecisionCounts = true
 				}
 
 				// TODO: process in separate goroutines/waitgroup?
@@ -71,14 +68,22 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 						b.logger.Debug(fmt.Sprintf("skipped logging for %d new decisions", numberOfNewDecisions), b.zapField())
 					}
 					b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions), b.zapField())
+					mustRecalculateDecisionCounts = true
 				}
+
+				if mustRecalculateDecisionCounts {
+					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.store)
+				}
+
+				// send the (initial) metrics (once)
+				b.metricsProvider.SendInitialMetricsOnce(ctx)
 			}
 		}
-	}()
+	})
 }
 
-// Add adds a Decision to the storage
-func (b *Bouncer) add(decision *models.Decision) error {
+// add adds a Decision to the storage
+func (b *Core) add(decision *models.Decision) error {
 
 	// TODO: provide additional ways for storing the decisions
 	// (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
@@ -91,20 +96,18 @@ func (b *Bouncer) add(decision *models.Decision) error {
 	return b.store.add(decision)
 }
 
-// Delete removes a Decision from the storage
-func (b *Bouncer) delete(decision *models.Decision) error {
+// delete removes a Decision from the storage
+func (b *Core) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 
-func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decision, error) {
+func (b *Core) retrieveDecision(ip netip.Addr, forceLive bool, method string) (*models.Decision, error) {
 	if b.useStreamingBouncer && !forceLive {
 		return b.store.get(ip)
 	}
 
-	totalLAPICalls.Inc() // increment; not built into liveBouncer
-	decisions, err := b.liveBouncer.Get(ip.String())
+	decisions, err := b.liveBouncer.Get(ip.String(), method)
 	if err != nil {
-		totalLAPIErrors.Inc() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
 			b.zapField(),
 			zap.String("address", b.liveBouncer.APIUrl),

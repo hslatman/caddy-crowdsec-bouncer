@@ -205,16 +205,13 @@ func TestCrowdSecStreamingBouncerRuntime(t *testing.T) {
 	require.NoError(t, err)
 
 	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		// simulate request coming in and stopping the server from another goroutine
-		defer wg.Done()
+	wg.Go(func() {
 
 		// wait a little bit of time to let the go-cs-bouncer do _some_ work,
 		// before it properly returns; seems to hang otherwise on b.wg.Wait().
 		time.Sleep(100 * time.Millisecond)
 
-		// simulate a lookup
+		// simulate request coming in and stopping the server from another goroutine
 		allowed, decision, err := c.IsAllowed(netip.MustParseAddr("127.0.0.1"))
 		assert.NoError(t, err)
 		assert.Nil(t, decision)
@@ -225,7 +222,7 @@ func TestCrowdSecStreamingBouncerRuntime(t *testing.T) {
 
 		err = c.Cleanup()
 		require.NoError(t, err)
-	}()
+	})
 
 	// wait for the stop and cleanup process
 	wg.Wait()

@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/servername"
 )
 
 func init() {
@@ -73,13 +74,21 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 		return false, err
 	}
 
-	isAllowed, _, err := m.crowdsec.IsAllowed(clientIP)
+	var (
+		server = servername.FromConnection(cx)
+		module = "layer4"
+	)
+
+	cx.Context = m.crowdsec.IncrementProcessedRequests(cx.Context, server, module, clientIP.Is6())
+
+	isAllowed, decision, err := m.crowdsec.IsAllowed(clientIP)
 	if err != nil {
 		return false, err
 	}
 
 	if !isAllowed {
 		m.logger.Debug(fmt.Sprintf("connection from %s not allowed", clientIP.String()))
+		m.crowdsec.IncrementBlockedRequests(server, *decision.Origin, *decision.Type, clientIP.Is6())
 		return false, nil
 	}
 

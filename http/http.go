@@ -29,6 +29,7 @@ import (
 	_ "github.com/hslatman/caddy-crowdsec-bouncer/appsec" // always include AppSec module when HTTP is added
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/servername"
 )
 
 func init() {
@@ -86,11 +87,15 @@ func (h *Handler) Cleanup() error {
 // ServeHTTP is the Caddy handler for serving HTTP requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	var (
-		ctx = r.Context()
-		ip  netip.Addr
+		ctx    = r.Context()
+		ip     netip.Addr
+		server = servername.FromContext(ctx)
+		module = "http"
 	)
 
 	ctx, ip = httputils.EnsureIP(ctx)
+	ctx = h.crowdsec.IncrementProcessedRequests(ctx, server, module, ip.Is6())
+
 	isAllowed, decision, err := h.crowdsec.IsAllowed(ip)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
@@ -104,8 +109,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		typ := *decision.Type
 		value := *decision.Value
 		duration := *decision.Duration
+		origin := *decision.Origin
 
-		return httputils.WriteResponse(w, h.logger, typ, value, duration, 0)
+		if err := httputils.WriteResponse(w, h.logger, typ, value, duration, 0); err != nil {
+			h.crowdsec.IncrementBlockedRequests(server, origin, typ, ip.Is6()) // TODO: properly set the action that was performed
+			return err
+		}
+
+		h.crowdsec.IncrementBlockedRequests(server, origin, typ, ip.Is6()) // TODO: properly set the action that was performed
+
+		return nil
 	}
 
 	// Continue down the handler stack
