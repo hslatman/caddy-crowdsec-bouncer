@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 )
 
 func newCaddyVarsContext(ctx context.Context) context.Context {
@@ -142,7 +143,8 @@ func Test_appsec_checkRequest(t *testing.T) {
 				t.Cleanup(s.Close)
 			}
 
-			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, appSecTimeout, tt.fields.failOpen, logger, nil)
+			m := &metrics.Provider{}
+			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, appSecTimeout, tt.fields.failOpen, logger, m)
 			err := a.checkRequest(tt.args.ctx, tt.args.r)
 			if tt.wantErr {
 				require.Error(t, err)

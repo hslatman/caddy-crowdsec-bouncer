@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"errors"
@@ -19,7 +19,7 @@ import (
 // Note that this method changes global state, but only after a new Bouncer
 // is provisioned, validated and has just been started. This should thus
 // generally not be a problem.
-func (b *Bouncer) overrideLogrusLogger() {
+func (b *Core) overrideLogrusLogger() {
 	// the CrowdSec go-cs-bouncer uses the standard logrus logger
 	std := logrus.StandardLogger()
 
@@ -38,7 +38,7 @@ func (b *Bouncer) overrideLogrusLogger() {
 	std.ReplaceHooks(hooks)
 }
 
-func (b *Bouncer) zapField() zapcore.Field {
+func (b *Core) zapField() zapcore.Field {
 	return zap.String("instance_id", b.instanceID)
 }
 

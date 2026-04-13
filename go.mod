@@ -5,7 +5,6 @@ go 1.25.7
 require (
 	github.com/caddyserver/caddy/v2 v2.10.2
 	github.com/crowdsecurity/crowdsec v1.6.3
-	github.com/crowdsecurity/go-cs-bouncer v0.0.14
 	github.com/crowdsecurity/go-cs-lib v0.0.15
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
@@ -196,7 +195,6 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	howett.net/plist v1.0.0 // indirect
 )

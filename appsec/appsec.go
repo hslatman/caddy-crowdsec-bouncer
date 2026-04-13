@@ -27,7 +27,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/crowdsec"
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/core"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/servername"
 )
@@ -99,7 +99,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 
 	r = r.WithContext(ctx)
 	if err := h.crowdsec.CheckRequest(ctx, r); err != nil {
-		a := &bouncer.AppSecError{}
+		a := &core.AppSecError{}
 		if !errors.As(err, &a) {
 			return err
 		}

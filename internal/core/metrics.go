@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 )
 
-func (b *Bouncer) startMetricsProvider(ctx context.Context) {
+func (b *Core) startMetricsProvider(ctx context.Context) {
 	b.wg.Go(func() {
 		b.logger.Debug("starting metrics provider", b.zapField())
 		if err := b.metricsProvider.Run(ctx, b.startedAt); err != nil {
@@ -22,10 +22,10 @@ func (b *Bouncer) startMetricsProvider(ctx context.Context) {
 	})
 }
 
-func (b *Bouncer) IncrementProcessedRequests(ctx context.Context, server, module string, isIPv6 bool) context.Context {
+func (b *Core) IncrementProcessedRequests(ctx context.Context, server, module string, isIPv6 bool) context.Context {
 	return b.metricsProvider.IncrementProcessedRequests(ctx, server, module, isIPv6)
 }
 
-func (b *Bouncer) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {
+func (b *Core) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {
 	b.metricsProvider.IncrementBlockedRequests(server, origin, remediation, isIPv6)
 }

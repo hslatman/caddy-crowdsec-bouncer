@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"bytes"
@@ -171,7 +171,7 @@ func (a *appsec) failOpenOrErr(err error) error {
 	return err
 }
 
-func (b *Bouncer) logAppSecStatus() {
+func (b *Core) logAppSecStatus() {
 	if b.appsec.apiURL == "" {
 		b.logger.Info("appsec disabled")
 		return

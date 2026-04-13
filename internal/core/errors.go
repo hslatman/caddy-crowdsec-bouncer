@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 type AppSecError struct {
 	Err        error

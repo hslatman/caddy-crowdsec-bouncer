@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"context"
@@ -10,14 +10,14 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func (b *Bouncer) startStreamingBouncer(ctx context.Context) {
+func (b *Core) startStreamingBouncer(ctx context.Context) {
 	b.wg.Go(func() {
 		b.logger.Debug("starting streaming bouncer", b.zapField())
 		b.streamingBouncer.Run(ctx)
 	})
 }
 
-func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
+func (b *Core) startProcessingDecisions(ctx context.Context) {
 	b.wg.Go(func() {
 		b.logger.Debug("starting decision processing", b.zapField())
 
@@ -82,8 +82,8 @@ func (b *Bouncer) startProcessingDecisions(ctx context.Context) {
 	})
 }
 
-// Add adds a Decision to the storage
-func (b *Bouncer) add(decision *models.Decision) error {
+// add adds a Decision to the storage
+func (b *Core) add(decision *models.Decision) error {
 
 	// TODO: provide additional ways for storing the decisions
 	// (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
@@ -96,20 +96,18 @@ func (b *Bouncer) add(decision *models.Decision) error {
 	return b.store.add(decision)
 }
 
-// Delete removes a Decision from the storage
-func (b *Bouncer) delete(decision *models.Decision) error {
+// delete removes a Decision from the storage
+func (b *Core) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 
-func (b *Bouncer) retrieveDecision(ip netip.Addr, forceLive bool) (*models.Decision, error) {
+func (b *Core) retrieveDecision(ip netip.Addr, forceLive bool, method string) (*models.Decision, error) {
 	if b.useStreamingBouncer && !forceLive {
 		return b.store.get(ip)
 	}
 
-	b.metricsProvider.IncrementTotalBouncerCalls() // increment; not built into liveBouncer
-	decisions, err := b.liveBouncer.Get(ip.String())
+	decisions, err := b.liveBouncer.Get(ip.String(), method)
 	if err != nil {
-		b.metricsProvider.IncrementTotalBouncerErrors() // increment; not built into liveBouncer
 		fields := []zapcore.Field{
 			b.zapField(),
 			zap.String("address", b.liveBouncer.APIUrl),

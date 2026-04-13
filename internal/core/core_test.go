@@ -1,4 +1,4 @@
-package bouncer
+package core
 
 import (
 	"net/netip"
@@ -18,7 +18,7 @@ import (
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 )
 
-func newBouncer(t *testing.T) (*Bouncer, error) {
+func newCore(t *testing.T) (*Core, error) {
 	t.Helper()
 
 	key := "apiKey"
@@ -55,7 +55,7 @@ func newBouncer(t *testing.T) (*Bouncer, error) {
 
 	metricsRegistry := prometheus.NewRegistry()
 	fakeCaddyMetricsRegistry := prometheus.NewRegistry()
-	bouncer.metricsProvider, err = metrics.NewProvider(metricsRegistry, fakeCaddyMetricsRegistry, time.Minute, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
+	bouncer.metricsProvider, err = metrics.NewProvider(metricsRegistry, fakeCaddyMetricsRegistry, 0, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
@@ -128,7 +128,7 @@ func decisions() *models.DecisionsStreamResponse {
 }
 
 func TestStreamingBouncer(t *testing.T) {
-	b, err := newBouncer(t)
+	b, err := newCore(t)
 	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = b.Shutdown() })
@@ -221,7 +221,7 @@ func TestStreamingBouncer(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, _, err := b.IsAllowed(tt.args.ip, forceLive)
+		got, _, err := b.IsAllowed(tt.args.ip, forceLive, "")
 		if (err != nil) != tt.wantErr {
 			t.Errorf("%q. b.IsAllowed() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 			continue

@@ -13,37 +13,12 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
-	csbouncer "github.com/crowdsecurity/go-cs-bouncer"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
 	"github.com/crowdsecurity/go-cs-lib/version"
 	"github.com/hslatman/ipstore"
 	"github.com/prometheus/client_golang/prometheus"
 	model "github.com/prometheus/client_model/go"
 	"go.uber.org/zap"
-)
-
-func init() {
-	// TODO: refactor to not rely on the global metrics from the go-cs-bouncer
-	// package. Requires rewriting its logic here.
-	if totalBouncerCallsCounter == nil {
-		csbouncer.TotalLAPICalls = prometheus.NewCounter(prometheus.CounterOpts{
-			Name: string(totalBouncerCallsName),
-			Help: "The total number of calls to CrowdSec LAPI",
-		})
-		csbouncer.TotalLAPIError = prometheus.NewCounter(prometheus.CounterOpts{
-			Name: string(totalBouncerErrorsName),
-			Help: "The total number of failed calls to CrowdSec LAPI",
-		})
-
-		totalBouncerCallsCounter = csbouncer.TotalLAPICalls
-		totalBouncerErrorsCounter = csbouncer.TotalLAPIError
-	}
-}
-
-var (
-	// metrics provided by the go-cs-bouncer package; overridden in init to have more consistent name
-	totalBouncerCallsCounter  prometheus.Counter
-	totalBouncerErrorsCounter prometheus.Counter
 )
 
 type metricName string
@@ -63,8 +38,9 @@ var (
 	labelServer      = "server"
 	labelOrigin      = "origin"
 	labelIPType      = "ip_type"
-	labelRemediation = "remedidation"
+	labelRemediation = "remediation"
 	labelModule      = "module"
+	labelBouncerMode = "mode"
 )
 
 type metricConfig struct {
@@ -94,15 +70,26 @@ func (m metricMap) registerAll(registry *prometheus.Registry) error {
 }
 
 func NewProvider(metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, userAgentName, userAgentVersion, instanceID string) (*Provider, error) {
+	// bouncer metrics; provided by the go-cs-bouncer package, but overridden
+	// by recreating the main bouncer logic.
+	totalBouncerCallsCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: string(totalBouncerCallsName),
+		Help: "The total number of calls to CrowdSec LAPI",
+	}, []string{labelBouncerMode})
+	totalBouncerErrorsCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: string(totalBouncerErrorsName),
+		Help: "The total number of failed calls to CrowdSec LAPI",
+	}, []string{labelBouncerMode})
+
 	// appsec metrics; not provided by the go-cs-bouncer package
-	totalAppSecCallsCounter := prometheus.NewCounter(prometheus.CounterOpts{
+	totalAppSecCallsCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: string(totalAppSecCallsName),
 		Help: "The total number of calls to the CrowdSec LAPI AppSec component",
-	})
-	totalAppSecErrorsCounter := prometheus.NewCounter(prometheus.CounterOpts{
+	}, nil)
+	totalAppSecErrorsCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: string(totalAppSecErrorsName),
 		Help: "The total number of failed calls to the CrowdSec LAPI AppSec component",
-	})
+	}, nil)
 
 	// decision metrics; not provided by the go-cs-bouncer package
 	activeDecisionsGauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -249,10 +236,10 @@ type Provider struct {
 	metricMap                         *metricMap
 	metricsRegistry                   *prometheus.Registry
 	caddyMetricsRegistry              *prometheus.Registry
-	totalBouncerCallsCounter          prometheus.Counter
-	totalBouncerErrorsCounter         prometheus.Counter
-	totalAppSecCallsCounter           prometheus.Counter
-	totalAppSecErrorsCounter          prometheus.Counter
+	totalBouncerCallsCounter          *prometheus.CounterVec
+	totalBouncerErrorsCounter         *prometheus.CounterVec
+	totalAppSecCallsCounter           *prometheus.CounterVec
+	totalAppSecErrorsCounter          *prometheus.CounterVec
 	activeDecisionsGauge              *prometheus.GaugeVec
 	blockedRequestsCounter            *prometheus.CounterVec
 	processedRequestsCounter          *prometheus.CounterVec
@@ -468,27 +455,27 @@ func (p *Provider) SendInitialMetricsOnce(ctx context.Context) {
 }
 
 func (p *Provider) caddyMetricsEnabled() bool {
-	return p.interval > 0 && p.caddyMetricsRegistry != nil
+	return p.caddyMetricsRegistry != nil
 }
 
 func (p *Provider) metricsEnabled() bool {
 	return p.interval > 0
 }
 
-func (p *Provider) IncrementTotalBouncerCalls() {
+func (p *Provider) IncrementTotalBouncerCalls(mode string) {
 	if !p.caddyMetricsEnabled() {
 		return
 	}
 
-	p.totalBouncerCallsCounter.Inc()
+	p.totalBouncerCallsCounter.With(prometheus.Labels{labelBouncerMode: mode}).Inc()
 }
 
-func (p *Provider) IncrementTotalBouncerErrors() {
+func (p *Provider) IncrementTotalBouncerErrors(mode string) {
 	if !p.caddyMetricsEnabled() {
 		return
 	}
 
-	p.totalBouncerErrorsCounter.Inc()
+	p.totalBouncerErrorsCounter.With(prometheus.Labels{labelBouncerMode: mode}).Inc()
 }
 
 func (p *Provider) IncrementTotalAppSecCalls() {
@@ -496,7 +483,7 @@ func (p *Provider) IncrementTotalAppSecCalls() {
 		return
 	}
 
-	p.totalAppSecCallsCounter.Inc()
+	p.totalAppSecCallsCounter.With(nil).Inc()
 }
 
 func (p *Provider) IncrementTotalAppSecErrors() {
@@ -504,7 +491,7 @@ func (p *Provider) IncrementTotalAppSecErrors() {
 		return
 	}
 
-	p.totalAppSecErrorsCounter.Inc()
+	p.totalAppSecErrorsCounter.With(nil).Inc()
 }
 
 func toIPType(isIPv6 bool) (ipType string) {

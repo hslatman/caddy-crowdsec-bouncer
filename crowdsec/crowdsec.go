@@ -33,8 +33,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
-	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/command"
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/core"
 )
 
 func init() {
@@ -96,9 +96,9 @@ type CrowdSec struct {
 	// being blocked.
 	AppSecFailOpen *bool `json:"appsec_fail_open,omitempty"`
 
-	ctx     caddy.Context
-	logger  *zap.Logger
-	bouncer *bouncer.Bouncer
+	ctx    caddy.Context
+	logger *zap.Logger
+	core   *core.Core
 }
 
 // Provision sets up the CrowdSec app.
@@ -124,20 +124,20 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	if c.enableCaddyMetrics() {
 		registry = ctx.GetMetricsRegistry()
 	}
-	bouncer, err := bouncer.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry, c.metricsInterval())
+	core, err := core.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
 	}
 
 	if c.isStreamingEnabled() {
-		bouncer.EnableStreaming()
+		core.EnableStreaming()
 	}
 
 	if c.shouldFailHard() {
-		bouncer.EnableHardFails()
+		core.EnableHardFails()
 	}
 
-	c.bouncer = bouncer
+	c.core = core
 
 	return nil
 }
@@ -147,8 +147,8 @@ func (c *CrowdSec) Validate() error {
 	if c.APIKey == "" {
 		return errors.New("crowdsec API key must not be empty")
 	}
-	if c.bouncer == nil {
-		return errors.New("bouncer instance not available due to (potential) misconfiguration")
+	if c.core == nil {
+		return errors.New("core instance not available due to (potential) misconfiguration")
 	}
 	if err := c.checkModules(); err != nil {
 		return fmt.Errorf("failed checking CrowdSec modules: %w", err)
@@ -273,7 +273,7 @@ func matchModules(moduleIdentifiers ...string) (modules []moduleInfo, err error)
 }
 
 func (c *CrowdSec) Cleanup() error {
-	if err := c.bouncer.Shutdown(); err != nil {
+	if err := c.core.Shutdown(); err != nil {
 		return fmt.Errorf("failed cleaning up: %w", err)
 	}
 
@@ -288,37 +288,37 @@ func (c *CrowdSec) Cleanup() error {
 
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
-	if err := c.bouncer.Init(); err != nil {
+	if err := c.core.Init(); err != nil {
 		return err
 	}
 
-	c.bouncer.Run(context.Background())
+	c.core.Run(context.Background())
 
 	return nil
 }
 
 // Stop stops the CrowdSec Caddy app
 func (c *CrowdSec) Stop() error {
-	return c.bouncer.Shutdown()
+	return c.core.Shutdown()
 }
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request.
 func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
-	return c.bouncer.IsAllowed(ip, false)
+	return c.core.IsAllowed(ip, false, "")
 }
 
 // CheckRequest checks the incoming request against AppSec.
 func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
-	return c.bouncer.CheckRequest(ctx, r)
+	return c.core.CheckRequest(ctx, r)
 }
 
 func (c *CrowdSec) IncrementProcessedRequests(ctx context.Context, server, module string, isIPv6 bool) context.Context {
-	return c.bouncer.IncrementProcessedRequests(ctx, server, module, isIPv6)
+	return c.core.IncrementProcessedRequests(ctx, server, module, isIPv6)
 }
 
 func (c *CrowdSec) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {
-	c.bouncer.IncrementBlockedRequests(server, origin, remediation, isIPv6)
+	c.core.IncrementBlockedRequests(server, origin, remediation, isIPv6)
 }
 
 func (c *CrowdSec) metricsInterval() time.Duration {
