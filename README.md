@@ -42,6 +42,9 @@ Bouncers are pieces of software that perform specific actions based on the decis
 
 ## Usage
 
+> [!TIP]
+> You can find full setup examples in /examples inside this repository.
+
 You can use the bouncer by either building a custom Caddy image with Docker or by fetching the required Go modules directly into your own build.
 
 > **Note:** You will need a recent version of **Caddy (v2.7.3+)** and **Go (1.20+)**.
@@ -145,7 +148,7 @@ caddy run --config Caddyfile
 
 ## Demo
 
-This repository also contains an example using Docker inside the Demo folder.
+This repository also contains an example using Docker inside the examples/demo folder.
 Steps to run this demo are as follows:
 
 ```bash
@@ -155,7 +158,7 @@ docker compose up -d crowdsec
 # add the Caddy bouncer, generating an API key
 docker compose exec crowdsec cscli bouncers add caddy-bouncer
 
-# copy and paste the API key in the ./demo/config.json file
+# copy and paste the API key in the ./examples/demo/config.json file
 
 # run Caddy; at first run a custom build will be created using xcaddy
 docker compose up -d caddy
