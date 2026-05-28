@@ -197,7 +197,7 @@ func NewProvider(metricsRegistry, caddyMetricsRegistry *prometheus.Registry, int
 		return nil, fmt.Errorf("failed registering metrics with Caddy registry: %w", err)
 	}
 
-	osName, osVersion := version.DetectOS()
+	osName, osFamily, osVersion := version.DetectOS()
 
 	m := &Provider{
 		interval:                          interval,
@@ -216,6 +216,7 @@ func NewProvider(metricsRegistry, caddyMetricsRegistry *prometheus.Registry, int
 		bouncerVersion:                    userAgentVersion,
 		bouncerOS: models.OSversion{
 			Name:    &osName,
+			Family:  osFamily,
 			Version: &osVersion,
 		},
 		bouncerFeatureFlags: []string{}, // not used in bouncers?

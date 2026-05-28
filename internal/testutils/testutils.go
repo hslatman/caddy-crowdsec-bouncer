@@ -65,7 +65,7 @@ func NewCrowdSecContainer(t *testing.T) *container {
 
 	return &container{
 		c:        c,
-		endpoint: fmt.Sprintf("http://127.0.0.1:%d", endpointPort.Int()),
+		endpoint: fmt.Sprintf("http://127.0.0.1:%s", endpointPort.Port()),
 	}
 }
 
@@ -194,8 +194,8 @@ func NewAppSecContainer(t *testing.T) *container {
 
 	return &container{
 		c:        c,
-		endpoint: fmt.Sprintf("http://127.0.0.1:%d", endpointPort.Int()),
-		appsec:   fmt.Sprintf("http://127.0.0.1:%d", appsecPort.Int()),
+		endpoint: fmt.Sprintf("http://127.0.0.1:%s", endpointPort.Port()),
+		appsec:   fmt.Sprintf("http://127.0.0.1:%s", appsecPort.Port()),
 	}
 }
 

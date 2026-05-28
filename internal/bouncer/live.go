@@ -52,7 +52,7 @@ func (b *LiveBouncer) Init() error {
 // TODO: plumb context.Context
 func (b *LiveBouncer) Get(value, method string) (*models.GetDecisionsResponse, error) {
 	filter := apiclient.DecisionsListOpts{
-		IPEquals: &value,
+		IPEquals: value,
 	}
 
 	var mode string
