@@ -78,7 +78,7 @@ type Core struct {
 }
 
 // New creates a new Bouncer with a storage based on immutable radix tree.
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval time.Duration, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
+func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval time.Duration, shouldFailHard bool, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -97,7 +97,8 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		return nil, err
 	}
 
-	streamingBouncer, err := bouncer.NewStreamBouncer(apiClient, metricsProvider, tickerInterval, true)
+	retryInitialConnect := !shouldFailHard
+	streamingBouncer, err := bouncer.NewStreamBouncer(apiClient, metricsProvider, tickerInterval, retryInitialConnect)
 	if err != nil {
 		return nil, err
 	}
@@ -107,30 +108,23 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		return nil, err
 	}
 
+	appsec := newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider)
+	store := newStore()
+
 	return &Core{
-		apiURL:           apiURL,
-		streamingBouncer: streamingBouncer,
-		liveBouncer:      liveBouncer,
-		appsec:           newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider), // TODO add fields here?
-		store:            newStore(),
-		metricsProvider:  metricsProvider,
-		logger:           logger, // TODO add fields here?
-		userAgent:        userAgent,
-		instantiatedAt:   instantiatedAt,
-		instanceID:       instanceID,
+		apiURL:              apiURL,
+		streamingBouncer:    streamingBouncer,
+		useStreamingBouncer: streamingEnabled,
+		liveBouncer:         liveBouncer,
+		appsec:              appsec,
+		store:               store,
+		metricsProvider:     metricsProvider,
+		logger:              logger, // TODO add fields here?
+		shouldFailHard:      shouldFailHard,
+		userAgent:           userAgent,
+		instantiatedAt:      instantiatedAt,
+		instanceID:          instanceID,
 	}, nil
-}
-
-// EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer).
-func (b *Core) EnableStreaming() {
-	b.useStreamingBouncer = true
-}
-
-// EnableHardFails will make the bouncer fail hard on (connection) errors
-// when contacting the CrowdSec Local API.
-func (b *Core) EnableHardFails() {
-	b.shouldFailHard = true
-	b.streamingBouncer.RetryInitialConnect = false
 }
 
 func (b *Core) NumberOfActiveDecisions() int {

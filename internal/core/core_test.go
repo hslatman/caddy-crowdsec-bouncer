@@ -24,14 +24,15 @@ func newCore(t *testing.T) (*Core, error) {
 
 	key := "apiKey"
 	host := "http://127.0.0.1:8080/"
+	streamingEnabled := true
 	tickerInterval := 10 * time.Second
 	logger := zaptest.NewLogger(t)
-
 	appSecTimeout := 2 * time.Second
-	bouncer, err := New(key, host, "", 0, appSecTimeout, false, tickerInterval, logger, nil, 0)
-	require.NoError(t, err)
+	appSecFailOpen := false
+	shouldFailHard := false
 
-	bouncer.EnableStreaming()
+	bouncer, err := New(key, host, streamingEnabled, "", 0, appSecTimeout, appSecFailOpen, tickerInterval, shouldFailHard, logger, nil, 0)
+	require.NoError(t, err)
 
 	// the code below mimicks the bouncer.streamingBouncer.Init() functionality
 	bouncer.streamingBouncer.Stream = make(chan *models.DecisionsStreamResponse)

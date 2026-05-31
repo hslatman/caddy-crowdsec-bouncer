@@ -133,17 +133,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	if c.enableCaddyMetrics() {
 		registry = ctx.GetMetricsRegistry()
 	}
-	core, err := core.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.logger, registry, c.metricsInterval())
+
+	core, err := core.New(c.APIKey, c.APIUrl, c.isStreamingEnabled(), c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.shouldFailHard(), c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
-	}
-
-	if c.isStreamingEnabled() {
-		core.EnableStreaming()
-	}
-
-	if c.shouldFailHard() {
-		core.EnableHardFails()
 	}
 
 	c.core = core
@@ -346,7 +339,7 @@ func (c *CrowdSec) tickerInterval() time.Duration {
 		}
 	}
 
-	return 60 * time.Second // return the default in case parsing fails; validation happens before
+	return 60 * time.Second // return the default in case parsing fails
 }
 
 func (c *CrowdSec) enableCaddyMetrics() bool {

@@ -2,7 +2,6 @@ package bouncer
 
 import (
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,14 +14,6 @@ import (
 
 func NewAPIClient(urlstr string, apiKey string, userAgent string, caPath string, certPath string, keyPath string, skipVerify *bool, logger logrus.FieldLogger) (*apiclient.ApiClient, error) {
 	var client *http.Client
-
-	if apiKey == "" && certPath == "" && keyPath == "" {
-		return nil, errors.New("no API key nor certificate provided")
-	}
-
-	if apiKey != "" && (certPath != "" || keyPath != "") {
-		return nil, fmt.Errorf("cannot use both API key and certificate auth")
-	}
 
 	insecureSkipVerify := false
 
