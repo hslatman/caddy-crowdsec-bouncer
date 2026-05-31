@@ -16,7 +16,7 @@ func (b *Core) Healthy(ctx context.Context) (bool, error) {
 // realistically should never be blocked. A successful response thus indicates
 // that a connection could be made.
 func (b *Core) Ping(ctx context.Context) (bool, error) {
-	if _, err := b.liveBouncer.Get("127.0.0.255", "ping"); err != nil { // TODO: pass type of request for metrics
+	if _, err := b.liveBouncer.Get(ctx, "127.0.0.255", "ping"); err != nil { // TODO: pass type of request for metrics
 		return false, fmt.Errorf("failed reaching CrowdSec LAPI: %w", err) // TODO: distinguish specific types of errors
 	}
 

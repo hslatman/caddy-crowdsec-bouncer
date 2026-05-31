@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 	log "github.com/sirupsen/logrus"
@@ -50,7 +51,10 @@ func (b *LiveBouncer) Init() error {
 }
 
 // TODO: plumb context.Context
-func (b *LiveBouncer) Get(value, method string) (*models.GetDecisionsResponse, error) {
+func (b *LiveBouncer) Get(ctx context.Context, value, method string) (*models.GetDecisionsResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	filter := apiclient.DecisionsListOpts{
 		IPEquals: &value,
 	}
@@ -66,7 +70,7 @@ func (b *LiveBouncer) Get(value, method string) (*models.GetDecisionsResponse, e
 	}
 
 	b.MetricsProvider.IncrementTotalBouncerCalls(mode)
-	decision, resp, err := b.APIClient.Decisions.List(context.Background(), filter)
+	decision, resp, err := b.APIClient.Decisions.List(ctx, filter)
 	if err != nil {
 		b.MetricsProvider.IncrementTotalBouncerErrors(mode)
 		if resp != nil && resp.Response != nil {

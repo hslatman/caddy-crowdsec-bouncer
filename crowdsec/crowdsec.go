@@ -112,7 +112,9 @@ type CrowdSec struct {
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
-	defer c.logger.Sync() // nolint
+	defer func() {
+		_ = c.logger.Sync()
+	}()
 
 	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
 	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
@@ -288,7 +290,7 @@ func (c *CrowdSec) Cleanup() error {
 		return nil
 	}
 
-	_ = c.logger.Sync() // nolint
+	_ = c.logger.Sync()
 
 	return nil
 }
@@ -311,8 +313,8 @@ func (c *CrowdSec) Stop() error {
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request.
-func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
-	return c.core.IsAllowed(ip, false, "")
+func (c *CrowdSec) IsAllowed(ctx context.Context, ip netip.Addr) (bool, *models.Decision, error) {
+	return c.core.IsAllowed(ctx, ip, false, "")
 }
 
 // CheckRequest checks the incoming request against AppSec.

@@ -81,7 +81,7 @@ func (m Matcher) Match(cx *l4.Connection) (bool, error) {
 
 	cx.Context = m.crowdsec.IncrementProcessedRequests(cx.Context, server, module, clientIP.Is6())
 
-	isAllowed, decision, err := m.crowdsec.IsAllowed(clientIP)
+	isAllowed, decision, err := m.crowdsec.IsAllowed(cx.Context, clientIP)
 	if err != nil {
 		return false, err
 	}
@@ -100,7 +100,7 @@ func (m *Matcher) Cleanup() error {
 		return nil
 	}
 
-	_ = m.logger.Sync() // nolint
+	_ = m.logger.Sync()
 
 	return nil
 }

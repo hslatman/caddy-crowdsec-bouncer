@@ -36,7 +36,7 @@ func TestLiveBouncer(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// simulate a lookup; no decisions available, so will be allowed
-	allowed, decision, err := crowdsec.IsAllowed(netip.MustParseAddr("127.0.0.1"))
+	allowed, decision, err := crowdsec.IsAllowed(ctx, netip.MustParseAddr("127.0.0.1"))
 	assert.NoError(t, err)
 	assert.True(t, allowed)
 	assert.Nil(t, decision)
@@ -48,7 +48,7 @@ func TestLiveBouncer(t *testing.T) {
 	testutils.LogContainerOutput(t, reader)
 
 	// simulate a lookup; 127.0.0.1 should now be banned
-	allowed, decision, err = crowdsec.IsAllowed(netip.MustParseAddr("127.0.0.1"))
+	allowed, decision, err = crowdsec.IsAllowed(ctx, netip.MustParseAddr("127.0.0.1"))
 	assert.NoError(t, err)
 	assert.False(t, allowed)
 	if assert.NotNil(t, decision) {

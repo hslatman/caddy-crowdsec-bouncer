@@ -145,7 +145,8 @@ func TestStreamingBouncer(t *testing.T) {
 	// run the bouncer; makes it make a call to the mocked CrowdSec API
 	// this should be called after the httpmock is activated, because otherwise the bouncer
 	// will try to call an actual CrowdSec instance
-	b.Run(t.Context())
+	ctx := t.Context()
+	b.Run(ctx)
 
 	// allow the bouncer a bit of time to retrieve and store the mocked rules
 	time.Sleep(1 * time.Second)
@@ -221,7 +222,7 @@ func TestStreamingBouncer(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, _, err := b.IsAllowed(tt.args.ip, forceLive, "")
+		got, _, err := b.IsAllowed(ctx, tt.args.ip, forceLive, "")
 		if (err != nil) != tt.wantErr {
 			t.Errorf("%q. b.IsAllowed() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 			continue

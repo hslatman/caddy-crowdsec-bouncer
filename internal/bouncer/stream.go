@@ -2,6 +2,7 @@ package bouncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -96,6 +97,7 @@ func (b *StreamBouncer) Init() error {
 	if err != nil {
 		return fmt.Errorf("api client init: %w", err)
 	}
+
 	return nil
 }
 
@@ -107,22 +109,18 @@ const (
 )
 
 func (b *StreamBouncer) Run(ctx context.Context) {
+	defer func() {
+		log.Warn("running defer; closing stream?")
+	}()
+	defer close(b.Stream)
+
 	ticker := time.NewTicker(b.TickerIntervalDuration)
 
 	b.Opts.Startup = true
 
-	getDecisionStream := func() (*models.DecisionsStreamResponse, *apiclient.Response, error) {
-		data, resp, err := b.APIClient.Decisions.GetStream(context.Background(), b.Opts)
-		b.MetricsProvider.IncrementTotalBouncerCalls(modeStream)
-		if err != nil {
-			b.MetricsProvider.IncrementTotalBouncerErrors(modeStream)
-		}
-		return data, resp, err
-	}
-
 	// Initial connection
 	for {
-		data, resp, err := getDecisionStream()
+		data, resp, err := b.getDecisionStream(ctx, b.Opts)
 
 		if resp != nil && resp.Response != nil {
 			_ = resp.Response.Body.Close()
@@ -133,7 +131,9 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 				log.Errorf("failed to connect to LAPI, retrying in 10s: %s", err)
 				select {
 				case <-ctx.Done():
-					// context cancellation, possibly a SIGTERM
+					if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+						log.Error(err)
+					}
 					return
 				case <-time.After(10 * time.Second):
 					continue
@@ -141,9 +141,6 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 			}
 
 			log.Error(err)
-			// close the stream
-			// this may cause the bouncer to exit
-			close(b.Stream)
 			return
 		}
 
@@ -155,9 +152,12 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error(err)
+			}
 			return
 		case <-ticker.C:
-			data, resp, err := getDecisionStream()
+			data, resp, err := b.getDecisionStream(ctx, b.Opts)
 			if resp != nil && resp.Response != nil {
 				_ = resp.Response.Body.Close()
 			}
@@ -168,4 +168,17 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 			b.Stream <- data
 		}
 	}
+}
+
+func (b *StreamBouncer) getDecisionStream(ctx context.Context, opts apiclient.DecisionsStreamOpts) (*models.DecisionsStreamResponse, *apiclient.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	b.MetricsProvider.IncrementTotalBouncerCalls(modeStream)
+	data, resp, err := b.APIClient.Decisions.GetStream(ctx, opts)
+	if err != nil {
+		b.MetricsProvider.IncrementTotalBouncerErrors(modeStream)
+	}
+
+	return data, resp, err
 }

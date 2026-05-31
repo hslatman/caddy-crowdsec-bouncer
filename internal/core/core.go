@@ -150,14 +150,6 @@ func (b *Core) Init() (err error) {
 	// override CrowdSec's default logrus logging
 	b.overrideLogrusLogger()
 
-	// conditionally initialize the CrowdSec live bouncer
-	if !b.useStreamingBouncer {
-		b.logger.Info("initializing live bouncer", b.zapField())
-		if err = b.liveBouncer.Init(); err != nil {
-			return err
-		}
-	}
-
 	// conditionally initialize the CrowdSec streaming bouncer. The
 	// live bouncer is also initialized for ad hoc live lookups.
 	if b.useStreamingBouncer {
@@ -167,6 +159,11 @@ func (b *Core) Init() (err error) {
 		}
 
 		b.logger.Info("initializing live bouncer for ad hoc live lookups", b.zapField())
+		if err = b.liveBouncer.Init(); err != nil {
+			return err
+		}
+	} else {
+		b.logger.Info("initializing live bouncer", b.zapField())
 		if err = b.liveBouncer.Init(); err != nil {
 			return err
 		}
@@ -230,23 +227,25 @@ func (b *Core) Shutdown() error {
 	b.cancel()
 	b.wg.Wait()
 
-	// TODO: clean shutdown of the streaming bouncer channel reading
-	//b.store = nil // TODO(hs): setting this to nil without reinstantiating it, leads to errors; do this properly.
+	// TODO: clean shutdown of the streaming bouncer channel writing/reading?
+
+	b.logger.Warn("setting store nil") // TODO: remove
+	b.store = nil
 
 	b.stopped = true
-	b.logger.Info("finished", b.zapField())
-	b.logger.Sync() // nolint
+	b.logger.Info("finished shutdown", b.zapField())
+	_ = b.logger.Sync()
 
 	return nil
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Core) IsAllowed(ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
-	isAllowed, decision, err := b.isAllowed(ip, forceLive, method)
+func (b *Core) IsAllowed(ctx context.Context, ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
+	isAllowed, decision, err := b.isAllowed(ctx, ip, forceLive, method)
 	return isAllowed, decision, err
 }
 
-func (b *Core) isAllowed(ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
+func (b *Core) isAllowed(ctx context.Context, ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
 
@@ -254,7 +253,7 @@ func (b *Core) isAllowed(ip netip.Addr, forceLive bool, method string) (bool, *m
 		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
 	}
 
-	decision, err := b.retrieveDecision(ip, forceLive, method)
+	decision, err := b.retrieveDecision(ctx, ip, forceLive, method)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
 	}

@@ -79,7 +79,7 @@ func (h *Handler) Cleanup() error {
 		return nil
 	}
 
-	_ = h.logger.Sync() // nolint
+	_ = h.logger.Sync()
 
 	return nil
 }
@@ -96,7 +96,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	ctx, ip = httputils.EnsureIP(ctx)
 	ctx = h.crowdsec.IncrementProcessedRequests(ctx, server, module, ip.Is6())
 
-	isAllowed, decision, err := h.crowdsec.IsAllowed(ip)
+	isAllowed, decision, err := h.crowdsec.IsAllowed(ctx, ip)
 	if err != nil {
 		return err // TODO: return error here? Or just log it and continue serving
 	}

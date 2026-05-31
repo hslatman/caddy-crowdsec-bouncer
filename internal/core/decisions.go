@@ -27,7 +27,8 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 				b.logger.Info("processing new and deleted decisions stopped", b.zapField())
 				return
 			case decisions := <-b.streamingBouncer.Stream:
-				if decisions == nil {
+				if decisions == nil { // TODO: remove this case when nil is never sent?
+					b.logger.Warn("hit decision nil")
 					continue
 				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
@@ -101,12 +102,12 @@ func (b *Core) delete(decision *models.Decision) error {
 	return b.store.delete(decision)
 }
 
-func (b *Core) retrieveDecision(ip netip.Addr, forceLive bool, method string) (*models.Decision, error) {
+func (b *Core) retrieveDecision(ctx context.Context, ip netip.Addr, forceLive bool, method string) (*models.Decision, error) {
 	if b.useStreamingBouncer && !forceLive {
 		return b.store.get(ip)
 	}
 
-	decisions, err := b.liveBouncer.Get(ip.String(), method)
+	decisions, err := b.liveBouncer.Get(ctx, ip.String(), method)
 	if err != nil {
 		fields := []zapcore.Field{
 			b.zapField(),
