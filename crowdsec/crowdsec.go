@@ -133,7 +133,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	if c.enableCaddyMetrics() {
 		registry = ctx.GetMetricsRegistry()
 	}
-	core, err := core.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry, c.metricsInterval())
+	core, err := core.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
 	}
@@ -161,6 +161,11 @@ func (c *CrowdSec) Validate() error {
 	}
 	if err := c.checkModules(); err != nil {
 		return fmt.Errorf("failed checking CrowdSec modules: %w", err)
+	}
+	if interval := c.TickerInterval; interval != "" {
+		if _, err := time.ParseDuration(interval); err != nil {
+			return fmt.Errorf("invalid ticker interval %q", interval)
+		}
 	}
 
 	return nil
@@ -332,6 +337,16 @@ func (c *CrowdSec) IncrementBlockedRequests(server, origin, remediation string, 
 
 func (c *CrowdSec) metricsInterval() time.Duration {
 	return time.Duration(c.MetricsInterval)
+}
+
+func (c *CrowdSec) tickerInterval() time.Duration {
+	if interval := c.TickerInterval; interval != "" {
+		if d, err := time.ParseDuration(interval); err == nil {
+			return d
+		}
+	}
+
+	return 60 * time.Second // return the default in case parsing fails; validation happens before
 }
 
 func (c *CrowdSec) enableCaddyMetrics() bool {

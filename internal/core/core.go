@@ -27,6 +27,7 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/prometheus/client_golang/prometheus"
+	log "github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
@@ -65,6 +66,7 @@ type Core struct {
 	userAgent           string
 	instantiatedAt      time.Time
 	instanceID          string
+	apiURL              string
 
 	ctx       context.Context
 	started   bool
@@ -76,7 +78,7 @@ type Core struct {
 }
 
 // New creates a new Bouncer with a storage based on immutable radix tree.
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
+func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval time.Duration, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -84,36 +86,38 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		return nil, fmt.Errorf("failed generating instance ID: %w", err)
 	}
 
+	apiClient, err := bouncer.NewAPIClient(apiURL, apiKey, userAgent, "", "", "", &insecureSkipVerify, log.StandardLogger())
+	if err != nil {
+		return nil, err
+	}
+
 	metricsRegistry := prometheus.NewRegistry()
-	metricsProvider, err := metrics.NewProvider(metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, userAgentName, userAgentVersion, instanceID)
+	metricsProvider, err := metrics.NewProvider(apiClient, metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, userAgentName, userAgentVersion, instanceID)
+	if err != nil {
+		return nil, err
+	}
+
+	streamingBouncer, err := bouncer.NewStreamBouncer(apiClient, metricsProvider, tickerInterval, true)
+	if err != nil {
+		return nil, err
+	}
+
+	liveBouncer, err := bouncer.NewLiveBouncer(apiClient, metricsProvider)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Core{
-		streamingBouncer: &bouncer.StreamBouncer{ // TODO: refactor init
-			APIKey:              apiKey,
-			APIUrl:              apiURL,
-			InsecureSkipVerify:  &insecureSkipVerify,
-			TickerInterval:      tickerInterval,
-			UserAgent:           userAgent,
-			RetryInitialConnect: true,
-			MetricsProvider:     metricsProvider,
-		},
-		liveBouncer: &bouncer.LiveBouncer{ // TODO: refactor init
-			APIKey:             apiKey,
-			APIUrl:             apiURL,
-			InsecureSkipVerify: &insecureSkipVerify,
-			UserAgent:          userAgent,
-			MetricsProvider:    metricsProvider,
-		},
-		appsec:          newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider), // TODO add fields here?
-		store:           newStore(),
-		metricsProvider: metricsProvider,
-		logger:          logger, // TODO add fields here?
-		userAgent:       userAgent,
-		instantiatedAt:  instantiatedAt,
-		instanceID:      instanceID,
+		apiURL:           apiURL,
+		streamingBouncer: streamingBouncer,
+		liveBouncer:      liveBouncer,
+		appsec:           newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider), // TODO add fields here?
+		store:            newStore(),
+		metricsProvider:  metricsProvider,
+		logger:           logger, // TODO add fields here?
+		userAgent:        userAgent,
+		instantiatedAt:   instantiatedAt,
+		instanceID:       instanceID,
 	}, nil
 }
 
@@ -154,22 +158,10 @@ func (b *Core) Init() (err error) {
 	// live bouncer is also initialized for ad hoc live lookups.
 	if b.useStreamingBouncer {
 		b.logger.Info("initializing streaming bouncer", b.zapField())
-		if err = b.streamingBouncer.Init(); err != nil {
-			return err
-		}
-
 		b.logger.Info("initializing live bouncer for ad hoc live lookups", b.zapField())
-		if err = b.liveBouncer.Init(); err != nil {
-			return err
-		}
 	} else {
 		b.logger.Info("initializing live bouncer", b.zapField())
-		if err = b.liveBouncer.Init(); err != nil {
-			return err
-		}
 	}
-
-	b.metricsProvider.SetAPIClient(b.liveBouncer.APIClient) // TODO: refactor API client init
 
 	b.logAppSecStatus()
 

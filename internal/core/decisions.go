@@ -111,7 +111,7 @@ func (b *Core) retrieveDecision(ctx context.Context, ip netip.Addr, forceLive bo
 	if err != nil {
 		fields := []zapcore.Field{
 			b.zapField(),
-			zap.String("address", b.liveBouncer.APIUrl),
+			zap.String("address", b.apiURL),
 			zap.Error(err),
 		}
 

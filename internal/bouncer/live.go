@@ -2,55 +2,26 @@ package bouncer
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 )
 
 type LiveBouncer struct {
-	APIKey             string `yaml:"api_key"`
-	APIUrl             string `yaml:"api_url"`
-	InsecureSkipVerify *bool  `yaml:"insecure_skip_verify"`
-	CertPath           string `yaml:"cert_path"`
-	KeyPath            string `yaml:"key_path"`
-	CAPath             string `yaml:"ca_cert_path"`
-
-	APIClient       *apiclient.ApiClient
-	UserAgent       string
-	MetricsProvider *metrics.Provider
+	apiClient       *apiclient.ApiClient
+	metricsProvider *metrics.Provider
 }
 
-func (b *LiveBouncer) Init() error {
-	var err error
-
-	// validate the configuration
-
-	if b.APIUrl == "" {
-		return fmt.Errorf("config does not contain LAPI url")
-	}
-
-	if !strings.HasSuffix(b.APIUrl, "/") {
-		b.APIUrl += "/"
-	}
-
-	if b.APIKey == "" && b.CertPath == "" && b.KeyPath == "" {
-		return fmt.Errorf("config does not contain LAPI key or certificate")
-	}
-
-	b.APIClient, err = getAPIClient(b.APIUrl, b.UserAgent, b.APIKey, b.CAPath, b.CertPath, b.KeyPath, b.InsecureSkipVerify, log.StandardLogger())
-	if err != nil {
-		return fmt.Errorf("api client init: %w", err)
-	}
-	return nil
+func NewLiveBouncer(a *apiclient.ApiClient, m *metrics.Provider) (*LiveBouncer, error) {
+	return &LiveBouncer{
+		apiClient:       a,
+		metricsProvider: m,
+	}, nil
 }
 
-// TODO: plumb context.Context
 func (b *LiveBouncer) Get(ctx context.Context, value, method string) (*models.GetDecisionsResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -69,10 +40,10 @@ func (b *LiveBouncer) Get(ctx context.Context, value, method string) (*models.Ge
 		mode = modeLive
 	}
 
-	b.MetricsProvider.IncrementTotalBouncerCalls(mode)
-	decision, resp, err := b.APIClient.Decisions.List(ctx, filter)
+	b.metricsProvider.IncrementTotalBouncerCalls(mode)
+	decision, resp, err := b.apiClient.Decisions.List(ctx, filter)
 	if err != nil {
-		b.MetricsProvider.IncrementTotalBouncerErrors(mode)
+		b.metricsProvider.IncrementTotalBouncerErrors(mode)
 		if resp != nil && resp.Response != nil {
 			_ = resp.Response.Body.Close()
 		}

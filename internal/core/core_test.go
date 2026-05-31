@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -23,7 +24,7 @@ func newCore(t *testing.T) (*Core, error) {
 
 	key := "apiKey"
 	host := "http://127.0.0.1:8080/"
-	tickerInterval := "10s"
+	tickerInterval := 10 * time.Second
 	logger := zaptest.NewLogger(t)
 
 	appSecTimeout := 2 * time.Second
@@ -35,11 +36,11 @@ func newCore(t *testing.T) (*Core, error) {
 	// the code below mimicks the bouncer.streamingBouncer.Init() functionality
 	bouncer.streamingBouncer.Stream = make(chan *models.DecisionsStreamResponse)
 
-	apiURL, err := url.Parse(bouncer.streamingBouncer.APIUrl)
-	require.NoError(t, err, "local API Url %q", bouncer.streamingBouncer.APIUrl)
+	apiURL, err := url.Parse(host)
+	require.NoError(t, err, "local API Url %q", host)
 
 	transport := &apiclient.APIKeyTransport{
-		APIKey:    bouncer.streamingBouncer.APIKey,
+		APIKey:    key,
 		Transport: httpmock.DefaultTransport, // crucial for httpmock to work correctly
 	}
 
@@ -47,15 +48,13 @@ func newCore(t *testing.T) (*Core, error) {
 	// the httpmock transport isn't, resulting in a panic. We've worked around this by specifying the
 	// Transport in the APIKeyTransport and waiting a bit before the bouncer is ran. This results in
 	// the goal of ensuring the bouncer gets mocked decisions.
-	bouncer.streamingBouncer.APIClient, err = apiclient.NewDefaultClient(apiURL, "v1", bouncer.streamingBouncer.UserAgent, transport.Client())
+	apiClient, err := apiclient.NewDefaultClient(apiURL, "v1", fmt.Sprintf("%s-testing", userAgent), transport.Client())
 	require.NoError(t, err)
-
-	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
-	require.NoError(t, err)
+	bouncer.streamingBouncer.SetAPIClientForTesting(apiClient)
 
 	metricsRegistry := prometheus.NewRegistry()
 	fakeCaddyMetricsRegistry := prometheus.NewRegistry()
-	bouncer.metricsProvider, err = metrics.NewProvider(metricsRegistry, fakeCaddyMetricsRegistry, 0, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
+	bouncer.metricsProvider, err = metrics.NewProvider(apiClient, metricsRegistry, fakeCaddyMetricsRegistry, 0, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
