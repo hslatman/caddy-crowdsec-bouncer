@@ -79,7 +79,14 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 			return
 		}
 
-		b.Stream <- data
+		// Guard the send: on shutdown the consumer (Core.startProcessingDecisions)
+		// returns on ctx.Done(), so an unguarded send here would block forever and
+		// deadlock Core.Shutdown's wg.Wait().
+		select {
+		case b.Stream <- data:
+		case <-ctx.Done():
+			return
+		}
 		break
 	}
 
@@ -100,7 +107,13 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 				log.Error(err)
 				continue
 			}
-			b.Stream <- data
+			// Guard the send so a shutdown mid-loop can't block on a consumer
+			// that has already returned on ctx.Done().
+			select {
+			case b.Stream <- data:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
