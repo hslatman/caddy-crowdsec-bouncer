@@ -15,11 +15,11 @@ type LiveBouncer struct {
 	metricsProvider *metrics.Provider
 }
 
-func NewLiveBouncer(a *apiclient.ApiClient, m *metrics.Provider) (*LiveBouncer, error) {
+func NewLiveBouncer(a *apiclient.ApiClient, m *metrics.Provider) *LiveBouncer {
 	return &LiveBouncer{
 		apiClient:       a,
 		metricsProvider: m,
-	}, nil
+	}
 }
 
 func (b *LiveBouncer) Get(ctx context.Context, value, method string) (*models.GetDecisionsResponse, error) {

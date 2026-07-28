@@ -86,7 +86,6 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		if a.maxBodySize > 0 {
 			len := min(len(originalBody), a.maxBodySize)
 			_, _ = buffer.Write(originalBody[:len])
-
 		} else {
 			_, _ = buffer.Write(originalBody)
 		}

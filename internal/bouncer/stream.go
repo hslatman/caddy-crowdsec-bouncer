@@ -44,9 +44,6 @@ const (
 )
 
 func (b *StreamBouncer) Run(ctx context.Context) {
-	defer func() {
-		log.Warn("running defer; closing stream?")
-	}()
 	defer close(b.Stream)
 
 	ticker := time.NewTicker(b.tickerInterval)

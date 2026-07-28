@@ -156,8 +156,12 @@ func (c *CrowdSec) Validate() error {
 		return fmt.Errorf("failed checking CrowdSec modules: %w", err)
 	}
 	if interval := c.TickerInterval; interval != "" {
-		if _, err := time.ParseDuration(interval); err != nil {
+		d, err := time.ParseDuration(interval)
+		if err != nil {
 			return fmt.Errorf("invalid ticker interval %q", interval)
+		}
+		if d <= 0 {
+			return errors.New("ticker interval must be positive")
 		}
 	}
 

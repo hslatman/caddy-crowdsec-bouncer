@@ -103,11 +103,7 @@ func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecM
 		return nil, err
 	}
 
-	liveBouncer, err := bouncer.NewLiveBouncer(apiClient, metricsProvider)
-	if err != nil {
-		return nil, err
-	}
-
+	liveBouncer := bouncer.NewLiveBouncer(apiClient, metricsProvider)
 	appsec := newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider)
 	store := newStore()
 
@@ -214,9 +210,7 @@ func (b *Core) Shutdown() error {
 	b.wg.Wait()
 
 	// TODO: clean shutdown of the streaming bouncer channel writing/reading?
-
-	b.logger.Warn("setting store nil") // TODO: remove
-	b.store = nil
+	//b.store = nil // TODO(hs): setting this to nil without reinstantiating it, leads to errors; do this properly.
 
 	b.stopped = true
 	b.logger.Info("finished shutdown", b.zapField())

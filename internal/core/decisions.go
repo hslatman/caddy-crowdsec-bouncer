@@ -28,7 +28,6 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 				return
 			case decisions := <-b.streamingBouncer.Stream:
 				if decisions == nil { // TODO: remove this case when nil is never sent?
-					b.logger.Warn("hit decision nil")
 					continue
 				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
