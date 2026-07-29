@@ -6,7 +6,7 @@ import (
 
 const (
 	modulePath = "github.com/hslatman/caddy-crowdsec-bouncer"
-	fallback   = "v0.8.0"
+	fallback   = "v0.14.0"
 )
 
 func Current() string {

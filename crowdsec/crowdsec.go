@@ -112,7 +112,9 @@ type CrowdSec struct {
 func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	c.ctx = ctx
 	c.logger = ctx.Logger(c)
-	defer c.logger.Sync() // nolint
+	defer func() {
+		_ = c.logger.Sync()
+	}()
 
 	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
 	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
@@ -131,17 +133,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	if c.enableCaddyMetrics() {
 		registry = ctx.GetMetricsRegistry()
 	}
-	core, err := core.New(c.APIKey, c.APIUrl, c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.TickerInterval, c.logger, registry, c.metricsInterval())
+
+	core, err := core.New(c.APIKey, c.APIUrl, c.isStreamingEnabled(), c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.shouldFailHard(), c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
-	}
-
-	if c.isStreamingEnabled() {
-		core.EnableStreaming()
-	}
-
-	if c.shouldFailHard() {
-		core.EnableHardFails()
 	}
 
 	c.core = core
@@ -159,6 +154,15 @@ func (c *CrowdSec) Validate() error {
 	}
 	if err := c.checkModules(); err != nil {
 		return fmt.Errorf("failed checking CrowdSec modules: %w", err)
+	}
+	if interval := c.TickerInterval; interval != "" {
+		d, err := time.ParseDuration(interval)
+		if err != nil {
+			return fmt.Errorf("invalid ticker interval %q", interval)
+		}
+		if d <= 0 {
+			return errors.New("ticker interval must be positive")
+		}
 	}
 
 	return nil
@@ -288,7 +292,7 @@ func (c *CrowdSec) Cleanup() error {
 		return nil
 	}
 
-	_ = c.logger.Sync() // nolint
+	_ = c.logger.Sync()
 
 	return nil
 }
@@ -311,8 +315,8 @@ func (c *CrowdSec) Stop() error {
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request.
-func (c *CrowdSec) IsAllowed(ip netip.Addr) (bool, *models.Decision, error) {
-	return c.core.IsAllowed(ip, false, "")
+func (c *CrowdSec) IsAllowed(ctx context.Context, ip netip.Addr) (bool, *models.Decision, error) {
+	return c.core.IsAllowed(ctx, ip, false, "")
 }
 
 // CheckRequest checks the incoming request against AppSec.
@@ -330,6 +334,16 @@ func (c *CrowdSec) IncrementBlockedRequests(server, origin, remediation string, 
 
 func (c *CrowdSec) metricsInterval() time.Duration {
 	return time.Duration(c.MetricsInterval)
+}
+
+func (c *CrowdSec) tickerInterval() time.Duration {
+	if interval := c.TickerInterval; interval != "" {
+		if d, err := time.ParseDuration(interval); err == nil {
+			return d
+		}
+	}
+
+	return 60 * time.Second // return the default in case parsing fails
 }
 
 func (c *CrowdSec) enableCaddyMetrics() bool {

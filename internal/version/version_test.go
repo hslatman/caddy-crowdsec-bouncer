@@ -9,5 +9,5 @@ import (
 func TestCurrent(t *testing.T) {
 	v := Current()
 
-	assert.Equal(t, "v0.8.0", v) // fallback
+	assert.Equal(t, "v0.14.0", v) // fallback
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -23,23 +24,24 @@ func newCore(t *testing.T) (*Core, error) {
 
 	key := "apiKey"
 	host := "http://127.0.0.1:8080/"
-	tickerInterval := "10s"
+	streamingEnabled := true
+	tickerInterval := 10 * time.Second
 	logger := zaptest.NewLogger(t)
-
 	appSecTimeout := 2 * time.Second
-	bouncer, err := New(key, host, "", 0, appSecTimeout, false, tickerInterval, logger, nil, 0)
-	require.NoError(t, err)
+	appSecFailOpen := false
+	shouldFailHard := false
 
-	bouncer.EnableStreaming()
+	bouncer, err := New(key, host, streamingEnabled, "", 0, appSecTimeout, appSecFailOpen, tickerInterval, shouldFailHard, logger, nil, 0)
+	require.NoError(t, err)
 
 	// the code below mimicks the bouncer.streamingBouncer.Init() functionality
 	bouncer.streamingBouncer.Stream = make(chan *models.DecisionsStreamResponse)
 
-	apiURL, err := url.Parse(bouncer.streamingBouncer.APIUrl)
-	require.NoError(t, err, "local API Url %q", bouncer.streamingBouncer.APIUrl)
+	apiURL, err := url.Parse(host)
+	require.NoError(t, err, "local API Url %q", host)
 
 	transport := &apiclient.APIKeyTransport{
-		APIKey:    bouncer.streamingBouncer.APIKey,
+		APIKey:    key,
 		Transport: httpmock.DefaultTransport, // crucial for httpmock to work correctly
 	}
 
@@ -47,15 +49,13 @@ func newCore(t *testing.T) (*Core, error) {
 	// the httpmock transport isn't, resulting in a panic. We've worked around this by specifying the
 	// Transport in the APIKeyTransport and waiting a bit before the bouncer is ran. This results in
 	// the goal of ensuring the bouncer gets mocked decisions.
-	bouncer.streamingBouncer.APIClient, err = apiclient.NewDefaultClient(apiURL, "v1", bouncer.streamingBouncer.UserAgent, transport.Client())
+	apiClient, err := apiclient.NewDefaultClient(apiURL, "v1", fmt.Sprintf("%s-testing", userAgent), transport.Client())
 	require.NoError(t, err)
-
-	bouncer.streamingBouncer.TickerIntervalDuration, err = time.ParseDuration(bouncer.streamingBouncer.TickerInterval)
-	require.NoError(t, err)
+	bouncer.streamingBouncer.SetAPIClientForTesting(apiClient)
 
 	metricsRegistry := prometheus.NewRegistry()
 	fakeCaddyMetricsRegistry := prometheus.NewRegistry()
-	bouncer.metricsProvider, err = metrics.NewProvider(metricsRegistry, fakeCaddyMetricsRegistry, 0, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
+	bouncer.metricsProvider, err = metrics.NewProvider(apiClient, metricsRegistry, fakeCaddyMetricsRegistry, 0, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
@@ -145,7 +145,8 @@ func TestStreamingBouncer(t *testing.T) {
 	// run the bouncer; makes it make a call to the mocked CrowdSec API
 	// this should be called after the httpmock is activated, because otherwise the bouncer
 	// will try to call an actual CrowdSec instance
-	b.Run(t.Context())
+	ctx := t.Context()
+	b.Run(ctx)
 
 	// allow the bouncer a bit of time to retrieve and store the mocked rules
 	time.Sleep(1 * time.Second)
@@ -221,7 +222,7 @@ func TestStreamingBouncer(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, _, err := b.IsAllowed(tt.args.ip, forceLive, "")
+		got, _, err := b.IsAllowed(ctx, tt.args.ip, forceLive, "")
 		if (err != nil) != tt.wantErr {
 			t.Errorf("%q. b.IsAllowed() error = %v, wantErr %v", tt.name, err, tt.wantErr)
 			continue

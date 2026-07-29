@@ -27,6 +27,7 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/prometheus/client_golang/prometheus"
+	log "github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/bouncer"
@@ -65,6 +66,7 @@ type Core struct {
 	userAgent           string
 	instantiatedAt      time.Time
 	instanceID          string
+	apiURL              string
 
 	ctx       context.Context
 	started   bool
@@ -76,7 +78,7 @@ type Core struct {
 }
 
 // New creates a new Bouncer with a storage based on immutable radix tree.
-func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval string, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
+func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval time.Duration, shouldFailHard bool, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -84,49 +86,41 @@ func New(apiKey, apiURL, appSecURL string, appSecMaxBodySize int, appSecTimeout 
 		return nil, fmt.Errorf("failed generating instance ID: %w", err)
 	}
 
-	metricsRegistry := prometheus.NewRegistry()
-	metricsProvider, err := metrics.NewProvider(metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, userAgentName, userAgentVersion, instanceID)
+	apiClient, err := bouncer.NewAPIClient(apiURL, apiKey, userAgent, "", "", "", &insecureSkipVerify, log.StandardLogger())
 	if err != nil {
 		return nil, err
 	}
 
+	metricsRegistry := prometheus.NewRegistry()
+	metricsProvider, err := metrics.NewProvider(apiClient, metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, userAgentName, userAgentVersion, instanceID)
+	if err != nil {
+		return nil, err
+	}
+
+	retryInitialConnect := !shouldFailHard
+	streamingBouncer, err := bouncer.NewStreamBouncer(apiClient, metricsProvider, tickerInterval, retryInitialConnect)
+	if err != nil {
+		return nil, err
+	}
+
+	liveBouncer := bouncer.NewLiveBouncer(apiClient, metricsProvider)
+	appsec := newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider)
+	store := newStore()
+
 	return &Core{
-		streamingBouncer: &bouncer.StreamBouncer{ // TODO: refactor init
-			APIKey:              apiKey,
-			APIUrl:              apiURL,
-			InsecureSkipVerify:  &insecureSkipVerify,
-			TickerInterval:      tickerInterval,
-			UserAgent:           userAgent,
-			RetryInitialConnect: true,
-			MetricsProvider:     metricsProvider,
-		},
-		liveBouncer: &bouncer.LiveBouncer{ // TODO: refactor init
-			APIKey:             apiKey,
-			APIUrl:             apiURL,
-			InsecureSkipVerify: &insecureSkipVerify,
-			UserAgent:          userAgent,
-			MetricsProvider:    metricsProvider,
-		},
-		appsec:          newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider), // TODO add fields here?
-		store:           newStore(),
-		metricsProvider: metricsProvider,
-		logger:          logger, // TODO add fields here?
-		userAgent:       userAgent,
-		instantiatedAt:  instantiatedAt,
-		instanceID:      instanceID,
+		apiURL:              apiURL,
+		streamingBouncer:    streamingBouncer,
+		useStreamingBouncer: streamingEnabled,
+		liveBouncer:         liveBouncer,
+		appsec:              appsec,
+		store:               store,
+		metricsProvider:     metricsProvider,
+		logger:              logger, // TODO add fields here?
+		shouldFailHard:      shouldFailHard,
+		userAgent:           userAgent,
+		instantiatedAt:      instantiatedAt,
+		instanceID:          instanceID,
 	}, nil
-}
-
-// EnableStreaming enables usage of the StreamBouncer (instead of the LiveBouncer).
-func (b *Core) EnableStreaming() {
-	b.useStreamingBouncer = true
-}
-
-// EnableHardFails will make the bouncer fail hard on (connection) errors
-// when contacting the CrowdSec Local API.
-func (b *Core) EnableHardFails() {
-	b.shouldFailHard = true
-	b.streamingBouncer.RetryInitialConnect = false
 }
 
 func (b *Core) NumberOfActiveDecisions() int {
@@ -150,29 +144,14 @@ func (b *Core) Init() (err error) {
 	// override CrowdSec's default logrus logging
 	b.overrideLogrusLogger()
 
-	// conditionally initialize the CrowdSec live bouncer
-	if !b.useStreamingBouncer {
-		b.logger.Info("initializing live bouncer", b.zapField())
-		if err = b.liveBouncer.Init(); err != nil {
-			return err
-		}
-	}
-
 	// conditionally initialize the CrowdSec streaming bouncer. The
 	// live bouncer is also initialized for ad hoc live lookups.
 	if b.useStreamingBouncer {
 		b.logger.Info("initializing streaming bouncer", b.zapField())
-		if err = b.streamingBouncer.Init(); err != nil {
-			return err
-		}
-
 		b.logger.Info("initializing live bouncer for ad hoc live lookups", b.zapField())
-		if err = b.liveBouncer.Init(); err != nil {
-			return err
-		}
+	} else {
+		b.logger.Info("initializing live bouncer", b.zapField())
 	}
-
-	b.metricsProvider.SetAPIClient(b.liveBouncer.APIClient) // TODO: refactor API client init
 
 	b.logAppSecStatus()
 
@@ -230,23 +209,23 @@ func (b *Core) Shutdown() error {
 	b.cancel()
 	b.wg.Wait()
 
-	// TODO: clean shutdown of the streaming bouncer channel reading
+	// TODO: clean shutdown of the streaming bouncer channel writing/reading?
 	//b.store = nil // TODO(hs): setting this to nil without reinstantiating it, leads to errors; do this properly.
 
 	b.stopped = true
-	b.logger.Info("finished", b.zapField())
-	b.logger.Sync() // nolint
+	b.logger.Info("finished shutdown", b.zapField())
+	_ = b.logger.Sync()
 
 	return nil
 }
 
 // IsAllowed checks if an IP is allowed or not
-func (b *Core) IsAllowed(ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
-	isAllowed, decision, err := b.isAllowed(ip, forceLive, method)
+func (b *Core) IsAllowed(ctx context.Context, ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
+	isAllowed, decision, err := b.isAllowed(ctx, ip, forceLive, method)
 	return isAllowed, decision, err
 }
 
-func (b *Core) isAllowed(ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
+func (b *Core) isAllowed(ctx context.Context, ip netip.Addr, forceLive bool, method string) (bool, *models.Decision, error) {
 	// TODO: perform lookup in explicit allowlist as a kind of quick lookup in front of the CrowdSec lookup list?
 	isAllowed := false
 
@@ -254,7 +233,7 @@ func (b *Core) isAllowed(ip netip.Addr, forceLive bool, method string) (bool, *m
 		return isAllowed, nil, errors.New("could not obtain netip.Addr from request") // fail closed
 	}
 
-	decision, err := b.retrieveDecision(ip, forceLive, method)
+	decision, err := b.retrieveDecision(ctx, ip, forceLive, method)
 	if err != nil {
 		return isAllowed, nil, err // fail closed
 	}

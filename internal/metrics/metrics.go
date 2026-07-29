@@ -69,7 +69,7 @@ func (m metricMap) registerAll(registry *prometheus.Registry) error {
 	return nil
 }
 
-func NewProvider(metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, userAgentName, userAgentVersion, instanceID string) (*Provider, error) {
+func NewProvider(apiClient *apiclient.ApiClient, metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, userAgentName, userAgentVersion, instanceID string) (*Provider, error) {
 	// bouncer metrics; provided by the go-cs-bouncer package, but overridden
 	// by recreating the main bouncer logic.
 	totalBouncerCallsCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -201,6 +201,7 @@ func NewProvider(metricsRegistry, caddyMetricsRegistry *prometheus.Registry, int
 	_ = osFamily
 
 	m := &Provider{
+		apiClient:                         apiClient,
 		interval:                          interval,
 		metricMap:                         metricMap,
 		metricsRegistry:                   metricsRegistry,
@@ -225,10 +226,6 @@ func NewProvider(metricsRegistry, caddyMetricsRegistry *prometheus.Registry, int
 	}
 
 	return m, nil
-}
-
-func (p *Provider) SetAPIClient(a *apiclient.ApiClient) {
-	p.apiClient = a
 }
 
 type Provider struct {

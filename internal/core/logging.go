@@ -31,7 +31,7 @@ func (b *Core) overrideLogrusLogger() {
 	hooks.Add(&zapAdapterHook{
 		logger:         b.logger,
 		shouldFailHard: b.shouldFailHard,
-		address:        b.streamingBouncer.APIUrl,
+		address:        b.apiURL,
 		instanceID:     b.instanceID,
 	})
 

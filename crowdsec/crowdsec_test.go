@@ -212,7 +212,7 @@ func TestCrowdSecStreamingBouncerRuntime(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// simulate request coming in and stopping the server from another goroutine
-		allowed, decision, err := c.IsAllowed(netip.MustParseAddr("127.0.0.1"))
+		allowed, decision, err := c.IsAllowed(t.Context(), netip.MustParseAddr("127.0.0.1"))
 		assert.NoError(t, err)
 		assert.Nil(t, decision)
 		assert.True(t, allowed)
@@ -265,7 +265,7 @@ func TestCrowdSecliveBouncerRuntime(t *testing.T) {
 	require.NoError(t, err)
 
 	// simulate a lookup
-	allowed, decision, err := c.IsAllowed(netip.MustParseAddr("127.0.0.1"))
+	allowed, decision, err := c.IsAllowed(t.Context(), netip.MustParseAddr("127.0.0.1"))
 	assert.NoError(t, err)
 	assert.Nil(t, decision)
 	assert.True(t, allowed)

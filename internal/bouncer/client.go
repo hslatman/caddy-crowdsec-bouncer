@@ -2,28 +2,24 @@ package bouncer
 
 import (
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
 )
 
-func getAPIClient(urlstr string, userAgent string, apiKey string, caPath string, certPath string, keyPath string, skipVerify *bool, logger logrus.FieldLogger) (*apiclient.ApiClient, error) {
+func NewAPIClient(urlstr string, apiKey string, userAgent string, caPath string, certPath string, keyPath string, skipVerify *bool, logger logrus.FieldLogger) (*apiclient.ApiClient, error) {
 	var client *http.Client
 
-	if apiKey == "" && certPath == "" && keyPath == "" {
-		return nil, errors.New("no API key nor certificate provided")
-	}
-
-	if apiKey != "" && (certPath != "" || keyPath != "") {
-		return nil, fmt.Errorf("cannot use both API key and certificate auth")
-	}
-
 	insecureSkipVerify := false
+
+	if !strings.HasSuffix(urlstr, "/") {
+		urlstr += "/"
+	}
 
 	apiURL, err := url.Parse(urlstr)
 	if err != nil {

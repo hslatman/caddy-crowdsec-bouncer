@@ -33,6 +33,6 @@ func (c *CrowdSec) Ping(ctx context.Context) bool {
 	return b
 }
 
-func (c *CrowdSec) Check(_ context.Context, ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
-	return c.core.IsAllowed(ip, forceLive, "check")
+func (c *CrowdSec) Check(ctx context.Context, ip netip.Addr, forceLive bool) (bool, *models.Decision, error) {
+	return c.core.IsAllowed(ctx, ip, forceLive, "check")
 }
