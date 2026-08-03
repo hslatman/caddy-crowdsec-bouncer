@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -58,6 +59,23 @@ type appsecResponse struct {
 	StatusCode int    `json:"http_status"`
 }
 
+// hopByHopHeaders are connection-specific headers that must not be forwarded to
+// the AppSec component. Forwarding these (e.g. "Connection: Upgrade" from a
+// WebSocket handshake) is meaningless to the check and is rejected outright by
+// an HTTP/2 AppSec endpoint. Keys are in canonical (textproto) form. See
+// RFC 7230, section 6.1.
+var hopByHopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Proxy-Connection":    {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
+}
+
 func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	if a.apiURL == "" {
 		return nil // AppSec component not enabled; skip check
@@ -99,7 +117,24 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return err
 	}
 
+	// tokens named in the Connection header are themselves hop-by-hop and must
+	// be dropped as well (e.g. "Connection: Upgrade" also removes Upgrade).
+	connectionHeaders := map[string]struct{}{}
+	for _, value := range r.Header["Connection"] {
+		for token := range strings.SplitSeq(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				connectionHeaders[http.CanonicalHeaderKey(token)] = struct{}{}
+			}
+		}
+	}
+
 	for key, headers := range r.Header {
+		if _, ok := hopByHopHeaders[key]; ok {
+			continue
+		}
+		if _, ok := connectionHeaders[key]; ok {
+			continue
+		}
 		for _, value := range headers {
 			req.Header.Add(key, value)
 		}
