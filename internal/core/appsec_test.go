@@ -29,14 +29,17 @@ func Test_appsec_checkRequest(t *testing.T) {
 	ctx, _ = httputils.EnsureIP(ctx)
 	noIPCtx := newCaddyVarsContext(t.Context())
 
-	noIPRequest := httptest.NewRequest(http.MethodGet, "/path", http.NoBody)
+	noIPRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/path", http.NoBody)
 	noIPRequest.Header.Set("User-Agent", "test-appsec")
 
-	okGetRequest := httptest.NewRequest(http.MethodGet, "/path", http.NoBody)
+	okGetRequest := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/path", http.NoBody)
 	okGetRequest.Header.Set("User-Agent", "test-appsec")
 
-	okPostRequest := httptest.NewRequest(http.MethodPost, "/path", bytes.NewBufferString("body"))
+	okPostRequest := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/path", bytes.NewBufferString("body"))
 	okPostRequest.Header.Set("User-Agent", "test-appsec")
+
+	okPostLimitRequest := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/path", bytes.NewBufferString("body"))
+	okPostLimitRequest.Header.Set("User-Agent", "test-appsec")
 
 	appSecTimeout := 2 * time.Second
 
@@ -50,13 +53,14 @@ func Test_appsec_checkRequest(t *testing.T) {
 		r   *http.Request
 	}
 	tests := []struct {
-		name           string
-		fields         fields
-		args           args
-		expectedMethod string
-		expectedBody   []byte
-		wantErr        bool
-		serverDown     bool
+		name                 string
+		fields               fields
+		args                 args
+		expectedMethod       string
+		expectedAppSecBody   []byte
+		expectedUpstreamBody []byte
+		wantErr              bool
+		serverDown           bool
 	}{
 		{
 			name: "ok get",
@@ -64,16 +68,21 @@ func Test_appsec_checkRequest(t *testing.T) {
 				ctx: ctx,
 				r:   okGetRequest,
 			},
-			expectedMethod: "GET",
+			expectedMethod:       "GET",
+			expectedUpstreamBody: []byte{},
 		},
 		{
 			name: "ok post",
+			fields: fields{
+				maxBodySize: 10485760, // default max body size of 1MB
+			},
 			args: args{
 				ctx: ctx,
 				r:   okPostRequest,
 			},
-			expectedMethod: "POST",
-			expectedBody:   []byte("body"),
+			expectedMethod:       "POST",
+			expectedAppSecBody:   []byte("body"),
+			expectedUpstreamBody: []byte("body"),
 		},
 		{
 			name: "ok post limit",
@@ -82,10 +91,11 @@ func Test_appsec_checkRequest(t *testing.T) {
 			},
 			args: args{
 				ctx: ctx,
-				r:   okPostRequest,
+				r:   okPostLimitRequest,
 			},
-			expectedMethod: "POST",
-			expectedBody:   []byte("b"),
+			expectedMethod:       "POST",
+			expectedAppSecBody:   []byte("b"),
+			expectedUpstreamBody: []byte("body"),
 		},
 		{
 			name: "fail ip",
@@ -104,7 +114,8 @@ func Test_appsec_checkRequest(t *testing.T) {
 				ctx: ctx,
 				r:   okGetRequest,
 			},
-			serverDown: true,
+			serverDown:           true,
+			expectedUpstreamBody: []byte{},
 		},
 		{
 			name: "fail hard on connection error",
@@ -131,8 +142,8 @@ func Test_appsec_checkRequest(t *testing.T) {
 				if r.Method == http.MethodPost {
 					b, err := io.ReadAll(r.Body)
 					require.NoError(t, err)
-					assert.Equal(t, tt.expectedBody, b)
-					assert.Equal(t, len(tt.expectedBody), int(r.ContentLength))
+					assert.Equal(t, tt.expectedAppSecBody, b)
+					assert.Equal(t, len(tt.expectedAppSecBody), int(r.ContentLength))
 				}
 			})
 
@@ -147,11 +158,15 @@ func Test_appsec_checkRequest(t *testing.T) {
 			a := newAppSec(s.URL, "test-apikey", tt.fields.maxBodySize, appSecTimeout, tt.fields.failOpen, logger, m)
 			err := a.checkRequest(tt.args.ctx, tt.args.r)
 			if tt.wantErr {
-				require.Error(t, err)
+				assert.Error(t, err)
 				return
 			}
 
-			require.NoError(t, err)
+			assert.NoError(t, err)
+
+			body, readErr := io.ReadAll(tt.args.r.Body)
+			require.NoError(t, readErr)
+			assert.Equal(t, tt.expectedUpstreamBody, body)
 		})
 	}
 }

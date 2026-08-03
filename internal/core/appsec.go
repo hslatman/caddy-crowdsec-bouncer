@@ -9,9 +9,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/oxtoacart/bpool"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
@@ -26,7 +26,6 @@ type appsec struct {
 	logger          *zap.Logger
 	client          *http.Client
 	metricsProvider *metrics.Provider
-	pool            *bpool.BufferPool
 }
 
 func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, failOpen bool, logger *zap.Logger, metricsProvider *metrics.Provider) *appsec {
@@ -52,13 +51,29 @@ func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, fa
 			},
 		},
 		metricsProvider: metricsProvider,
-		pool:            bpool.NewBufferPool(64),
 	}
 }
 
 type appsecResponse struct {
 	Action     string `json:"action"`
 	StatusCode int    `json:"http_status"`
+}
+
+// hopByHopHeaders are connection-specific headers that must not be forwarded to
+// the AppSec component. Forwarding these (e.g. "Connection: Upgrade" from a
+// WebSocket handshake) is meaningless to the check and is rejected outright by
+// an HTTP/2 AppSec endpoint. Keys are in canonical (textproto) form. See
+// RFC 7230, section 6.1.
+var hopByHopHeaders = map[string]struct{}{
+	"Connection":          {},
+	"Keep-Alive":          {},
+	"Proxy-Authenticate":  {},
+	"Proxy-Authorization": {},
+	"Proxy-Connection":    {},
+	"Te":                  {},
+	"Trailer":             {},
+	"Transfer-Encoding":   {},
+	"Upgrade":             {},
 }
 
 func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
@@ -71,31 +86,30 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return errors.New("could not retrieve netip.Addr from context")
 	}
 
-	var contentLength int
-	method := http.MethodGet
+	var method = http.MethodGet
 	var body io.ReadCloser = http.NoBody
-	if r.Body != nil && r.ContentLength > 0 {
-		originalBody, err := io.ReadAll(r.Body)
+	var contentLength = 0
+	switch {
+	case isBodyUnreadable(r):
+		a.logger.Warn("dropping request body from AppSec check as it can't be buffered")
+	case r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0:
+		// a non-positive maxBodySize means no limit; only cap the read when set
+		bodyReader := io.Reader(r.Body)
+		if a.maxBodySize > 0 {
+			bodyReader = io.LimitReader(r.Body, int64(a.maxBodySize))
+		}
+
+		data, err := io.ReadAll(bodyReader)
 		if err != nil {
 			return err
 		}
 
-		buffer := a.pool.Get()
-		defer a.pool.Put(buffer)
-
-		if a.maxBodySize > 0 {
-			len := min(len(originalBody), a.maxBodySize)
-			_, _ = buffer.Write(originalBody[:len])
-		} else {
-			_, _ = buffer.Write(originalBody)
-		}
-
 		method = http.MethodPost
-		body = io.NopCloser(buffer)
-		contentLength = buffer.Len()
+		body = io.NopCloser(bytes.NewReader(data))
+		contentLength = len(data)
 
-		// "reset" the original request body
-		r.Body = io.NopCloser(bytes.NewBuffer(originalBody))
+		// reset the original request body: buffered prefix + unread remainder
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), r.Body))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, a.apiURL, body)
@@ -103,7 +117,24 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		return err
 	}
 
+	// tokens named in the Connection header are themselves hop-by-hop and must
+	// be dropped as well (e.g. "Connection: Upgrade" also removes Upgrade).
+	connectionHeaders := map[string]struct{}{}
+	for _, value := range r.Header["Connection"] {
+		for token := range strings.SplitSeq(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				connectionHeaders[http.CanonicalHeaderKey(token)] = struct{}{}
+			}
+		}
+	}
+
 	for key, headers := range r.Header {
+		if _, ok := hopByHopHeaders[key]; ok {
+			continue
+		}
+		if _, ok := connectionHeaders[key]; ok {
+			continue
+		}
 		for _, value := range headers {
 			req.Header.Add(key, value)
 		}
@@ -127,16 +158,17 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	a.metricsProvider.IncrementTotalAppSecCalls()
 	resp, err := a.client.Do(req)
 	if err != nil {
+		// A canceled request context means the downstream client went away
+		// before the AppSec check completed. This is not considered an error.
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+
 		a.metricsProvider.IncrementTotalAppSecErrors()
 		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
 		return a.failOpenOrErr(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case 200:
@@ -145,6 +177,11 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 		a.logger.Error("appsec component not authenticated", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
 		return a.failOpenOrErr(fmt.Errorf("appsec component not authenticated: %s", resp.Status))
 	case 403:
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
 		var r appsecResponse
 		if err := json.Unmarshal(responseBody, &r); err != nil {
 			return err
@@ -163,10 +200,24 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	}
 }
 
+// isBodyUnreadable reports whether the request body cannot be buffered before
+// forwarding it to the Appsec component. An HTTP/2 or HTTP/3 request without a
+// Content-Length (typically a bidirectional gRPC stream) keeps its body open
+// for the whole life of the stream and never reaches EOF, so reading it with
+// io.ReadAll would block until the request times out and is wrongly turned into
+// a 403. This mirrors the reference lua-cs-bouncer behavior, which refuses to
+// read the body of an HTTP/2+ request that has no Content-Length.
+//
+// This function was taken from https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/blob/main/bouncer.go#L735
+func isBodyUnreadable(httpReq *http.Request) bool {
+	return httpReq.Body != nil && httpReq.Body != http.NoBody && httpReq.ProtoMajor >= 2 && httpReq.ContentLength < 0
+}
+
 func (a *appsec) failOpenOrErr(err error) error {
 	if a.failOpen {
 		return nil
 	}
+
 	return err
 }
 
