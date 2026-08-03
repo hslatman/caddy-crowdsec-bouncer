@@ -158,6 +158,12 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	a.metricsProvider.IncrementTotalAppSecCalls()
 	resp, err := a.client.Do(req)
 	if err != nil {
+		// A canceled request context means the downstream client went away
+		// before the AppSec check completed. This is not considered an error.
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+
 		a.metricsProvider.IncrementTotalAppSecErrors()
 		a.logger.Error("appsec component unavailable", zap.Error(err), zap.String("appsec_url", a.apiURL))
 		return a.failOpenOrErr(err)
