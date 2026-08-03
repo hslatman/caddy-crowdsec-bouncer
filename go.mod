@@ -11,7 +11,6 @@ require (
 	github.com/hslatman/ipstore v0.5.0
 	github.com/jarcoal/httpmock v1.4.1
 	github.com/mholt/caddy-l4 v0.1.1
-	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/sirupsen/logrus v1.9.4

@@ -134,7 +134,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		registry = ctx.GetMetricsRegistry()
 	}
 
-	core, err := core.New(c.APIKey, c.APIUrl, c.isStreamingEnabled(), c.AppSecUrl, c.AppSecMaxBodySize, c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.shouldFailHard(), c.logger, registry, c.metricsInterval())
+	core, err := core.New(c.APIKey, c.APIUrl, c.isStreamingEnabled(), c.AppSecUrl, c.appSecMaxBodySize(), c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.shouldFailHard(), c.logger, registry, c.metricsInterval())
 	if err != nil {
 		return err
 	}
@@ -360,6 +360,10 @@ func (c *CrowdSec) appSecTimeout() time.Duration {
 
 func (c *CrowdSec) isAppSecFailOpenEnabled() bool {
 	return c.AppSecFailOpen != nil && *c.AppSecFailOpen
+}
+
+func (c *CrowdSec) appSecMaxBodySize() int {
+	return c.AppSecMaxBodySize
 }
 
 func (c *CrowdSec) isStreamingEnabled() bool {
