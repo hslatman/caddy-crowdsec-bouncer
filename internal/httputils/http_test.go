@@ -123,4 +123,13 @@ func TestWriteResponse_Throttle(t *testing.T) {
 
 		assert.Equal(t, "10", w.Header().Get("Retry-After"))
 	})
+
+	t.Run("negative duration never emits a negative Retry-After", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, logger, "throttle", "192.168.1.1", "-1s", 0, false)
+
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusTooManyRequests, w.Code)
+		assert.Equal(t, "0", w.Header().Get("Retry-After"))
+	})
 }

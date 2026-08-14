@@ -106,6 +106,9 @@ func writeThrottleResponse(w http.ResponseWriter, duration string, useCaddyError
 	if err != nil {
 		return err
 	}
+	if d < 0 {
+		d = 0
+	}
 
 	// TODO: round this to the nearest multiple of the ticker interval? and/or include the time the decision was processed from stream vs. request time?
 	retryAfter := fmt.Sprintf("%.0f", d.Seconds())
