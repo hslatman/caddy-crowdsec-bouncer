@@ -16,7 +16,6 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
 	"github.com/crowdsecurity/go-cs-lib/version"
-	"github.com/hslatman/ipstore"
 	"github.com/prometheus/client_golang/prometheus"
 	model "github.com/prometheus/client_model/go"
 	"go.uber.org/zap"
@@ -549,14 +548,22 @@ func (p *Provider) IncrementBlockedRequests(server, origin, remediation string, 
 	p.blockedRequestsCounter.With(prometheus.Labels{labelServer: server, labelOrigin: origin, labelRemediation: remediation, labelIPType: toIPType(isIPv6)}).Inc()
 }
 
-func (p *Provider) RecalculateAndRecordDecisionCounts(s *ipstore.Store[*models.Decision]) {
+// ActiveDecision is the minimal immutable input needed to count decisions.
+// Keeping this contract independent from the lookup store avoids constructing
+// a second IP index solely for metrics.
+type ActiveDecision struct {
+	Origin string
+	IPv6   bool
+}
+
+func (p *Provider) RecalculateAndRecordDecisionCounts(decisions []ActiveDecision) {
 	if !p.metricsEnabled() {
 		return
 	}
 
 	p.activeDecisionsMu.Lock()
 	defer p.activeDecisionsMu.Unlock()
-	recalculateAndRecordDecisionCounts(s, p.activeDecisionsGauge)
+	recalculateAndRecordDecisionCounts(decisions, p.activeDecisionsGauge)
 }
 
 type ipType string
@@ -583,7 +590,7 @@ func defaultActiveDecisionLabels() []decisionMetricLabels {
 }
 
 func recalculateAndRecordDecisionCounts(
-	store *ipstore.Store[*models.Decision],
+	decisions []ActiveDecision,
 	gauge *prometheus.GaugeVec,
 ) {
 	// GaugeVec retains every label tuple it has seen. Reset first so deleted
@@ -598,13 +605,13 @@ func recalculateAndRecordDecisionCounts(
 
 	counts := make(map[decisionMetricLabels]int)
 
-	for prefix, v := range store.All() {
+	for _, decision := range decisions {
 		origin := "unknown"
-		if v != nil && v.Origin != nil && strings.TrimSpace(*v.Origin) != "" {
-			origin = strings.TrimSpace(*v.Origin)
+		if value := strings.TrimSpace(decision.Origin); value != "" {
+			origin = value
 		}
 		version := ipv4
-		if prefix.Addr().Is6() {
+		if decision.IPv6 {
 			version = ipv6
 		}
 		labels := decisionMetricLabels{origin: origin, ipType: version}

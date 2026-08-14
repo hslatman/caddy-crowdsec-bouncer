@@ -15,11 +15,8 @@
 package metrics
 
 import (
-	"net/netip"
 	"testing"
 
-	"github.com/crowdsecurity/crowdsec/pkg/models"
-	"github.com/hslatman/ipstore"
 	"github.com/prometheus/client_golang/prometheus"
 	model "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
@@ -27,43 +24,64 @@ import (
 )
 
 func TestRecalculateAndRecordDecisionCounts(t *testing.T) {
-	store := ipstore.New[*models.Decision]()
 	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_active_decisions"}, []string{
 		labelOrigin, labelIPType,
 	})
 
-	require.NoError(t, store.Add(netip.MustParseAddr("192.0.2.1"), metricDecision("cscli", "ban")))
-	require.NoError(t, store.Add(netip.MustParseAddr("192.0.2.2"), metricDecision("cscli", "captcha")))
-	require.NoError(t, store.Add(netip.MustParseAddr("2001:db8::1"), metricDecision("CAPI", "CAPTCHA")))
-
-	recalculateAndRecordDecisionCounts(store, gauge)
+	recalculateAndRecordDecisionCounts([]ActiveDecision{
+		{Origin: "cscli"},
+		{Origin: "cscli"},
+		{Origin: "CAPI", IPv6: true},
+	}, gauge)
 
 	assert.Equal(t, float64(2), gaugeValue(t, gauge.WithLabelValues("cscli", "ipv4")))
 	assert.Equal(t, float64(1), gaugeValue(t, gauge.WithLabelValues("CAPI", "ipv6")))
 	assert.Equal(t, float64(0), gaugeValue(t, gauge.WithLabelValues("appsec", "ipv4")))
 
-	_, err := store.Remove(netip.MustParseAddr("192.0.2.2"))
-	require.NoError(t, err)
-	recalculateAndRecordDecisionCounts(store, gauge)
+	recalculateAndRecordDecisionCounts([]ActiveDecision{{Origin: "cscli"}}, gauge)
 
 	assert.Equal(t, float64(1), gaugeValue(t, gauge.WithLabelValues("cscli", "ipv4")))
+	assert.Equal(t, float64(0), gaugeValue(t, gauge.WithLabelValues("CAPI", "ipv6")))
 }
 
 func TestRecalculateAndRecordDecisionCountsHandlesMissingMetadata(t *testing.T) {
-	store := ipstore.New[*models.Decision]()
 	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_active_decisions_missing_metadata"}, []string{
 		labelOrigin, labelIPType,
 	})
-	require.NoError(t, store.Add(netip.MustParseAddr("192.0.2.1"), &models.Decision{}))
 
 	assert.NotPanics(t, func() {
-		recalculateAndRecordDecisionCounts(store, gauge)
+		recalculateAndRecordDecisionCounts([]ActiveDecision{{}}, gauge)
 	})
 	assert.Equal(t, float64(1), gaugeValue(t, gauge.WithLabelValues("unknown", "ipv4")))
 }
 
-func metricDecision(origin, remediation string) *models.Decision {
-	return &models.Decision{Origin: &origin, Type: &remediation}
+func TestRecalculateAndRecordDecisionCountsRemovesStaleCustomOrigin(t *testing.T) {
+	gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_active_decisions_custom_origin"}, []string{
+		labelOrigin, labelIPType,
+	})
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(gauge)
+
+	recalculateAndRecordDecisionCounts([]ActiveDecision{{Origin: "custom"}}, gauge)
+	assert.True(t, hasGaugeSeries(t, registry, "custom", "ipv4"))
+
+	recalculateAndRecordDecisionCounts(nil, gauge)
+	assert.False(t, hasGaugeSeries(t, registry, "custom", "ipv4"))
+}
+
+func hasGaugeSeries(t *testing.T, registry *prometheus.Registry, origin, ipType string) bool {
+	t.Helper()
+	metricFamilies, err := registry.Gather()
+	require.NoError(t, err)
+	for _, family := range metricFamilies {
+		for _, metric := range family.GetMetric() {
+			if getLabelValue(metric.GetLabel(), labelOrigin) == origin &&
+				getLabelValue(metric.GetLabel(), labelIPType) == ipType {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func gaugeValue(t *testing.T, gauge prometheus.Gauge) float64 {

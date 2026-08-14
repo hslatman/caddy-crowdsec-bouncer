@@ -24,6 +24,8 @@ import (
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/hslatman/ipstore"
+
+	"github.com/hslatman/caddy-crowdsec-bouncer/internal/metrics"
 )
 
 const (
@@ -297,48 +299,29 @@ func (s *decisionStore) Len() int {
 	return s.count
 }
 
-// metricsStore adapts the multi-value store to the metrics provider's current
-// single-value ipstore API. Synthetic keys are safe here: that provider only
-// inspects the address family and decision origin.
-func (s *store) metricsStore() *ipstore.Store[*models.Decision] {
-	return s.store.metricsStore()
+// activeDecisionSnapshot copies only the labels required by the metrics
+// provider. Expiration maintenance runs in the same stream batch before this
+// snapshot; the active check also prevents clock movement between those
+// operations from inflating the gauge.
+func (s *store) activeDecisionSnapshot() []metrics.ActiveDecision {
+	return s.store.activeDecisionSnapshot()
 }
 
-func (s *decisionStore) metricsStore() *ipstore.Store[*models.Decision] {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, _ = s.pruneExpiredLocked(s.now())
+func (s *decisionStore) activeDecisionSnapshot() []metrics.ActiveDecision {
+	now := s.now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	result := ipstore.New[*models.Decision]()
-	var ipv4Index uint32
-	var ipv6Index uint64
-
+	result := make([]metrics.ActiveDecision, 0, s.count)
 	for prefix, bucket := range s.buckets {
 		for _, stored := range bucket.decisions {
-			metricDecision := decisionForMetrics(stored.decision)
-			if prefix.Addr().Is4() {
-				addr := netip.AddrFrom4([4]byte{
-					byte(ipv4Index >> 24),
-					byte(ipv4Index >> 16),
-					byte(ipv4Index >> 8),
-					byte(ipv4Index),
-				})
-				_ = result.Add(addr, metricDecision)
-				ipv4Index++
+			if !stored.expires.IsZero() && !stored.expires.After(now) {
 				continue
 			}
-
-			var raw [16]byte
-			raw[8] = byte(ipv6Index >> 56)
-			raw[9] = byte(ipv6Index >> 48)
-			raw[10] = byte(ipv6Index >> 40)
-			raw[11] = byte(ipv6Index >> 32)
-			raw[12] = byte(ipv6Index >> 24)
-			raw[13] = byte(ipv6Index >> 16)
-			raw[14] = byte(ipv6Index >> 8)
-			raw[15] = byte(ipv6Index)
-			_ = result.Add(netip.AddrFrom16(raw), metricDecision)
-			ipv6Index++
+			result = append(result, metrics.ActiveDecision{
+				Origin: stringValue(stored.decision.Origin),
+				IPv6:   prefix.Addr().Is6(),
+			})
 		}
 	}
 
@@ -682,16 +665,4 @@ func stringValue(value *string) string {
 	}
 
 	return *value
-}
-
-func decisionForMetrics(decision *models.Decision) *models.Decision {
-	if nonEmpty(decision.Origin) {
-		return decision
-	}
-
-	clone := *decision
-	origin := "unknown"
-	clone.Origin = &origin
-
-	return &clone
 }

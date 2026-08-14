@@ -83,7 +83,7 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 				}
 
 				if mustRecalculateDecisionCounts && b.metricsProvider.UsageMetricsEnabled() {
-					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.metricsStore())
+					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.activeDecisionSnapshot())
 				}
 
 				// send the (initial) metrics (once)

@@ -199,13 +199,13 @@ func TestStoreKeepsOverlappingPrefixBucketsIndependent(t *testing.T) {
 	rangePrefix := netip.MustParsePrefix("192.0.2.0/24")
 	ipPrefix := netip.MustParsePrefix("192.0.2.10/32")
 	require.NotSame(t, s.store.buckets[rangePrefix], s.store.buckets[ipPrefix])
-	require.Equal(t, 2, s.metricsStore().Len(), "metrics must not duplicate decisions across overlapping prefixes")
+	require.Len(t, s.activeDecisionSnapshot(), 2, "metrics must not duplicate decisions across overlapping prefixes")
 
 	require.NoError(t, s.delete(rangeDecision))
 	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
 	requireDecisionIdentity(t, ipDecision, selected)
-	require.Equal(t, 1, s.metricsStore().Len())
+	require.Len(t, s.activeDecisionSnapshot(), 1)
 }
 
 func TestStoreDeleteUsesDecisionID(t *testing.T) {
@@ -298,11 +298,9 @@ func TestStoreDeleteWithoutID(t *testing.T) {
 		require.NoError(t, s.add(first))
 		require.NoError(t, s.add(second))
 		require.Equal(t, 1, s.store.Len())
-		metricsStore := s.metricsStore()
-		require.Equal(t, 1, metricsStore.Len(), "metrics must count the effective group, not every historical member")
-		for _, metricDecision := range metricsStore.All() {
-			require.Equal(t, "CAPI", stringValue(metricDecision.Origin))
-		}
+		snapshot := s.activeDecisionSnapshot()
+		require.Len(t, snapshot, 1, "metrics must count the effective group, not every historical member")
+		require.Equal(t, "CAPI", snapshot[0].Origin)
 
 		tombstone := testDecision(0, "Ip", "192.0.2.10", "ban")
 		require.NoError(t, s.delete(tombstone))
@@ -592,12 +590,10 @@ func TestStoreAcceptsOptionalDecisionMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, decision, selected)
 
-	metricsStore := s.metricsStore()
-	for _, metricDecision := range metricsStore.All() {
-		require.NotNil(t, metricDecision.Origin)
-		require.Equal(t, "unknown", *metricDecision.Origin)
-		require.Nil(t, decision.Origin, "metrics adaptation must not mutate the stored decision")
-	}
+	snapshot := s.activeDecisionSnapshot()
+	require.Len(t, snapshot, 1)
+	require.Empty(t, snapshot[0].Origin)
+	require.Nil(t, decision.Origin, "metrics snapshot must not mutate the stored decision")
 }
 
 func TestSelectDecisionMalformedEntryCannotHideValidBan(t *testing.T) {
@@ -613,25 +609,43 @@ func TestSelectDecisionMalformedEntryCannotHideValidBan(t *testing.T) {
 	require.Error(t, err, "an entirely malformed response must not become an allow")
 }
 
-func TestMetricsStoreIncludesEveryDecisionAndAddressFamily(t *testing.T) {
+func TestActiveDecisionSnapshotIncludesEveryDecisionAndAddressFamily(t *testing.T) {
 	s := newStore()
 	require.NoError(t, s.add(testDecision(1, "Ip", "192.0.2.10", "ban")))
 	require.NoError(t, s.add(testDecision(2, "Ip", "192.0.2.10", "captcha")))
 	require.NoError(t, s.add(testDecision(3, "Range", "2001:db8::/32", "ban")))
 
-	metricsStore := s.metricsStore()
-	require.Equal(t, 3, metricsStore.Len())
+	snapshot := s.activeDecisionSnapshot()
+	require.Len(t, snapshot, 3)
 
 	var ipv4, ipv6 int
-	for prefix := range metricsStore.All() {
-		if prefix.Addr().Is4() {
-			ipv4++
-		} else {
+	for _, decision := range snapshot {
+		if decision.IPv6 {
 			ipv6++
+		} else {
+			ipv4++
 		}
 	}
 	require.Equal(t, 2, ipv4)
 	require.Equal(t, 1, ipv6)
+}
+
+func TestActiveDecisionSnapshotExcludesExpiredBeforePruning(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	s := newStoreWithClock(func() time.Time { return now })
+	decision := testDecision(1, "Ip", "192.0.2.10", "captcha")
+	*decision.Duration = "0s"
+	require.NoError(t, s.add(decision))
+	require.Len(t, s.activeDecisionSnapshot(), 1)
+
+	now = now.Add(lapiDurationRoundingTolerance)
+	require.Empty(t, s.activeDecisionSnapshot(), "expired decisions must not inflate metrics")
+	require.Equal(t, 1, s.store.count, "taking a read snapshot must not mutate the lookup store")
+
+	pruned, err := s.pruneExpired()
+	require.NoError(t, err)
+	require.Equal(t, 1, pruned)
+	require.Zero(t, s.store.count, "stream maintenance must still reclaim expired decisions")
 }
 
 func TestStoreConcurrentAddLookupAndDelete(t *testing.T) {
