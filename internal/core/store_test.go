@@ -450,7 +450,7 @@ func TestStoreKeepsExactLAPIGroupKeysIndependent(t *testing.T) {
 	require.Equal(t, 5, s.store.Len())
 }
 
-func TestStoreLookupIgnoresExpiredDecisionsWithoutGlobalMaintenance(t *testing.T) {
+func TestStoreDoesNotExpireRoundedDurationEarly(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	s := newStoreWithClock(func() time.Time { return now })
 	expiredMatch := testDecision(1, "Ip", "192.0.2.10", "captcha")
@@ -465,14 +465,43 @@ func TestStoreLookupIgnoresExpiredDecisionsWithoutGlobalMaintenance(t *testing.T
 	require.NoError(t, s.add(expiredUnrelated))
 	require.Equal(t, 3, s.store.Len())
 
-	now = now.Add(time.Second)
+	now = now.Add(time.Second + lapiDurationRoundingTolerance - time.Nanosecond)
 	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
+	requireDecisionIdentity(t, expiredMatch, selected, "rounded duration must remain fail-closed through its uncertainty window")
+	require.Equal(t, 3, s.store.count, "request lookup must not scan and mutate the whole store")
+
+	now = now.Add(time.Nanosecond)
+	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
 	requireDecisionIdentity(t, activeMatch, selected, "an expired higher-priority action must not be enforced")
 	require.Equal(t, 3, s.store.count, "request lookup must not scan and mutate the whole store")
 
 	require.Equal(t, 1, s.store.Len(), "maintenance paths should physically remove expired decisions")
-	require.Equal(t, 1, s.metricsStore().Len())
+}
+
+func TestStoreZeroRoundedDurationExpiresAfterTolerance(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	s := newStoreWithClock(func() time.Time { return now })
+	decision := testDecision(1, "Ip", "192.0.2.10", "captcha")
+	*decision.Duration = "0s"
+	require.NoError(t, s.add(decision))
+
+	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
+	requireDecisionIdentity(t, decision, selected)
+	require.Equal(t, "0s", stringValue(selected.Duration))
+
+	now = now.Add(lapiDurationRoundingTolerance - time.Nanosecond)
+	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
+	requireDecisionIdentity(t, decision, selected)
+
+	now = now.Add(time.Nanosecond)
+	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
+	require.Nil(t, selected)
+	require.Zero(t, s.store.Len(), "a valid zero duration must never become an unbounded local decision")
 }
 
 func TestStoreReturnsRemainingDurationWithoutMutatingStreamDecision(t *testing.T) {
@@ -492,9 +521,14 @@ func TestStoreReturnsRemainingDurationWithoutMutatingStreamDecision(t *testing.T
 	now = now.Add(90 * time.Second)
 	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
+	requireDecisionIdentity(t, decision, selected, "the rounded duration remains active through the fail-closed tolerance")
+	require.Equal(t, "0s", stringValue(selected.Duration))
+
+	now = now.Add(lapiDurationRoundingTolerance)
+	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
 	require.Nil(t, selected)
 	require.Zero(t, s.store.Len())
-	require.Zero(t, s.metricsStore().Len())
 }
 
 func TestStoreKeepsMalformedDurationFailClosedUntilTombstone(t *testing.T) {
@@ -503,6 +537,8 @@ func TestStoreKeepsMalformedDurationFailClosedUntilTombstone(t *testing.T) {
 	decision := testDecision(1, "Ip", "192.0.2.10", "ban")
 	*decision.Duration = "invalid"
 	require.NoError(t, s.add(decision))
+	stored := s.store.buckets[netip.MustParsePrefix("192.0.2.10/32")].decisions[keyForDecision(decision)]
+	require.True(t, stored.expires.IsZero(), "malformed duration must remain distinct from a valid zero duration")
 
 	now = now.Add(24 * time.Hour)
 	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))

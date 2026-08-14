@@ -26,6 +26,14 @@ import (
 	"github.com/hslatman/ipstore"
 )
 
+const (
+	// LAPI serializes a decision's remaining lifetime after rounding it to the
+	// nearest second. Half of that unit is therefore the largest possible
+	// round-down error that the local store must cover.
+	lapiDurationRoundingUnit      = time.Second
+	lapiDurationRoundingTolerance = lapiDurationRoundingUnit / 2
+)
+
 // store retains the historical store.store access used by Core while allowing
 // more than one decision to exist at an exact IP or prefix.
 type store struct {
@@ -372,12 +380,16 @@ func decisionExpiration(decision *models.Decision, receivedAt time.Time) time.Ti
 		return time.Time{}
 	}
 	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
-	if err != nil || duration <= 0 {
+	if err != nil || duration < 0 {
 		// Malformed metadata must not silently turn a blocking decision into an
 		// allow. Keep it until LAPI sends a tombstone instead.
 		return time.Time{}
 	}
-	return receivedAt.Add(duration)
+
+	// LAPI uses Round(time.Second), so a still-active decision can legitimately
+	// arrive as "0s", and any non-negative duration can have been rounded down
+	// by almost half a second. Keep enforcing through that uncertainty window.
+	return receivedAt.Add(duration).Add(lapiDurationRoundingTolerance)
 }
 
 // selectDecision is shared by streaming and live lookups. Higher remediation
@@ -537,7 +549,13 @@ func decisionAt(candidate *decisionCandidate, now time.Time) *models.Decision {
 	}
 
 	clone := *candidate.decision
-	remaining := candidate.expires.Sub(now).Round(time.Second).String()
+	// expires includes the fail-closed uncertainty window. Do not expose that
+	// implementation detail as extra LAPI lifetime to callers.
+	remainingDuration := candidate.expires.Add(-lapiDurationRoundingTolerance).Sub(now)
+	if remainingDuration < 0 {
+		remainingDuration = 0
+	}
+	remaining := remainingDuration.Round(lapiDurationRoundingUnit).String()
 	clone.Duration = &remaining
 
 	return &clone
@@ -548,7 +566,7 @@ func parsedDecisionDuration(decision *models.Decision) (time.Duration, bool) {
 		return 0, false
 	}
 	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
-	return duration, err == nil && duration > 0
+	return duration, err == nil && duration >= 0
 }
 
 func remediationPriority(typ string) int {
