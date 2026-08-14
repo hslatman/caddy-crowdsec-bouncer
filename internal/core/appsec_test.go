@@ -170,3 +170,54 @@ func Test_appsec_checkRequest(t *testing.T) {
 		})
 	}
 }
+
+// Test_appsec_checkRequest_stripsHopByHopHeaders is the regression guard for
+// 9e35b21: connection-specific headers must not be forwarded to the AppSec
+// component.
+//
+// This is asserted here rather than end to end because the symptom only appears
+// when the AppSec endpoint speaks HTTP/2, which rejects such headers outright.
+// A test container is reached over plain HTTP/1.1, where forwarding them is
+// harmless, so an end-to-end test passes with or without the fix. Inspecting the
+// forwarded headers directly makes the check independent of the transport.
+func Test_appsec_checkRequest_stripsHopByHopHeaders(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	ctx := newCaddyVarsContext(t.Context())
+	caddyhttp.SetVar(ctx, caddyhttp.ClientIPVarKey, "10.0.0.10")
+	ctx, _ = httputils.EnsureIP(ctx)
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/path", http.NoBody)
+	r.Header.Set("User-Agent", "test-appsec")
+
+	// a WebSocket handshake, plus a token named by Connection that is itself
+	// hop-by-hop by virtue of being listed there
+	r.Header.Set("Connection", "Upgrade, X-Custom-Hop")
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Keep-Alive", "timeout=5")
+	r.Header.Set("Proxy-Connection", "keep-alive")
+	r.Header.Set("X-Custom-Hop", "should-be-dropped")
+
+	// an ordinary header, which must still be forwarded
+	r.Header.Set("X-Keep-Me", "kept")
+
+	var received http.Header
+	h := http.NewServeMux()
+	h.HandleFunc("/", func(_ http.ResponseWriter, req *http.Request) {
+		received = req.Header.Clone()
+	})
+
+	s := httptest.NewServer(h)
+	t.Cleanup(s.Close)
+
+	a := newAppSec(s.URL, "test-apikey", 0, 2*time.Second, false, logger, &metrics.Provider{})
+	require.NoError(t, a.checkRequest(ctx, r))
+	require.NotNil(t, received, "the appsec component was never called")
+
+	for _, header := range []string{"Upgrade", "Keep-Alive", "Proxy-Connection", "X-Custom-Hop"} {
+		assert.Emptyf(t, received.Get(header), "%s must not be forwarded to the appsec component", header)
+	}
+
+	assert.Equal(t, "kept", received.Get("X-Keep-Me"), "ordinary headers must still be forwarded")
+	assert.Equal(t, "test-appsec", received.Get("X-Crowdsec-Appsec-User-Agent"))
+}
