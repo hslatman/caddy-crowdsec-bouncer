@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -239,6 +240,7 @@ type Provider struct {
 	totalAppSecCallsCounter           *prometheus.CounterVec
 	totalAppSecErrorsCounter          *prometheus.CounterVec
 	activeDecisionsGauge              *prometheus.GaugeVec
+	activeDecisionsMu                 sync.Mutex
 	blockedRequestsCounter            *prometheus.CounterVec
 	processedRequestsCounter          *prometheus.CounterVec
 	processedRequestsPerModuleCounter *prometheus.CounterVec
@@ -460,6 +462,11 @@ func (p *Provider) metricsEnabled() bool {
 	return p.interval > 0
 }
 
+// UsageMetricsEnabled reports whether CrowdSec usage metrics are configured.
+func (p *Provider) UsageMetricsEnabled() bool {
+	return p.metricsEnabled()
+}
+
 func (p *Provider) IncrementTotalBouncerCalls(mode string) {
 	if !p.caddyMetricsEnabled() {
 		return
@@ -547,6 +554,8 @@ func (p *Provider) RecalculateAndRecordDecisionCounts(s *ipstore.Store[*models.D
 		return
 	}
 
+	p.activeDecisionsMu.Lock()
+	defer p.activeDecisionsMu.Unlock()
 	recalculateAndRecordDecisionCounts(s, p.activeDecisionsGauge)
 }
 
@@ -557,39 +566,54 @@ const (
 	ipv6 ipType = "ipv6"
 )
 
-func recalculateAndRecordDecisionCounts(store *ipstore.Store[*models.Decision], gauge *prometheus.GaugeVec) {
-	// initialize map, so that these origins are always
-	// known and recorded
-	counts := map[string]map[ipType]int{
-		"CAPI":             {ipv4: 0, ipv6: 0},
-		"crowdsec":         {ipv4: 0, ipv6: 0},
-		"cscli":            {ipv4: 0, ipv6: 0},
-		"cscli-import":     {ipv4: 0, ipv6: 0},
-		"console":          {ipv4: 0, ipv6: 0},
-		"appsec":           {ipv4: 0, ipv6: 0},
-		"remediation_sync": {ipv4: 0, ipv6: 0},
+type decisionMetricLabels struct {
+	origin string
+	ipType ipType
+}
+
+func defaultActiveDecisionLabels() []decisionMetricLabels {
+	labels := make([]decisionMetricLabels, 0, 14)
+	for _, origin := range []string{"CAPI", "crowdsec", "cscli", "cscli-import", "console", "appsec", "remediation_sync"} {
+		labels = append(labels,
+			decisionMetricLabels{origin: origin, ipType: ipv4},
+			decisionMetricLabels{origin: origin, ipType: ipv6},
+		)
 	}
+	return labels
+}
+
+func recalculateAndRecordDecisionCounts(
+	store *ipstore.Store[*models.Decision],
+	gauge *prometheus.GaugeVec,
+) {
+	// GaugeVec retains every label tuple it has seen. Reset first so deleted
+	// decisions and attacker-controlled metadata cannot grow the exported
+	// series set indefinitely.
+	gauge.Reset()
+	for _, labels := range defaultActiveDecisionLabels() {
+		gauge.With(prometheus.Labels{
+			labelOrigin: labels.origin, labelIPType: string(labels.ipType),
+		}).Set(0)
+	}
+
+	counts := make(map[decisionMetricLabels]int)
 
 	for prefix, v := range store.All() {
-		origin := *v.Origin
-		isIPv6 := prefix.Bits() > 32
-		n, ok := counts[origin]
-		if !ok {
-			n = map[ipType]int{ipv4: 0, ipv6: 0}
-			counts[origin] = n
+		origin := "unknown"
+		if v != nil && v.Origin != nil && strings.TrimSpace(*v.Origin) != "" {
+			origin = strings.TrimSpace(*v.Origin)
 		}
-
-		if isIPv6 {
-			n[ipv6] += 1
-		} else {
-			n[ipv4] += 1
+		version := ipv4
+		if prefix.Addr().Is6() {
+			version = ipv6
 		}
+		labels := decisionMetricLabels{origin: origin, ipType: version}
+		counts[labels]++
 	}
 
-	// update the count of active decisions per origin and IP type
-	for origin, tuple := range counts {
-		for ipType, count := range tuple {
-			gauge.With(prometheus.Labels{labelOrigin: origin, labelIPType: string(ipType)}).Set(float64(count))
-		}
+	for labels, count := range counts {
+		gauge.With(prometheus.Labels{
+			labelOrigin: labels.origin, labelIPType: string(labels.ipType),
+		}).Set(float64(count))
 	}
 }

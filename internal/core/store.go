@@ -15,137 +15,587 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/hslatman/ipstore"
 )
 
+// store retains the historical store.store access used by Core while allowing
+// more than one decision to exist at an exact IP or prefix.
 type store struct {
-	store *ipstore.Store[*models.Decision]
+	store *decisionStore
+}
+
+type decisionStore struct {
+	mu       sync.RWMutex
+	prefixes *ipstore.Store[*decisionBucket]
+	buckets  map[netip.Prefix]*decisionBucket
+	byID     map[int64]decisionLocation
+	count    int
+	now      func() time.Time
+}
+
+type decisionBucket struct {
+	decisions map[decisionKey]*storedDecision
+}
+
+// decisionKey mirrors the semantic key used by LAPI's default decision stream.
+// LAPI emits only the longest-lived decision for an exact scope/type/value
+// tuple, so additions replace that tuple and tombstones remove it regardless
+// of which effective decision ID was most recently observed.
+type decisionKey struct {
+	scope string
+	typ   string
+	value string
+}
+
+type decisionLocation struct {
+	prefix netip.Prefix
+	key    decisionKey
+}
+
+type storedDecision struct {
+	decision *models.Decision
+	expires  time.Time
+}
+
+type decisionCandidate struct {
+	decision *models.Decision
+	prefix   netip.Prefix
 }
 
 func newStore() *store {
+	return newStoreWithClock(time.Now)
+}
+
+func newStoreWithClock(now func() time.Time) *store {
+	if now == nil {
+		now = time.Now
+	}
+
 	return &store{
-		store: ipstore.New[*models.Decision](),
+		store: &decisionStore{
+			prefixes: ipstore.New[*decisionBucket](),
+			buckets:  make(map[netip.Prefix]*decisionBucket),
+			byID:     make(map[int64]decisionLocation),
+			now:      now,
+		},
 	}
 }
 
 func (s *store) add(decision *models.Decision) error {
-	if isInvalid(decision) {
-		return nil
+	if err := validateStoredDecision(decision); err != nil {
+		return err
 	}
 
-	scope := *decision.Scope
-	value := *decision.Value
-
-	switch scope {
-	case "Ip":
-		ip, err := parseIP(value)
-		if err != nil {
-			return err
-		}
-		return s.store.Add(ip, decision)
-	case "Range":
-		prf, err := netip.ParsePrefix(value)
-		if err != nil {
-			return err
-		}
-		return s.store.AddCIDR(prf, decision)
-	default:
-		return fmt.Errorf("got unhandled scope: %s", scope)
+	prefix, err := decisionPrefix(decision)
+	if err != nil {
+		return err
 	}
+
+	return s.store.add(prefix, decision)
+}
+
+func (s *decisionStore) add(prefix netip.Prefix, decision *models.Decision) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := keyForDecision(decision)
+	location := decisionLocation{prefix: prefix, key: key}
+
+	// A repeated ID is an update. Remove its previous representation first,
+	// including when the decision moved to a different target.
+	if decision.ID != 0 {
+		if oldLocation, ok := s.byID[decision.ID]; ok && oldLocation != location {
+			if err := s.removeByKeyLocked(oldLocation.prefix, oldLocation.key); err != nil {
+				return err
+			}
+		}
+	}
+
+	bucket, ok := s.buckets[prefix]
+	if !ok {
+		bucket = &decisionBucket{
+			decisions: make(map[decisionKey]*storedDecision),
+		}
+		if err := s.prefixes.AddCIDR(prefix, bucket); err != nil {
+			return err
+		}
+		s.buckets[prefix] = bucket
+	}
+
+	if previous, exists := bucket.decisions[key]; exists {
+		if previous.decision.ID != 0 {
+			delete(s.byID, previous.decision.ID)
+		}
+	} else {
+		s.count++
+	}
+	bucket.decisions[key] = &storedDecision{
+		decision: decision,
+		expires:  decisionExpiration(decision, s.now()),
+	}
+
+	if decision.ID != 0 {
+		s.byID[decision.ID] = location
+	}
+
+	return nil
 }
 
 func (s *store) delete(decision *models.Decision) error {
-	if isInvalid(decision) {
+	if decision == nil {
+		return errors.New("decision is nil")
+	}
+	if decision.ID < 0 {
+		return fmt.Errorf("decision ID must not be negative: %d", decision.ID)
+	}
+
+	// Stream tombstones carry the semantic target. Remove that effective key,
+	// even when its ID differs from the last addition: default LAPI streaming
+	// suppresses tombstones while another member of the tuple remains active.
+	if nonEmpty(decision.Scope) || nonEmpty(decision.Value) || nonEmpty(decision.Type) {
+		if err := validateStoredDecision(decision); err != nil {
+			return err
+		}
+		prefix, err := decisionPrefix(decision)
+		if err != nil {
+			return err
+		}
+		return s.store.deleteByKey(prefix, keyForDecision(decision))
+	}
+
+	if decision.ID != 0 {
+		return s.store.deleteByID(decision.ID)
+	}
+
+	return errors.New("decision deletion requires an ID or semantic target")
+}
+
+func (s *decisionStore) deleteByID(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	location, ok := s.byID[id]
+	if !ok {
 		return nil
 	}
 
-	scope := *decision.Scope
-	value := *decision.Value
+	return s.removeByKeyLocked(location.prefix, location.key)
+}
 
-	switch scope {
-	case "Ip":
-		ip, err := parseIP(value)
-		if err != nil {
-			return err
-		}
-		_, err = s.store.Remove(ip)
-		return err
-	case "Range":
-		prf, err := netip.ParsePrefix(value)
-		if err != nil {
-			return err
-		}
-		_, err = s.store.RemoveCIDR(prf)
-		return err
-	default:
-		return fmt.Errorf("got unhandled scope: %s", scope)
+func (s *decisionStore) deleteByKey(prefix netip.Prefix, key decisionKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.removeByKeyLocked(prefix, key)
+}
+
+func (s *decisionStore) removeByKeyLocked(prefix netip.Prefix, key decisionKey) error {
+	bucket, ok := s.buckets[prefix]
+	if !ok {
+		return nil
 	}
+
+	stored, ok := bucket.decisions[key]
+	if !ok {
+		return nil
+	}
+
+	delete(bucket.decisions, key)
+	if stored.decision.ID != 0 {
+		delete(s.byID, stored.decision.ID)
+	}
+	s.count--
+
+	if len(bucket.decisions) == 0 {
+		_, err := s.prefixes.RemoveCIDR(prefix)
+		if err == nil {
+			delete(s.buckets, prefix)
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (s *store) get(key netip.Addr) (*models.Decision, error) {
-	r, err := s.store.Get(key)
+	if !key.IsValid() {
+		return nil, errors.New("lookup address is invalid")
+	}
+
+	decisions, err := s.store.get(key)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(r) == 0 {
-		return nil, nil
-	}
-
-	// currently we return the first match, but the IP can exist in multiple
-	// networks (CIDR ranges) and there may thus be multiple Decisions to act
-	// upon. In general, though, the existence of at least a single Decision
-	// means that the IP should not be allowed, so it's relatively safe to use
-	// the first, but there may be 'softer' Decisions that should actually take
-	// precedence.
-
-	return r[0], err
+	return selectDecision(key, decisions)
 }
 
-// parseIP parses a value
-func parseIP(value string) (netip.Addr, error) {
-	var err error
-	var ip netip.Addr
-	ip, err = netip.ParseAddr(value)
-	if err != nil || !ip.IsValid() {
-		// try parsing as CIDR instead as fallback
-		prf, err := netip.ParsePrefix(value)
-		if err != nil {
-			return netip.Addr{}, err
+func (s *decisionStore) get(key netip.Addr) ([]*models.Decision, error) {
+	// Request lookups must not run global expiration maintenance: production
+	// stores commonly contain tens of thousands of decisions. Expired matches
+	// are filtered below, while stream, count, and metrics paths reclaim them.
+	now := s.now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	buckets, err := s.prefixes.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	decisions := make([]*models.Decision, 0, len(buckets))
+	for _, bucket := range buckets {
+		decisions = bucket.appendActive(decisions, now)
+	}
+
+	return decisions, nil
+}
+
+func (b *decisionBucket) appendActive(decisions []*models.Decision, now time.Time) []*models.Decision {
+	for _, stored := range b.decisions {
+		if !stored.expires.IsZero() && !stored.expires.After(now) {
+			continue
 		}
-		// expect all bits to be ones for an IP; otherwise this is probably a range
-		ones, bits := prf.Bits(), prf.Addr().BitLen()
-		if ones != bits {
+		decisions = append(decisions, stored.decision)
+	}
+
+	return decisions
+}
+
+// Len reports decisions, not occupied prefixes. This keeps
+// Core.NumberOfActiveDecisions meaningful when multiple decisions share a
+// target.
+func (s *decisionStore) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.pruneExpiredLocked(s.now())
+
+	return s.count
+}
+
+// metricsStore adapts the multi-value store to the metrics provider's current
+// single-value ipstore API. Synthetic keys are safe here: that provider only
+// inspects the address family and decision origin.
+func (s *store) metricsStore() *ipstore.Store[*models.Decision] {
+	return s.store.metricsStore()
+}
+
+func (s *decisionStore) metricsStore() *ipstore.Store[*models.Decision] {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = s.pruneExpiredLocked(s.now())
+
+	result := ipstore.New[*models.Decision]()
+	var ipv4Index uint32
+	var ipv6Index uint64
+
+	for prefix, bucket := range s.buckets {
+		for _, stored := range bucket.decisions {
+			metricDecision := decisionForMetrics(stored.decision)
+			if prefix.Addr().Is4() {
+				addr := netip.AddrFrom4([4]byte{
+					byte(ipv4Index >> 24),
+					byte(ipv4Index >> 16),
+					byte(ipv4Index >> 8),
+					byte(ipv4Index),
+				})
+				_ = result.Add(addr, metricDecision)
+				ipv4Index++
+				continue
+			}
+
+			var raw [16]byte
+			raw[8] = byte(ipv6Index >> 56)
+			raw[9] = byte(ipv6Index >> 48)
+			raw[10] = byte(ipv6Index >> 40)
+			raw[11] = byte(ipv6Index >> 32)
+			raw[12] = byte(ipv6Index >> 24)
+			raw[13] = byte(ipv6Index >> 16)
+			raw[14] = byte(ipv6Index >> 8)
+			raw[15] = byte(ipv6Index)
+			_ = result.Add(netip.AddrFrom16(raw), metricDecision)
+			ipv6Index++
+		}
+	}
+
+	return result
+}
+
+func (s *store) pruneExpired() (int, error) {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	return s.store.pruneExpiredLocked(s.store.now())
+}
+
+func (s *decisionStore) pruneExpiredLocked(now time.Time) (int, error) {
+	type expiredDecision struct {
+		prefix netip.Prefix
+		key    decisionKey
+	}
+
+	expired := make([]expiredDecision, 0)
+	for prefix, bucket := range s.buckets {
+		for key, stored := range bucket.decisions {
+			if !stored.expires.IsZero() && !stored.expires.After(now) {
+				expired = append(expired, expiredDecision{prefix: prefix, key: key})
+			}
+		}
+	}
+
+	for _, item := range expired {
+		if err := s.removeByKeyLocked(item.prefix, item.key); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(expired), nil
+}
+
+func decisionExpiration(decision *models.Decision, receivedAt time.Time) time.Time {
+	if decision == nil || decision.Duration == nil {
+		return time.Time{}
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
+	if err != nil || duration <= 0 {
+		// Malformed metadata must not silently turn a blocking decision into an
+		// allow. Keep it until LAPI sends a tombstone instead.
+		return time.Time{}
+	}
+	return receivedAt.Add(duration)
+}
+
+// selectDecision is shared by streaming and live lookups. Higher remediation
+// priority wins before prefix specificity; remaining ties use stable decision
+// metadata so API and map iteration order cannot change the result.
+func selectDecision(ip netip.Addr, decisions []*models.Decision) (*models.Decision, error) {
+	if !ip.IsValid() {
+		return nil, errors.New("lookup address is invalid")
+	}
+
+	groups := make(map[decisionKey]*decisionCandidate)
+	var firstInvalid error
+	for i, decision := range decisions {
+		if err := validateStoredDecision(decision); err != nil {
+			if firstInvalid == nil {
+				firstInvalid = fmt.Errorf("invalid decision at index %d: %w", i, err)
+			}
+			continue
+		}
+
+		prefix, err := decisionPrefix(decision)
+		if err != nil {
+			if firstInvalid == nil {
+				firstInvalid = fmt.Errorf("invalid decision at index %d: %w", i, err)
+			}
+			continue
+		}
+		if !prefix.Contains(ip) {
+			continue
+		}
+
+		candidate := &decisionCandidate{decision: decision, prefix: prefix}
+		group := keyForDecision(decision)
+		if current := groups[group]; current == nil || groupCandidatePrecedes(candidate, current) {
+			groups[group] = candidate
+		}
+	}
+
+	var selected *decisionCandidate
+	for _, candidate := range groups {
+		if selected == nil || candidatePrecedes(candidate, selected) {
+			selected = candidate
+		}
+	}
+
+	if selected != nil && (firstInvalid == nil || remediationPriority(*selected.decision.Type) == 3) {
+		return selected.decision, nil
+	}
+	if firstInvalid != nil {
+		return nil, firstInvalid
+	}
+
+	return nil, nil
+}
+
+func candidatePrecedes(a, b *decisionCandidate) bool {
+	aPriority := remediationPriority(*a.decision.Type)
+	bPriority := remediationPriority(*b.decision.Type)
+	if aPriority != bPriority {
+		return aPriority > bPriority
+	}
+
+	if a.prefix.Bits() != b.prefix.Bits() {
+		return a.prefix.Bits() > b.prefix.Bits()
+	}
+
+	if aDuration, aOK := parsedDecisionDuration(a.decision); aOK {
+		if bDuration, bOK := parsedDecisionDuration(b.decision); !bOK || aDuration != bDuration {
+			return !bOK || aDuration > bDuration
+		}
+	} else if _, bOK := parsedDecisionDuration(b.decision); bOK {
+		return false
+	}
+
+	if a.decision.ID != b.decision.ID {
+		return a.decision.ID < b.decision.ID
+	}
+
+	return stableDecisionKey(a.decision) < stableDecisionKey(b.decision)
+}
+
+func groupCandidatePrecedes(a, b *decisionCandidate) bool {
+	aDuration, aOK := parsedDecisionDuration(a.decision)
+	bDuration, bOK := parsedDecisionDuration(b.decision)
+	if aOK != bOK {
+		return aOK
+	}
+	if aOK && aDuration != bDuration {
+		return aDuration > bDuration
+	}
+	if a.decision.ID != b.decision.ID {
+		return a.decision.ID < b.decision.ID
+	}
+	return stableDecisionKey(a.decision) < stableDecisionKey(b.decision)
+}
+
+func parsedDecisionDuration(decision *models.Decision) (time.Duration, bool) {
+	if decision == nil || decision.Duration == nil {
+		return 0, false
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
+	return duration, err == nil && duration > 0
+}
+
+func remediationPriority(typ string) int {
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "captcha":
+		return 2
+	case "throttle":
+		return 1
+	case "ban":
+		return 3
+	default:
+		// Existing response handling converts unknown actions to a ban. Keep
+		// the selector equally fail-closed.
+		return 3
+	}
+}
+
+func stableDecisionKey(decision *models.Decision) string {
+	return strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(stringValue(decision.Type))),
+		strings.ToLower(strings.TrimSpace(stringValue(decision.Scope))),
+		strings.TrimSpace(stringValue(decision.Value)),
+		strings.TrimSpace(stringValue(decision.Origin)),
+		strings.TrimSpace(stringValue(decision.Scenario)),
+		strings.TrimSpace(stringValue(decision.Duration)),
+		decision.UUID,
+	}, "\x00")
+}
+
+func keyForDecision(decision *models.Decision) decisionKey {
+	return decisionKey{
+		scope: *decision.Scope,
+		typ:   *decision.Type,
+		value: *decision.Value,
+	}
+}
+
+func decisionPrefix(decision *models.Decision) (netip.Prefix, error) {
+	scope := strings.ToLower(strings.TrimSpace(*decision.Scope))
+	value := strings.TrimSpace(*decision.Value)
+
+	switch scope {
+	case "ip":
+		ip, err := parseIP(value)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		return ip.Prefix(ip.BitLen())
+	case "range":
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		return prefix.Masked(), nil
+	default:
+		return netip.Prefix{}, fmt.Errorf("got unhandled scope: %s", *decision.Scope)
+	}
+}
+
+// parseIP parses a value and accepts host-length CIDR notation as a fallback.
+func parseIP(value string) (netip.Addr, error) {
+	ip, err := netip.ParseAddr(value)
+	if err != nil || !ip.IsValid() {
+		prefix, prefixErr := netip.ParsePrefix(value)
+		if prefixErr != nil {
+			return netip.Addr{}, prefixErr
+		}
+		// Expect all bits to be ones for an IP; otherwise this is a range.
+		if prefix.Bits() != prefix.Addr().BitLen() {
 			return netip.Addr{}, fmt.Errorf("%s seems to be a range instead of an IP", value)
 		}
-		ip = prf.Addr()
+		ip = prefix.Addr()
 	}
+
 	return ip, nil
 }
 
-// isInvalid determines if a *models.Decision struct is
-// valid, meaning that it's not pointing to nil and has a
-// Scope, Value and Type set, the minimum required to operate
-func isInvalid(d *models.Decision) bool {
-	if d == nil {
-		return true
+func validateStoredDecision(decision *models.Decision) error {
+	if err := validateDecisionTarget(decision); err != nil {
+		return err
+	}
+	if decision.ID < 0 {
+		return fmt.Errorf("decision ID must not be negative: %d", decision.ID)
+	}
+	if !nonEmpty(decision.Type) {
+		return errors.New("decision type is missing")
 	}
 
-	if d.Scope == nil {
-		return true
+	return nil
+}
+
+func validateDecisionTarget(decision *models.Decision) error {
+	if decision == nil {
+		return errors.New("decision is nil")
+	}
+	if !nonEmpty(decision.Scope) {
+		return errors.New("decision scope is missing")
+	}
+	if !nonEmpty(decision.Value) {
+		return errors.New("decision value is missing")
 	}
 
-	if d.Value == nil {
-		return true
+	return nil
+}
+
+func nonEmpty(value *string) bool {
+	return value != nil && strings.TrimSpace(*value) != ""
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
 	}
 
-	if d.Type == nil {
-		return true
+	return *value
+}
+
+func decisionForMetrics(decision *models.Decision) *models.Decision {
+	if nonEmpty(decision.Origin) {
+		return decision
 	}
 
-	return false
+	clone := *decision
+	origin := "unknown"
+	clone.Origin = &origin
+
+	return &clone
 }

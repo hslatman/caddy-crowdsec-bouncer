@@ -26,21 +26,32 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 			case <-ctx.Done():
 				b.logger.Info("processing new and deleted decisions stopped", b.zapField())
 				return
-			case decisions := <-b.streamingBouncer.Stream:
-				if decisions == nil { // TODO: remove this case when nil is never sent?
+			case decisions, ok := <-b.streamingBouncer.Stream:
+				if !ok {
+					b.logger.Info("decision stream closed", b.zapField())
+					return
+				}
+				if decisions == nil {
 					continue
 				}
-				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
-				// TODO: process in separate goroutines/waitgroup?
 				mustRecalculateDecisionCounts := false
+				if pruned, err := b.store.pruneExpired(); err != nil {
+					b.logger.Error("unable to prune expired decisions", b.zapField(), zap.Error(err))
+				} else if pruned > 0 {
+					mustRecalculateDecisionCounts = true
+				}
+
+				// Startup streams intentionally include old expired decisions as
+				// tombstones. Deletion is idempotent, so process them normally.
+				// TODO: process in separate goroutines/waitgroup?
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					for _, decision := range decisions.Deleted {
 						if err := b.delete(decision); err != nil {
-							b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", *decision.Value, err), b.zapField())
+							b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", decisionValue(decision), err), b.zapField())
 						} else {
 							if numberOfDeletedDecisions <= maxNumberOfDecisionsToLog {
-								b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", *decision.Value, *decision.Scope), b.zapField())
+								b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", decisionValue(decision), decisionScope(decision)), b.zapField())
 							}
 						}
 					}
@@ -57,10 +68,10 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 					b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions), b.zapField())
 					for _, decision := range decisions.New {
 						if err := b.add(decision); err != nil {
-							b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", *decision.Value, err), b.zapField())
+							b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", decisionValue(decision), err), b.zapField())
 						} else {
 							if numberOfNewDecisions <= maxNumberOfDecisionsToLog {
-								b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", *decision.Value, *decision.Scope, *decision.Duration), b.zapField())
+								b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", decisionValue(decision), decisionScope(decision), decisionDuration(decision)), b.zapField())
 							}
 						}
 					}
@@ -71,8 +82,8 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 					mustRecalculateDecisionCounts = true
 				}
 
-				if mustRecalculateDecisionCounts {
-					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.store)
+				if mustRecalculateDecisionCounts && b.metricsProvider.UsageMetricsEnabled() {
+					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.metricsStore())
 				}
 
 				// send the (initial) metrics (once)
@@ -123,9 +134,33 @@ func (b *Core) retrieveDecision(ctx context.Context, ip netip.Addr, forceLive bo
 		return nil, nil // when not failing hard, we return no error
 	}
 
-	if len(*decisions) >= 1 {
-		return (*decisions)[0], nil // TODO: decide if choosing the first decision is OK
+	if decisions == nil {
+		return nil, nil
 	}
 
-	return nil, nil
+	return selectDecision(ip, []*models.Decision(*decisions))
+}
+
+func decisionValue(decision *models.Decision) string {
+	if decision == nil || decision.Value == nil {
+		return ""
+	}
+
+	return *decision.Value
+}
+
+func decisionScope(decision *models.Decision) string {
+	if decision == nil || decision.Scope == nil {
+		return ""
+	}
+
+	return *decision.Scope
+}
+
+func decisionDuration(decision *models.Decision) string {
+	if decision == nil || decision.Duration == nil {
+		return ""
+	}
+
+	return *decision.Duration
 }
