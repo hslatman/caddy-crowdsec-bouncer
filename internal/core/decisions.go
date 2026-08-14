@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
@@ -64,21 +65,7 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 
 				// TODO: process in separate goroutines/waitgroup?
 				// TODO: emit a Caddy event at the end of processing (new) decisions?
-				if numberOfNewDecisions := len(decisions.New); numberOfNewDecisions > 0 {
-					b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions), b.zapField())
-					for _, decision := range decisions.New {
-						if err := b.add(decision); err != nil {
-							b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", decisionValue(decision), err), b.zapField())
-						} else {
-							if numberOfNewDecisions <= maxNumberOfDecisionsToLog {
-								b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", decisionValue(decision), decisionScope(decision), decisionDuration(decision)), b.zapField())
-							}
-						}
-					}
-					if numberOfNewDecisions > maxNumberOfDecisionsToLog {
-						b.logger.Debug(fmt.Sprintf("skipped logging for %d new decisions", numberOfNewDecisions), b.zapField())
-					}
-					b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions), b.zapField())
+				if b.processNewDecisions(decisions.New) {
 					mustRecalculateDecisionCounts = true
 				}
 
@@ -93,9 +80,31 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 	})
 }
 
-// add adds a Decision to the storage
-func (b *Core) add(decision *models.Decision) error {
+func (b *Core) processNewDecisions(decisions []*models.Decision) bool {
+	numberOfNewDecisions := len(decisions)
+	if numberOfNewDecisions == 0 {
+		return false
+	}
 
+	b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions), b.zapField())
+	receivedAt := b.store.now()
+	for _, decision := range decisions {
+		if err := b.add(decision, receivedAt); err != nil {
+			b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", decisionValue(decision), err), b.zapField())
+		} else if numberOfNewDecisions <= maxNumberOfDecisionsToLog {
+			b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", decisionValue(decision), decisionScope(decision), decisionDuration(decision)), b.zapField())
+		}
+	}
+	if numberOfNewDecisions > maxNumberOfDecisionsToLog {
+		b.logger.Debug(fmt.Sprintf("skipped logging for %d new decisions", numberOfNewDecisions), b.zapField())
+	}
+	b.logger.Debug(fmt.Sprintf("finished processing %d new decisions", numberOfNewDecisions), b.zapField())
+
+	return true
+}
+
+// add adds a Decision to the storage
+func (b *Core) add(decision *models.Decision, receivedAt time.Time) error {
 	// TODO: provide additional ways for storing the decisions
 	// (i.e. radix tree is not always the most efficient one, but it's great for matching IPs to ranges)
 	// Knowing that a key is a CIDR does allow to check an IP with the .Contains() function, but still
@@ -104,7 +113,7 @@ func (b *Core) add(decision *models.Decision) error {
 	// TODO: store additional data about the decision (i.e. time added to store, etc)
 	// TODO: wrap the *models.Decision in an internal model (after validation)?
 
-	return b.store.add(decision)
+	return b.store.addAt(decision, receivedAt)
 }
 
 // delete removes a Decision from the storage

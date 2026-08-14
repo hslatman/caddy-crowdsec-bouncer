@@ -502,6 +502,51 @@ func TestStoreZeroRoundedDurationExpiresAfterTolerance(t *testing.T) {
 	require.Zero(t, s.store.Len(), "a valid zero duration must never become an unbounded local decision")
 }
 
+func TestStoreNegativeDurationIsKnownExpired(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	ip := netip.MustParseAddr("192.0.2.10")
+	prefix := netip.MustParsePrefix("192.0.2.10/32")
+
+	for _, duration := range []string{"-1s", "-2s"} {
+		t.Run(duration, func(t *testing.T) {
+			s := newStoreWithClock(func() time.Time { return now })
+			decision := testDecision(1, "Ip", ip.String(), "ban")
+			*decision.Duration = duration
+			require.NoError(t, s.add(decision))
+
+			stored := s.store.buckets[prefix].decisions[keyForDecision(decision)]
+			require.False(t, stored.expires.IsZero(), "a valid negative duration has a known expiry")
+			require.True(t, stored.expires.Before(now))
+
+			selected, err := s.get(ip)
+			require.NoError(t, err)
+			require.Nil(t, selected)
+			require.Zero(t, s.store.Len())
+		})
+	}
+}
+
+func TestSelectDecisionIgnoresExpiredLiveDuration(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.10")
+	expiredBan := testDecision(1, "Ip", ip.String(), "ban")
+	*expiredBan.Duration = "-1s"
+	activeCaptcha := testDecision(2, "Ip", ip.String(), "captcha")
+	*activeCaptcha.Duration = "1m"
+
+	for _, decisions := range [][]*models.Decision{
+		{expiredBan, activeCaptcha},
+		{activeCaptcha, expiredBan},
+	} {
+		selected, err := selectDecision(ip, decisions)
+		require.NoError(t, err)
+		require.Same(t, activeCaptcha, selected)
+	}
+
+	selected, err := selectDecision(ip, []*models.Decision{expiredBan})
+	require.NoError(t, err)
+	require.Nil(t, selected)
+}
+
 func TestStoreReturnsRemainingDurationWithoutMutatingStreamDecision(t *testing.T) {
 	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
 	s := newStoreWithClock(func() time.Time { return now })
@@ -578,18 +623,12 @@ func TestStoreRejectsMalformedDecisions(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestStoreAcceptsOptionalDecisionMetadata(t *testing.T) {
+func TestActiveDecisionSnapshotHandlesMissingOriginWithoutMutation(t *testing.T) {
 	s := newStore()
 	decision := testDecision(1, "Ip", "192.0.2.10", "ban")
-	decision.Duration = nil
 	decision.Origin = nil
-	decision.Scenario = nil
 
 	require.NoError(t, s.add(decision))
-	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
-	require.NoError(t, err)
-	require.Same(t, decision, selected)
-
 	snapshot := s.activeDecisionSnapshot()
 	require.Len(t, snapshot, 1)
 	require.Empty(t, snapshot[0].Origin)

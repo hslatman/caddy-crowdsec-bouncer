@@ -127,6 +127,44 @@ func decisions() *models.DecisionsStreamResponse {
 	}
 }
 
+func TestProcessNewDecisionsUsesOneReceivedAtPerBatch(t *testing.T) {
+	base := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	ip := netip.MustParseAddr("192.0.2.10")
+	lowerID := testDecision(10, "Ip", ip.String(), "captcha")
+	higherID := testDecision(11, "Range", "192.0.2.10/32", "captcha")
+
+	for _, test := range []struct {
+		name      string
+		decisions []*models.Decision
+	}{
+		{name: "forward", decisions: []*models.Decision{lowerID, higherID}},
+		{name: "reverse", decisions: []*models.Decision{higherID, lowerID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clockCalls := 0
+			store := newStoreWithClock(func() time.Time {
+				current := base.Add(time.Duration(clockCalls) * 2 * time.Second)
+				clockCalls++
+				return current
+			})
+			bouncer := &Core{store: store, logger: zaptest.NewLogger(t)}
+
+			require.True(t, bouncer.processNewDecisions(test.decisions))
+			require.Equal(t, 1, clockCalls, "one stream response must use one clock reading")
+
+			bucket := store.store.buckets[netip.MustParsePrefix("192.0.2.10/32")]
+			require.Equal(t,
+				bucket.decisions[keyForDecision(lowerID)].expires,
+				bucket.decisions[keyForDecision(higherID)].expires,
+			)
+
+			selected, err := store.get(ip)
+			require.NoError(t, err)
+			requireDecisionIdentity(t, lowerID, selected, "batch order must not affect equal-lifetime selection")
+		})
+	}
+}
+
 func TestStreamingBouncer(t *testing.T) {
 	b, err := newCore(t)
 	require.NoError(t, err)

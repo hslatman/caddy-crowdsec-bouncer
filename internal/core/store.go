@@ -101,6 +101,10 @@ func newStoreWithClock(now func() time.Time) *store {
 }
 
 func (s *store) add(decision *models.Decision) error {
+	return s.addAt(decision, s.now())
+}
+
+func (s *store) addAt(decision *models.Decision, receivedAt time.Time) error {
 	if err := validateStoredDecision(decision); err != nil {
 		return err
 	}
@@ -110,10 +114,14 @@ func (s *store) add(decision *models.Decision) error {
 		return err
 	}
 
-	return s.store.add(prefix, decision)
+	return s.store.add(prefix, decision, receivedAt)
 }
 
-func (s *decisionStore) add(prefix netip.Prefix, decision *models.Decision) error {
+func (s *store) now() time.Time {
+	return s.store.now()
+}
+
+func (s *decisionStore) add(prefix netip.Prefix, decision *models.Decision, receivedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -150,7 +158,7 @@ func (s *decisionStore) add(prefix netip.Prefix, decision *models.Decision) erro
 	}
 	bucket.decisions[key] = &storedDecision{
 		decision: decision,
-		expires:  decisionExpiration(decision, s.now()),
+		expires:  decisionExpiration(decision, receivedAt),
 	}
 
 	if decision.ID != 0 {
@@ -363,15 +371,18 @@ func decisionExpiration(decision *models.Decision, receivedAt time.Time) time.Ti
 		return time.Time{}
 	}
 	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
-	if err != nil || duration < 0 {
+	if err != nil {
 		// Malformed metadata must not silently turn a blocking decision into an
 		// allow. Keep it until LAPI sends a tombstone instead.
 		return time.Time{}
 	}
+	if duration < 0 {
+		return receivedAt.Add(duration)
+	}
 
 	// LAPI uses Round(time.Second), so a still-active decision can legitimately
-	// arrive as "0s", and any non-negative duration can have been rounded down
-	// by almost half a second. Keep enforcing through that uncertainty window.
+	// arrive as "0s", and a non-negative duration can have been rounded down by
+	// almost half a second. Keep enforcing through that uncertainty window.
 	return receivedAt.Add(duration).Add(lapiDurationRoundingTolerance)
 }
 
@@ -408,6 +419,9 @@ func selectDecisionCandidate(ip netip.Addr, candidates []*decisionCandidate) (*d
 			if firstInvalid == nil {
 				firstInvalid = fmt.Errorf("invalid decision at index %d: %w", i, err)
 			}
+			continue
+		}
+		if hasExpiredReportedDuration(decision) {
 			continue
 		}
 
@@ -550,6 +564,14 @@ func parsedDecisionDuration(decision *models.Decision) (time.Duration, bool) {
 	}
 	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
 	return duration, err == nil && duration >= 0
+}
+
+func hasExpiredReportedDuration(decision *models.Decision) bool {
+	if decision == nil || decision.Duration == nil {
+		return false
+	}
+	duration, err := time.ParseDuration(strings.TrimSpace(*decision.Duration))
+	return err == nil && duration < 0
 }
 
 func remediationPriority(typ string) int {
