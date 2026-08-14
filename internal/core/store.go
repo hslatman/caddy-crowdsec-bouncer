@@ -68,6 +68,7 @@ type storedDecision struct {
 type decisionCandidate struct {
 	decision *models.Decision
 	prefix   netip.Prefix
+	expires  time.Time
 }
 
 func newStore() *store {
@@ -229,15 +230,20 @@ func (s *store) get(key netip.Addr) (*models.Decision, error) {
 		return nil, errors.New("lookup address is invalid")
 	}
 
-	decisions, err := s.store.get(key)
+	candidates, now, err := s.store.get(key)
 	if err != nil {
 		return nil, err
 	}
 
-	return selectDecision(key, decisions)
+	selected, err := selectDecisionCandidate(key, candidates)
+	if err != nil || selected == nil {
+		return nil, err
+	}
+
+	return decisionAt(selected, now), nil
 }
 
-func (s *decisionStore) get(key netip.Addr) ([]*models.Decision, error) {
+func (s *decisionStore) get(key netip.Addr) ([]*decisionCandidate, time.Time, error) {
 	// Request lookups must not run global expiration maintenance: production
 	// stores commonly contain tens of thousands of decisions. Expired matches
 	// are filtered below, while stream, count, and metrics paths reclaim them.
@@ -247,26 +253,29 @@ func (s *decisionStore) get(key netip.Addr) ([]*models.Decision, error) {
 
 	buckets, err := s.prefixes.Get(key)
 	if err != nil {
-		return nil, err
+		return nil, now, err
 	}
 
-	decisions := make([]*models.Decision, 0, len(buckets))
+	candidates := make([]*decisionCandidate, 0, len(buckets))
 	for _, bucket := range buckets {
-		decisions = bucket.appendActive(decisions, now)
+		candidates = bucket.appendActive(candidates, now)
 	}
 
-	return decisions, nil
+	return candidates, now, nil
 }
 
-func (b *decisionBucket) appendActive(decisions []*models.Decision, now time.Time) []*models.Decision {
+func (b *decisionBucket) appendActive(candidates []*decisionCandidate, now time.Time) []*decisionCandidate {
 	for _, stored := range b.decisions {
 		if !stored.expires.IsZero() && !stored.expires.After(now) {
 			continue
 		}
-		decisions = append(decisions, stored.decision)
+		candidates = append(candidates, &decisionCandidate{
+			decision: stored.decision,
+			expires:  stored.expires,
+		})
 	}
 
-	return decisions
+	return candidates
 }
 
 // Len reports decisions, not occupied prefixes. This keeps
@@ -375,13 +384,31 @@ func decisionExpiration(decision *models.Decision, receivedAt time.Time) time.Ti
 // priority wins before prefix specificity; remaining ties use stable decision
 // metadata so API and map iteration order cannot change the result.
 func selectDecision(ip netip.Addr, decisions []*models.Decision) (*models.Decision, error) {
+	candidates := make([]*decisionCandidate, 0, len(decisions))
+	for _, decision := range decisions {
+		candidates = append(candidates, &decisionCandidate{decision: decision})
+	}
+
+	selected, err := selectDecisionCandidate(ip, candidates)
+	if err != nil || selected == nil {
+		return nil, err
+	}
+
+	return selected.decision, nil
+}
+
+func selectDecisionCandidate(ip netip.Addr, candidates []*decisionCandidate) (*decisionCandidate, error) {
 	if !ip.IsValid() {
 		return nil, errors.New("lookup address is invalid")
 	}
 
 	groups := make(map[decisionKey]*decisionCandidate)
 	var firstInvalid error
-	for i, decision := range decisions {
+	for i, input := range candidates {
+		var decision *models.Decision
+		if input != nil {
+			decision = input.decision
+		}
 		if err := validateStoredDecision(decision); err != nil {
 			if firstInvalid == nil {
 				firstInvalid = fmt.Errorf("invalid decision at index %d: %w", i, err)
@@ -400,7 +427,8 @@ func selectDecision(ip netip.Addr, decisions []*models.Decision) (*models.Decisi
 			continue
 		}
 
-		candidate := &decisionCandidate{decision: decision, prefix: prefix}
+		candidate := input
+		candidate.prefix = prefix
 		group := keyForDecision(decision)
 		if current := groups[group]; current == nil || groupCandidatePrecedes(candidate, current) {
 			groups[group] = candidate
@@ -415,7 +443,7 @@ func selectDecision(ip netip.Addr, decisions []*models.Decision) (*models.Decisi
 	}
 
 	if selected != nil && (firstInvalid == nil || remediationPriority(*selected.decision.Type) == 3) {
-		return selected.decision, nil
+		return selected, nil
 	}
 	if firstInvalid != nil {
 		return nil, firstInvalid
@@ -435,12 +463,8 @@ func candidatePrecedes(a, b *decisionCandidate) bool {
 		return a.prefix.Bits() > b.prefix.Bits()
 	}
 
-	if aDuration, aOK := parsedDecisionDuration(a.decision); aOK {
-		if bDuration, bOK := parsedDecisionDuration(b.decision); !bOK || aDuration != bDuration {
-			return !bOK || aDuration > bDuration
-		}
-	} else if _, bOK := parsedDecisionDuration(b.decision); bOK {
-		return false
+	if lifetimeComparison := compareCandidateLifetime(a, b); lifetimeComparison != 0 {
+		return lifetimeComparison > 0
 	}
 
 	if a.decision.ID != b.decision.ID {
@@ -451,18 +475,72 @@ func candidatePrecedes(a, b *decisionCandidate) bool {
 }
 
 func groupCandidatePrecedes(a, b *decisionCandidate) bool {
-	aDuration, aOK := parsedDecisionDuration(a.decision)
-	bDuration, bOK := parsedDecisionDuration(b.decision)
-	if aOK != bOK {
-		return aOK
-	}
-	if aOK && aDuration != bDuration {
-		return aDuration > bDuration
+	if lifetimeComparison := compareCandidateLifetime(a, b); lifetimeComparison != 0 {
+		return lifetimeComparison > 0
 	}
 	if a.decision.ID != b.decision.ID {
-		return a.decision.ID < b.decision.ID
+		// LAPI orders stream results by ascending ID. Its longest-decision
+		// predicate uses a strict greater-than comparison, so equal-until group
+		// members can both be emitted and the stream upsert ends on the larger ID.
+		return a.decision.ID > b.decision.ID
 	}
 	return stableDecisionKey(a.decision) < stableDecisionKey(b.decision)
+}
+
+// compareCandidateLifetime returns 1 when a outlives b, -1 when b outlives a,
+// and 0 when their usable lifetime metadata is equal. Stored candidates carry
+// an absolute local expiry; live candidates carry LAPI's remaining Duration.
+func compareCandidateLifetime(a, b *decisionCandidate) int {
+	aExpiryValid := !a.expires.IsZero()
+	bExpiryValid := !b.expires.IsZero()
+	if aExpiryValid || bExpiryValid {
+		// LAPI serializes remaining duration at one-second precision. Ignore
+		// sub-second skew introduced while processing members of one response.
+		aExpiry := a.expires.Round(time.Second)
+		bExpiry := b.expires.Round(time.Second)
+		switch {
+		case aExpiryValid && !bExpiryValid:
+			return 1
+		case !aExpiryValid && bExpiryValid:
+			return -1
+		case aExpiry.After(bExpiry):
+			return 1
+		case aExpiry.Before(bExpiry):
+			return -1
+		default:
+			return 0
+		}
+	}
+
+	aDuration, aDurationValid := parsedDecisionDuration(a.decision)
+	bDuration, bDurationValid := parsedDecisionDuration(b.decision)
+	switch {
+	case aDurationValid && !bDurationValid:
+		return 1
+	case !aDurationValid && bDurationValid:
+		return -1
+	case aDuration > bDuration:
+		return 1
+	case aDuration < bDuration:
+		return -1
+	default:
+		return 0
+	}
+}
+
+func decisionAt(candidate *decisionCandidate, now time.Time) *models.Decision {
+	if candidate == nil || candidate.decision == nil || candidate.expires.IsZero() {
+		if candidate == nil {
+			return nil
+		}
+		return candidate.decision
+	}
+
+	clone := *candidate.decision
+	remaining := candidate.expires.Sub(now).Round(time.Second).String()
+	clone.Duration = &remaining
+
+	return &clone
 }
 
 func parsedDecisionDuration(decision *models.Decision) (time.Duration, bool) {

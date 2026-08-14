@@ -176,17 +176,17 @@ func TestStoreSelectsAcrossOverlappingIPAndRanges(t *testing.T) {
 
 	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
-	require.Same(t, ipBan, selected, "the more-specific decision should break equal-action ties")
+	requireDecisionIdentity(t, ipBan, selected, "the more-specific decision should break equal-action ties")
 
 	require.NoError(t, s.delete(ipBan))
 	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
-	require.Same(t, rangeBan, selected, "action priority should beat prefix specificity")
+	requireDecisionIdentity(t, rangeBan, selected, "action priority should beat prefix specificity")
 
 	require.NoError(t, s.delete(rangeBan))
 	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
-	require.Same(t, rangeCaptcha, selected, "captcha should beat a more-specific throttle")
+	requireDecisionIdentity(t, rangeCaptcha, selected, "captcha should beat a more-specific throttle")
 }
 
 func TestStoreKeepsOverlappingPrefixBucketsIndependent(t *testing.T) {
@@ -204,7 +204,7 @@ func TestStoreKeepsOverlappingPrefixBucketsIndependent(t *testing.T) {
 	require.NoError(t, s.delete(rangeDecision))
 	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
-	require.Same(t, ipDecision, selected)
+	requireDecisionIdentity(t, ipDecision, selected)
 	require.Equal(t, 1, s.metricsStore().Len())
 }
 
@@ -221,7 +221,7 @@ func TestStoreDeleteUsesDecisionID(t *testing.T) {
 
 		selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 		require.NoError(t, err)
-		require.Same(t, ban, selected)
+		requireDecisionIdentity(t, ban, selected)
 	})
 
 	t.Run("complete tombstone removes the effective semantic group", func(t *testing.T) {
@@ -248,7 +248,7 @@ func TestStoreDeleteUsesDecisionID(t *testing.T) {
 
 		selected, err = s.get(netip.MustParseAddr("192.0.2.11"))
 		require.NoError(t, err)
-		require.Same(t, updated, selected)
+		requireDecisionIdentity(t, updated, selected)
 	})
 
 	t.Run("new LAPI decision supersedes the same target and remediation", func(t *testing.T) {
@@ -265,12 +265,12 @@ func TestStoreDeleteUsesDecisionID(t *testing.T) {
 		require.NoError(t, s.delete(&models.Decision{ID: oldCaptcha.ID}))
 		selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 		require.NoError(t, err)
-		require.Same(t, ban, selected, "a delayed tombstone for the superseded ID must be harmless")
+		requireDecisionIdentity(t, ban, selected, "a delayed tombstone for the superseded ID must be harmless")
 
 		require.NoError(t, s.delete(ban))
 		selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
 		require.NoError(t, err)
-		require.Same(t, newCaptcha, selected)
+		requireDecisionIdentity(t, newCaptcha, selected)
 
 		require.NoError(t, s.delete(newCaptcha))
 		require.Zero(t, s.store.Len())
@@ -298,6 +298,11 @@ func TestStoreDeleteWithoutID(t *testing.T) {
 		require.NoError(t, s.add(first))
 		require.NoError(t, s.add(second))
 		require.Equal(t, 1, s.store.Len())
+		metricsStore := s.metricsStore()
+		require.Equal(t, 1, metricsStore.Len(), "metrics must count the effective group, not every historical member")
+		for _, metricDecision := range metricsStore.All() {
+			require.Equal(t, "CAPI", stringValue(metricDecision.Origin))
+		}
 
 		tombstone := testDecision(0, "Ip", "192.0.2.10", "ban")
 		require.NoError(t, s.delete(tombstone))
@@ -318,7 +323,7 @@ func TestStoreDeleteWithoutID(t *testing.T) {
 
 		selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 		require.NoError(t, err)
-		require.Same(t, captcha, selected)
+		requireDecisionIdentity(t, captcha, selected)
 	})
 }
 
@@ -359,6 +364,75 @@ func TestSelectDecisionUsesLongestLiveDecisionWithinGroup(t *testing.T) {
 	}
 }
 
+func TestSelectDecisionMatchesStreamUpsertForEqualLongestGroupMembers(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.10")
+	lowerID := testDecision(10, "Ip", ip.String(), "captcha")
+	higherID := testDecision(11, "Ip", ip.String(), "captcha")
+	*lowerID.Origin = "first"
+	*higherID.Origin = "second"
+
+	// LAPI's longest-decision predicate is strict. Members with the same Until
+	// can therefore both be returned by the stream, ordered by ascending ID;
+	// the semantic upsert ends on the higher ID.
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	stream := newStoreWithClock(func() time.Time { return now })
+	require.NoError(t, stream.add(lowerID))
+	require.NoError(t, stream.add(higherID))
+	streamSelected, err := stream.get(ip)
+	require.NoError(t, err)
+	requireDecisionIdentity(t, higherID, streamSelected)
+
+	for _, live := range [][]*models.Decision{{lowerID, higherID}, {higherID, lowerID}} {
+		liveSelected, err := selectDecision(ip, live)
+		require.NoError(t, err)
+		require.Same(t, higherID, liveSelected)
+		requireDecisionIdentity(t, streamSelected, liveSelected)
+	}
+}
+
+func TestLiveAndDefaultStreamSelectTheSameEffectiveDecision(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.10")
+	shortCaptcha := testDecision(10, "Ip", ip.String(), "captcha")
+	longCaptcha := testDecision(11, "Ip", ip.String(), "captcha")
+	throttle := testDecision(12, "Range", "192.0.2.0/24", "throttle")
+	*shortCaptcha.Duration = "1m"
+	*longCaptcha.Duration = "2m"
+	*throttle.Duration = "3m"
+
+	liveSelected, err := selectDecision(ip, []*models.Decision{shortCaptcha, throttle, longCaptcha})
+	require.NoError(t, err)
+	require.Same(t, longCaptcha, liveSelected)
+
+	// The default stream emits only the longest member of an exact
+	// scope/type/value group.
+	stream := newStore()
+	require.NoError(t, stream.add(longCaptcha))
+	require.NoError(t, stream.add(throttle))
+	streamSelected, err := stream.get(ip)
+	require.NoError(t, err)
+	requireDecisionIdentity(t, liveSelected, streamSelected)
+}
+
+func TestLiveAndStreamIgnoreSubsecondIngestionSkew(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.10")
+	lowerID := testDecision(10, "Ip", ip.String(), "captcha")
+	higherID := testDecision(11, "Range", "192.0.2.10/32", "captcha")
+
+	liveSelected, err := selectDecision(ip, []*models.Decision{higherID, lowerID})
+	require.NoError(t, err)
+	require.Same(t, lowerID, liveSelected)
+
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	stream := newStoreWithClock(func() time.Time { return now })
+	require.NoError(t, stream.add(lowerID))
+	now = now.Add(time.Millisecond)
+	require.NoError(t, stream.add(higherID))
+
+	streamSelected, err := stream.get(ip)
+	require.NoError(t, err)
+	requireDecisionIdentity(t, liveSelected, streamSelected)
+}
+
 func TestStoreKeepsExactLAPIGroupKeysIndependent(t *testing.T) {
 	s := newStore()
 	plainIP := testDecision(1, "Ip", "192.0.2.10", "captcha")
@@ -366,13 +440,14 @@ func TestStoreKeepsExactLAPIGroupKeysIndependent(t *testing.T) {
 	rangeIP := testDecision(3, "Range", "192.0.2.10/32", "captcha")
 	spacedIP := testDecision(4, "Ip", " 192.0.2.10 ", "captcha")
 	lowercaseScope := testDecision(5, "ip", "192.0.2.10", "captcha")
-	for _, decision := range []*models.Decision{plainIP, cidrIP, rangeIP, spacedIP, lowercaseScope} {
+	uppercaseType := testDecision(6, "Ip", "192.0.2.10", "CAPTCHA")
+	for _, decision := range []*models.Decision{plainIP, cidrIP, rangeIP, spacedIP, lowercaseScope, uppercaseType} {
 		require.NoError(t, s.add(decision))
 	}
-	require.Equal(t, 5, s.store.Len())
+	require.Equal(t, 6, s.store.Len())
 
 	require.NoError(t, s.delete(testDecision(99, "Ip", "192.0.2.10", "captcha")))
-	require.Equal(t, 4, s.store.Len())
+	require.Equal(t, 5, s.store.Len())
 }
 
 func TestStoreLookupIgnoresExpiredDecisionsWithoutGlobalMaintenance(t *testing.T) {
@@ -393,11 +468,33 @@ func TestStoreLookupIgnoresExpiredDecisionsWithoutGlobalMaintenance(t *testing.T
 	now = now.Add(time.Second)
 	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
 	require.NoError(t, err)
-	require.Same(t, activeMatch, selected, "an expired higher-priority action must not be enforced")
+	requireDecisionIdentity(t, activeMatch, selected, "an expired higher-priority action must not be enforced")
 	require.Equal(t, 3, s.store.count, "request lookup must not scan and mutate the whole store")
 
 	require.Equal(t, 1, s.store.Len(), "maintenance paths should physically remove expired decisions")
 	require.Equal(t, 1, s.metricsStore().Len())
+}
+
+func TestStoreReturnsRemainingDurationWithoutMutatingStreamDecision(t *testing.T) {
+	now := time.Date(2026, time.August, 13, 12, 0, 0, 0, time.UTC)
+	s := newStoreWithClock(func() time.Time { return now })
+	decision := testDecision(1, "Ip", "192.0.2.10", "throttle")
+	*decision.Duration = "2m"
+	require.NoError(t, s.add(decision))
+
+	now = now.Add(30 * time.Second)
+	selected, err := s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
+	requireDecisionIdentity(t, decision, selected)
+	require.Equal(t, "1m30s", stringValue(selected.Duration))
+	require.Equal(t, "2m", stringValue(decision.Duration), "lookup must not mutate a decision shared with the stream")
+
+	now = now.Add(90 * time.Second)
+	selected, err = s.get(netip.MustParseAddr("192.0.2.10"))
+	require.NoError(t, err)
+	require.Nil(t, selected)
+	require.Zero(t, s.store.Len())
+	require.Zero(t, s.metricsStore().Len())
 }
 
 func TestStoreKeepsMalformedDurationFailClosedUntilTombstone(t *testing.T) {
@@ -563,7 +660,7 @@ func TestStoreConcurrentLookupAndMaintenance(t *testing.T) {
 					errs <- err
 					return
 				}
-				if selected != expected {
+				if selected == nil || selected.ID != expected.ID {
 					errs <- fmt.Errorf("unexpected selected decision: %p", selected)
 					return
 				}
@@ -614,4 +711,15 @@ func cloneDecision(decision *models.Decision, mutate func(*models.Decision)) *mo
 	clone := *decision
 	mutate(&clone)
 	return &clone
+}
+
+func requireDecisionIdentity(t *testing.T, expected, actual *models.Decision, msgAndArgs ...any) {
+	t.Helper()
+	require.NotNil(t, actual, msgAndArgs...)
+	require.Equal(t, expected.ID, actual.ID, msgAndArgs...)
+	require.Equal(t, stringValue(expected.Scope), stringValue(actual.Scope), msgAndArgs...)
+	require.Equal(t, stringValue(expected.Type), stringValue(actual.Type), msgAndArgs...)
+	require.Equal(t, stringValue(expected.Value), stringValue(actual.Value), msgAndArgs...)
+	require.Equal(t, stringValue(expected.Origin), stringValue(actual.Origin), msgAndArgs...)
+	require.Equal(t, stringValue(expected.Scenario), stringValue(actual.Scenario), msgAndArgs...)
 }
