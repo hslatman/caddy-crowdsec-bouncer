@@ -136,6 +136,16 @@ func TestStoreRetainsAndSelectsMultipleDecisionsForOneTarget(t *testing.T) {
 			expected: "custom-remediation",
 		},
 		{
+			name:     "uppercase throttle remains an unknown fail-closed action",
+			types:    []string{"captcha", "THROTTLE"},
+			expected: "THROTTLE",
+		},
+		{
+			name:     "spaced throttle remains an unknown fail-closed action",
+			types:    []string{"captcha", " throttle "},
+			expected: " throttle ",
+		},
+		{
 			name:     "captcha takes precedence over throttle",
 			types:    []string{"throttle", "captcha"},
 			expected: "captcha",
@@ -346,6 +356,33 @@ func TestSelectDecisionIsOrderIndependentForLiveResults(t *testing.T) {
 	selected, err = selectDecision(ip, []*models.Decision{unrelated})
 	require.NoError(t, err)
 	require.Nil(t, selected)
+}
+
+func TestSelectDecisionUsesExactWireValuesForStableTieBreak(t *testing.T) {
+	ip := netip.MustParseAddr("192.0.2.10")
+	uppercase := testDecision(0, "Ip", ip.String(), "CUSTOM")
+	lowercase := testDecision(0, "Ip", ip.String(), "custom")
+	*uppercase.Scenario = "same scenario"
+	*lowercase.Scenario = "same scenario"
+
+	require.Negative(t, compareDecisionTieBreak(uppercase, lowercase))
+	require.Positive(t, compareDecisionTieBreak(lowercase, uppercase))
+
+	for _, decisions := range [][]*models.Decision{{uppercase, lowercase}, {lowercase, uppercase}} {
+		selected, err := selectDecision(ip, decisions)
+		require.NoError(t, err)
+		require.Same(t, uppercase, selected)
+	}
+
+	nilOrigin := cloneDecision(uppercase, func(decision *models.Decision) {
+		decision.Origin = nil
+	})
+	emptyOrigin := cloneDecision(uppercase, func(decision *models.Decision) {
+		empty := ""
+		decision.Origin = &empty
+	})
+	require.Negative(t, compareDecisionTieBreak(nilOrigin, emptyOrigin))
+	require.Positive(t, compareDecisionTieBreak(emptyOrigin, nilOrigin))
 }
 
 func TestSelectDecisionUsesLongestLiveDecisionWithinGroup(t *testing.T) {

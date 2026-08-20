@@ -15,6 +15,7 @@
 package core
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -480,7 +481,7 @@ func candidatePrecedes(a, b *decisionCandidate) bool {
 		return a.decision.ID < b.decision.ID
 	}
 
-	return stableDecisionKey(a.decision) < stableDecisionKey(b.decision)
+	return compareDecisionTieBreak(a.decision, b.decision) < 0
 }
 
 func groupCandidatePrecedes(a, b *decisionCandidate) bool {
@@ -493,7 +494,7 @@ func groupCandidatePrecedes(a, b *decisionCandidate) bool {
 		// members can both be emitted and the stream upsert ends on the larger ID.
 		return a.decision.ID > b.decision.ID
 	}
-	return stableDecisionKey(a.decision) < stableDecisionKey(b.decision)
+	return compareDecisionTieBreak(a.decision, b.decision) < 0
 }
 
 // compareCandidateLifetime returns 1 when a outlives b, -1 when b outlives a,
@@ -575,7 +576,9 @@ func hasExpiredReportedDuration(decision *models.Decision) bool {
 }
 
 func remediationPriority(typ string) int {
-	switch strings.ToLower(strings.TrimSpace(typ)) {
+	// Keep the recognized wire values aligned with response handling. Any
+	// other spelling is a custom action and retains the fail-closed priority.
+	switch typ {
 	case "captcha":
 		return 2
 	case "throttle":
@@ -589,16 +592,65 @@ func remediationPriority(typ string) int {
 	}
 }
 
-func stableDecisionKey(decision *models.Decision) string {
-	return strings.Join([]string{
-		strings.ToLower(strings.TrimSpace(stringValue(decision.Type))),
-		strings.ToLower(strings.TrimSpace(stringValue(decision.Scope))),
-		strings.TrimSpace(stringValue(decision.Value)),
-		strings.TrimSpace(stringValue(decision.Origin)),
-		strings.TrimSpace(stringValue(decision.Scenario)),
-		strings.TrimSpace(stringValue(decision.Duration)),
-		decision.UUID,
-	}, "\x00")
+func compareDecisionTieBreak(a, b *models.Decision) int {
+	// Semantic groups use exact LAPI keys. Compare the raw fields here too, so
+	// distinct groups cannot collapse into a map-order-dependent tie.
+	if comparison := compareOptionalString(a.Type, b.Type); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareOptionalString(a.Scope, b.Scope); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareOptionalString(a.Value, b.Value); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareOptionalString(a.Origin, b.Origin); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareOptionalString(a.Scenario, b.Scenario); comparison != 0 {
+		return comparison
+	}
+	if comparison := compareOptionalString(a.Duration, b.Duration); comparison != 0 {
+		return comparison
+	}
+	if comparison := cmp.Compare(a.UUID, b.UUID); comparison != 0 {
+		return comparison
+	}
+	if comparison := cmp.Compare(a.Until, b.Until); comparison != 0 {
+		return comparison
+	}
+
+	return compareOptionalBool(a.Simulated, b.Simulated)
+}
+
+func compareOptionalString(a, b *string) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return -1
+	case b == nil:
+		return 1
+	default:
+		return cmp.Compare(*a, *b)
+	}
+}
+
+func compareOptionalBool(a, b *bool) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return -1
+	case b == nil:
+		return 1
+	case *a == *b:
+		return 0
+	case !*a:
+		return -1
+	default:
+		return 1
+	}
 }
 
 func keyForDecision(decision *models.Decision) decisionKey {
