@@ -139,7 +139,7 @@ func TestStreamingBouncer(t *testing.T) {
 
 	// create a mock for the streaming bouncer; results in all mocked responses to be inserted
 	decisions := decisions()
-	urlRegexp := regexp.MustCompile(`http:\/\/127\.0\.0\.1:8080\/v1\/decisions\/stream\?startup=.*`)
+	urlRegexp := regexp.MustCompile(`http:\/\/127\.0\.0\.1:8080\/v1\/decisions\/stream\?.*startup=.*`)
 	httpmock.RegisterRegexpResponder("GET", urlRegexp, httpmock.NewJsonResponderOrPanic(200, decisions))
 
 	// run the bouncer; makes it make a call to the mocked CrowdSec API

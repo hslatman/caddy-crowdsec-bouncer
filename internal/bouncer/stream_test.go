@@ -58,7 +58,7 @@ func TestStreamBouncerRunReturnsWhenNobodyConsumesTheStream(t *testing.T) {
 	httpmock.Activate()
 	defer httpmock.DeactivateAndReset()
 
-	urlRegexp := regexp.MustCompile(`http://127\.0\.0\.1:8080/v1/decisions/stream\?startup=.*`)
+	urlRegexp := regexp.MustCompile(`http://127\.0\.0\.1:8080/v1/decisions/stream\?.*startup=.*`)
 	httpmock.RegisterRegexpResponder("GET", urlRegexp,
 		httpmock.NewJsonResponderOrPanic(200, &models.DecisionsStreamResponse{
 			New:     []*models.Decision{},
@@ -102,7 +102,7 @@ func TestStreamBouncerRunReturnsOnCancelWhileIdle(t *testing.T) {
 	httpmock.Activate()
 	defer httpmock.DeactivateAndReset()
 
-	urlRegexp := regexp.MustCompile(`http://127\.0\.0\.1:8080/v1/decisions/stream\?startup=.*`)
+	urlRegexp := regexp.MustCompile(`http://127\.0\.0\.1:8080/v1/decisions/stream\?.*startup=.*`)
 	httpmock.RegisterRegexpResponder("GET", urlRegexp,
 		httpmock.NewJsonResponderOrPanic(200, &models.DecisionsStreamResponse{
 			New:     []*models.Decision{},
