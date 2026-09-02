@@ -44,3 +44,27 @@ jobs:
           go version
           export GORACE="halt_on_error=1"
           go test -v -race ./...
+
+  # End-to-end tests run Caddy in-process against real CrowdSec containers. They
+  # are a separate job so that container provisioning (minutes, for the AppSec
+  # collections) never delays lint and unit feedback.
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.7'
+          cache: true
+
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: End-to-end testing
+        run: |
+          go version
+          export GORACE="halt_on_error=1"
+          go test -v -race -tags=e2e -timeout=25m ./test/e2e/...
