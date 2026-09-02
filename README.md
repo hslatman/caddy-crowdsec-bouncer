@@ -43,7 +43,7 @@ Bouncers are pieces of software that perform specific actions based on the decis
 ## Usage
 
 > [!TIP]
-> You can find full setup examples in /examples inside this repository.
+> You can find full setup examples at [`examples`](/examples)
 
 You can use the bouncer by either building a custom Caddy image with Docker or by fetching the required Go modules directly into your own build.
 
