@@ -12,14 +12,14 @@
     - [What is CrowdSec?](#what-is-crowdsec)
   - [Usage](#usage)
     - [Option 1: Docker Build](#option-1-docker-build)
-    - [Option 2: Custom Go Build (xcaddy)](#option-2-custom-go-build-xcaddy)
+    - [Option 2: Custom Go Build](#option-2-custom-go-build)
     - [Configuration](#configuration)
   - [Demo](#demo)
   - [Utilities](#utilities)
     - [Usage](#usage-1)
   - [Client IP](#client-ip)
   - [Things That Can Be Done](#things-that-can-be-done)
-    - [Contributing](#contributing)
+  - [Contributing](#contributing)
 
 ## Description
 
