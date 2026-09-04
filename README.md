@@ -91,20 +91,20 @@ Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 match
 
 #### Configuration Options
 
-| Directive               | Description                                                                                                                                                         | Default                  |
-|:------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-------------------------|
-| `api_url`               | The URL of the CrowdSec Local API.                                                                                                                                  | `http://127.0.0.1:8080/` |
-| `api_key`               | The API key to authenticate with the Local API.                                                                                                                     | `<empty>` *(required)*   |
-| `disable_streaming`     | Falls back to LiveBouncer mode (queries API per request).                                                                                                           | `false`                  |
-| `metrics_interval`      | Interval for pushing metrics to the Local API.                                                                                                                      | `0s` *(disabled)*        |
-| `enable_caddy_metrics`  | Enables emitting bouncer metrics at Caddy's `/metrics` endpoint.                                                                                                    | `false`                  |
-| `ticker_interval`       | Interval for pulling decisions from the Local API.                                                                                                                  | `60s`                    |
-| `enable_hard_fails`     | Caddy fails to start if CrowdSec API is unreachable.                                                                                                                | `false`                  |
-| `appsec_url`            | The URL of the CrowdSec AppSec component.                                                                                                                           | `<empty>` *(disabled)*   |
-| `appsec_max_body_bytes` | Maximum request body size sent to AppSec.                                                                                                                           | `0` *(full request)*     |
-| `appsec_max_timeout`.   | Maximum time for request to AppSec component.                                                                                                                       | `2s`                     |
-| `appsec_fail_open`      | Ignore AppSec component connection errors.                                                                                                                          | `false`                  |
-| `enable_caddy_error`    | Propagates decisions as Caddy errors to allow custom error pages. **Warning:** Ensure `handle_errors` routes are strictly static to avoid resource exhaustion (DoS).| `false`                  |
+| Directive               | Description                                                                                                                                                           | Default                  |
+|:------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-------------------------|
+| `api_url`               | The URL of the CrowdSec Local API.                                                                                                                                    | `http://127.0.0.1:8080/` |
+| `api_key`               | The API key to authenticate with the Local API.                                                                                                                       | `<empty>` *(required)*   |
+| `disable_streaming`      | If disabled StreamBouncer is used, caching decision in memory and periodically refreshing them, otherwise LiveBouncer is used, which queries API every time.         | `false`                  |
+| `metrics_interval`      | Delay between pushes of metrics to the Local API. CrowdSec [recommends](https://docs.crowdsec.net/docs/contributing/specs/bouncer_metrics_specs/) minimum delay of `15m`, if used. If less and not `0s`, will issue warnings.| `0s` *(disabled)*        |
+| `enable_caddy_metrics`  | Enables emitting bouncer metrics at Caddy's `/metrics` endpoint.                                                                                                      | `false`                  |
+| `ticker_interval`       | Interval for pulling decisions from the Local API in streaming mode. CrowdSec [recommends](https://docs.crowdsec.net/docs/next/contributing/specs/bouncer_appsec_specs/) `10s`, but adjust depending on server load.| `60s`                    |
+| `enable_hard_fails`     | Caddy fails to start if CrowdSec API is unreachable.                                                                                                                  | `false`                  |
+| `appsec_url`            | The URL of the CrowdSec AppSec component.                                                                                                                             | `<empty>` *(disabled)*   |
+| `appsec_max_body_bytes` | Maximum request body size sent to AppSec.                                                                                                                             | `0` *(full request)*     |
+| `appsec_max_timeout`.   | Maximum time for request to AppSec component.                                                                                                                         | `2s`                     |
+| `appsec_fail_open`      | If enabled and AppSec component fails, the requests will be allowed through. Otherwise they will be blocked.                                                          | `false`                  |
+| `enable_caddy_error`    | Propagates decisions as Caddy errors to allow custom error pages. **Warning:** `handle_errors` routes are recommended to be static to avoid resource exhaustion (DoS).| `false`                  |
 
 #### Example
 
@@ -163,6 +163,9 @@ Run the Caddy server
 # with a Caddyfile
 caddy run --config Caddyfile 
 ```
+
+> [!TIP]
+> Some more advanced configuration using JSON with comments can be viewed [here](examples/advanced.jsonc).
 
 ## Demo
 

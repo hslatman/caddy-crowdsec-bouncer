@@ -112,7 +112,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
 			h.crowdsec.IncrementBlockedRequests(server, module, "log", ip.Is6()) // TODO: properly set the action that was performed
 		default:
-			if err := httputils.WriteResponse(w, h.logger, a.Action, ip.String(), a.Duration, a.StatusCode, h.crowdsec.EnableCaddyError); err != nil {
+			decisionData := &httputils.DecisionData{
+		        Type:        a.Action,
+		        StatusCode:  a.StatusCode,
+		        Duration:    a.Duration,
+		        Value:       ip.String(),
+				Origin:      "appsec",
+				Request:     r,
+		        RawDecision: nil, // No full model object here
+		    }
+			if err := httputils.WriteResponse(w, h.logger, decisionData, h.crowdsec.EnableCaddyError); err != nil {
 				h.crowdsec.IncrementBlockedRequests(server, module, a.Action, ip.Is6()) // TODO: properly set the action that was performed
 				return err
 			}

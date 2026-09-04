@@ -1,0 +1,337 @@
+// This is an example of JSON Caddy config to show some advanced setup. Note that it's written as JSONC, so if
+// used in Caddy itself, either use respective config adapter or strip all the comments.
+{
+    "logging": {
+        "logs": {
+            // Default log writer to record warnings and errors, excluding access log and CrowdSec stuff.
+            "default": {
+                "level": "WARN",
+                "writer": {
+                    "output": "stderr"
+                },
+                "exclude": [
+                    "http.log.access",
+                    "crowdsec",
+                    "http.handlers.crowdsec",
+                    "http.handlers.appsec"
+                ]
+            },
+            // Access log needs to go to a file, and CrowdSec should have read access to it to make decisions.
+            "access": {
+                "level": "DEBUG",
+                "writer": {
+                    "output": "file",
+                    "filename": "/var/log/caddy/access.log"
+                },
+                "encoder": {
+                    "format": "formatted",
+                    "template": "{common_log} \"{request>headers>Referer>[0]}\" \"{request>headers>User-Agent>[0]}\""
+                },
+                "include": [
+                    "http.log.access.access"
+                ]
+            },
+            // This is an example of the log for all CrowdSec-related activities, in case you want to separate them.
+            // You may want to use all 3 loggers to get the full picture of what the bouncer is doing.
+            "bouncer": {
+                "writer": {
+                    "output": "file",
+                    "filename": "/var/log/caddy/bouncer.log"
+                },
+                "level": "DEBUG",
+                "include": [
+                    // Logs communication with the LAPI.
+                    "crowdsec",
+                    // Logs when a decision from CrowdSec is being processed.
+                    "http.handlers.crowdsec",
+                    // Logs AppSec specific alerts.
+                    "http.handlers.appsec"
+                ]
+            }
+        }
+    },
+    "apps": {
+        "crowdsec": {
+            "api_key": "<api_key>",
+            "api_url": "http://crowdsec:8080/",
+            "ticker_interval": "10s",
+            // Streaming can provide a slight boost of performance, in case of high requests volume, but decisions will
+            // be applied with a short delay determined by `ticker_interval`. This means that a request can pass through
+            // even though CrowdSec already block the IP, simply because bouncer does not know yet that a decision
+            // was made. `10s` is recommended by CrowdSec, but depending on your situation, you may want to reduce it
+            // even further or set `enable_streaming` to `false`.
+            "enable_streaming": true,
+            // The next 2 settings determine how bouncer will behave if CrowdSec or AppSec specifically is down or fails
+            // in some way. If `enable_hard_fails` is set to `true` and CrowdSec is down - request will be blocked.
+            // If AppSec is enabled and `appsec_fail_open` is set to `false` - the same will happen if communication with
+            // AppSec fails, even if CrowdSec itself is running normally. Choosing the values depends on how tolerant
+            // you are to potentially malicious requests, and if you have any other mitigations at play.
+            "enable_hard_fails": false,
+            "appsec_fail_open": true,
+            // This setting allows treating rejections from CrowdSec (including AppSec) as regular Caddy errors, if set
+            // to `true`. This means that the request will go through the `errors` route if one is defined, where you can
+            // do any additional processing, including custom error pages. If set to `false` (default), and bouncer blocks
+            // the request, Caddy will send appropriate error code with an empty body.
+            "enable_caddy_error": true
+        },
+        // Example setup of L4 app that uses CrowdSec.
+        "layer4": {
+            "servers": {
+                "https_proxy": {
+                    "listen": [
+                        "caddy:8443"
+                    ],
+                    "routes": [
+                        {
+                            "match": [
+                                {
+                                    "crowdsec": {},
+                                    "tls": {}
+                                }
+                            ],
+                            "handle": [
+                                {
+                                    "handler": "proxy",
+                                    "upstreams": [
+                                        {
+                                            "dial": [
+                                                "caddy:9443"
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "http": {
+            "http_port": 9080,
+            "https_port": 9443,
+            "servers": {
+                "server1": {
+                    "listen": [
+                        "0.0.0.0:9443"
+                    ],
+                    "routes": [
+                        {
+                            "group": "temp-example-group",
+                            "match": [
+                                {
+                                    "path": [
+                                        "/*"
+                                    ]
+                                }
+                            ],
+                            "handle": [
+                                // Enable CrowdSec and AppSec. If you are using AppSec, it *needs* to go *after* CrowdSec
+                                // so that, in case there was a decision, request is blocked and is not parsed by AppSec.
+                                {
+                                    "handler": "crowdsec"
+                                },
+                                {
+                                    "handler": "appsec"
+                                },
+                                // Static response is used for simplicity of the example. In the real world you most likely
+                                // will have something else here, for example, a PHP handler.
+                                {
+                                    "handler": "static_response",
+                                    "status_code": "200",
+                                    "body": "Hello World!"
+                                },
+                                {
+                                    "handler": "headers",
+                                    "response": {
+                                        "set": {
+                                            "Server": [
+                                                "caddy-cs-bouncer-example-server"
+                                            ]
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "errors": {
+                        "routes": [
+                            {
+                                "handle": [
+                                    // Below subroute is used to minimize potential for hotlinking resources, when you
+                                    // block a request and serve a custom page, but so that images and other resources
+                                    // like CSS files from it are still loaded. This *needs* to come first to any other
+                                    // processing. At the same time, if you have a plain-text static response, then you
+                                    // do not need this at all.
+                                    {
+                                        "handler": "subroute",
+                                        "routes": [
+                                            {
+                                                // This is where your error page is located. It can be a path to a file
+                                                // or, as in this example, a path that will be processed by PHP script.
+                                                "handle": [
+                                                    {
+                                                        "handler": "rewrite",
+                                                        "uri": "/httperror/{http.error.status_code}/"
+                                                    }
+                                                ],
+                                                // We define what parameters will force the rewrite. Every {} object is
+                                                // a matcher, and is used with `OR` logic, meaning that either one of
+                                                // the conditions need to match.
+                                                "match": [
+                                                    // All requests to .php files will be rewritten. Of course, it can
+                                                    // be any other path or set of those.
+                                                    {
+                                                        "path": [
+                                                            "*.php"
+                                                        ]
+                                                    },
+                                                    // If there is a `Sec-Fetch-Dest` header set to `document`, it means
+                                                    // that this was either a direct request or result of navigation,
+                                                    // even if the resource in question is an image.
+                                                    {
+                                                        "header": {
+                                                            "Sec-Fetch-Dest": [
+                                                                "document"
+                                                            ]
+                                                        }
+                                                    },
+                                                    // In case `Sec-Fetch-Dest` is missing for some reason or otherwise
+                                                    // not a `document`, check if `Sec-Fetch-Site` is set and is `none`,
+                                                    // which indicates a direct navigation from address bar, but does
+                                                    // not cover navigations without the website itself.
+                                                    {
+                                                        "header": {
+                                                            "Sec-Fetch-Site": [
+                                                                "none"
+                                                            ]
+                                                        }
+                                                    },
+                                                    // While `Sec-Fetch-*` headers are ubiquitous, there can still be
+                                                    // browsers or libraries that will not send these headers. If they
+                                                    // are not present, check `Referer` header exists and it starts
+                                                    // with our host.
+                                                    {
+                                                        "header": {
+                                                            "Sec-Fetch-Dest": null,
+                                                            "Sec-Fetch-Site": null,
+                                                            "Referer": []
+                                                        },
+                                                        "expression": "!'{http.request.header.Referer}'.startsWith('{http.request.scheme}://{http.request.host}')"
+                                                    },
+                                                    // Depending on Referrer Policy and the browser/library accessing
+                                                    // the service, there may be no `Referer`, but be `Origin` header.
+                                                    // If it exists, do similar check as with `Referer`.
+                                                    {
+                                                        "header": {
+                                                            "Sec-Fetch-Dest": null,
+                                                            "Sec-Fetch-Site": null,
+                                                            "Referer": null,
+                                                            "Origin": []
+                                                        },
+                                                        "expression": "!'{http.request.header.Origin}'.startsWith('{http.request.scheme}://{http.request.host}')"
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    // This subroute is for actual generation of the error page.
+                                    {
+                                        "handler": "subroute",
+                                        "routes": [
+                                            // This is to set custom variables, that will hold original status code and
+                                            // message from Caddy (including those issues by the bouncer). It is required
+                                            // to use the `match`, because otherwise we will get literal
+                                            // "{http.error.status_code}" into the variables on next step.
+                                            {
+                                                "handle": [
+                                                    {
+                                                        "handler": "vars",
+                                                        "caddy_http_error": "{http.error.status_code}",
+                                                        "caddy_http_error_msg": "{http.error.message}"
+                                                    }
+                                                ],
+                                                "match": [
+                                                    {
+                                                        "expression": "{http.error.status_code} != ''"
+                                                    }
+                                                ]
+                                            },
+                                            // Here we generate a page using PHP. Note that this is done as an example,
+                                            // just to show it can be done. In a live system you may prefer to have a
+                                            // static response to limit possibility of DoS attacks, especially if there
+                                            // is some heavy processing in the PHP logic.
+                                            {
+                                                "handle": [
+                                                    {
+                                                        "handler": "php",
+                                                        // Here we set the environment variables that we can use from
+                                                        // inside PHP. Thanks to the `match` case on the previous step,
+                                                        // if the Caddy variables were not set, the environment variables
+                                                        // will be set to empty strings. This can happen if an error
+                                                        // occurred not in HTTP module, but somewhere else.
+                                                        "env": {
+                                                            "CADDY_HTTP_ERROR": "{http.vars.caddy_http_error}",
+                                                            "CADDY_HTTP_ERROR_MSG": "{http.vars.caddy_http_error_msg}"
+                                                        },
+                                                        "split_path": [
+                                                            ".php"
+                                                        ]
+                                                    }
+                                                ],
+                                                // Note that this is done only for PHP files.
+                                                "match": [
+                                                    {
+                                                        "path": [
+                                                            "*.php"
+                                                        ]
+                                                    }
+                                                ]
+                                            },
+                                            // This will server files, the rest of the files. Status code is set to
+                                            // "overwrite" the error code. This is required in case your custom error
+                                            // page uses CSS or JS files, because browsers will refuse to process them.
+                                            // Will also help to reduce noise from "failed" images, even though they
+                                            // will likely be still loaded on the page itself.
+                                            {
+                                                "handle": [
+                                                    {
+                                                        "handler": "file_server",
+                                                        "status_code": 200
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "terminal": true
+                            }
+                        ]
+                    },
+                    // This needs to be set so that CrowdSec has something to read.
+                    "logs": {
+                        "default_logger_name": "access"
+                    }
+                }
+            }
+        },
+        // Simple example of TLS for testing only. Refer to Caddy documentation for proper configuration.
+        "tls": {
+            "automation": {
+                "policies": [
+                    {
+                        "subjects": [
+                            "caddy",
+                            "localhost"
+                        ],
+                        "issuers": [
+                            {
+                                "module": "internal"
+                            }
+                        ],
+                        "on_demand": true
+                    }
+                ]
+            }
+        }
+    }
+}
