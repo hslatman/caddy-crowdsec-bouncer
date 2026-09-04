@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -264,11 +265,76 @@ func StartAppSecContainer(ctx context.Context, logger log.Logger) (*Container, f
 		return nil, func() {}, fmt.Errorf("failed determining mapped AppSec port: %w", err)
 	}
 
+	appsecURL := fmt.Sprintf("http://127.0.0.1:%s", appsecPort.Port())
+	if err := waitForAppSecAuth(ctx, appsecURL); err != nil {
+		terminate()
+		return nil, func() {}, err
+	}
+
 	return &Container{
 		c:        c,
 		endpoint: fmt.Sprintf("http://127.0.0.1:%s", endpointPort.Port()),
-		appsec:   fmt.Sprintf("http://127.0.0.1:%s", appsecPort.Port()),
+		appsec:   appsecURL,
 	}, terminate, nil
+}
+
+// waitForAppSecAuth blocks until the AppSec component accepts the bouncer API
+// key.
+//
+// The container is gated on the "Appsec Runner ready to process event" log
+// line, but for a moment after that the component still answers 401 to a
+// request carrying a valid key. A test firing into that window fails on the
+// bouncer's reaction to the 401 rather than on the behaviour it asserts, so the
+// gate has to be an actually authenticated request instead of the log line.
+func waitForAppSecAuth(ctx context.Context, appsecURL string) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	last := "no attempt completed"
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		switch code, err := appsecProbe(ctx, client, appsecURL); {
+		case err != nil:
+			last = err.Error()
+		case code == http.StatusUnauthorized:
+			last = "401 Unauthorized"
+		default:
+			return nil
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("AppSec component did not authenticate the bouncer key: %s", last)
+}
+
+// appsecProbe sends the smallest request the AppSec component accepts, shaped
+// the same way the bouncer shapes one in internal/core/appsec.go.
+func appsecProbe(ctx context.Context, client *http.Client, appsecURL string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, appsecURL, http.NoBody)
+	if err != nil {
+		return 0, err
+	}
+
+	req.Header.Set("X-Crowdsec-Appsec-Ip", "127.0.0.1")
+	req.Header.Set("X-Crowdsec-Appsec-Uri", "/")
+	req.Header.Set("X-Crowdsec-Appsec-Host", "127.0.0.1")
+	req.Header.Set("X-Crowdsec-Appsec-Verb", http.MethodGet)
+	req.Header.Set("X-Crowdsec-Appsec-Api-Key", testAPIKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+
+	return resp.StatusCode, nil
 }
 
 // terminateFunc returns a function that terminates c, removing the named

@@ -67,6 +67,7 @@ func (h *Harness) Load(t *testing.T, config string) {
 	t.Helper()
 
 	require.NoError(t, caddy.Load([]byte(config), true))
+	h.dropIdleConnections()
 	h.waitForListener(t, h.HTTPAddr)
 }
 
@@ -100,6 +101,7 @@ func (h *Harness) ReloadWithin(t *testing.T, config string, timeout time.Duratio
 			"caddy.Load did not return within %s; the decision stream is likely blocking Core.Shutdown", timeout)
 	}
 
+	h.dropIdleConnections()
 	h.waitForListener(t, h.HTTPAddr)
 }
 
@@ -196,6 +198,25 @@ func (h *Harness) url(path string) string {
 	}
 
 	return "http://" + h.HTTPAddr + path
+}
+
+// dropIdleConnections empties the client's connection pool. Call it after every
+// reload.
+//
+// A reload replaces the HTTP server, and caddy.Load returns before the outgoing
+// one has finished shutting down: App.Stop only waits for the shutdown
+// goroutines to have started, so http.Server.Shutdown closes the connections it
+// was keeping alive concurrently with, or after, the call returns. Any request
+// made right after a reload can therefore pick a pooled connection that the old
+// server is closing underneath it. The transport does not retry a POST on such
+// a connection (only GET, HEAD, OPTIONS and TRACE are replayable), so it
+// surfaces as a bare "EOF" from an otherwise valid request.
+//
+// waitForListener does not cover this: Caddy reuses the listener across
+// reloads, so the address keeps accepting throughout and the dial says nothing
+// about which server owns an existing connection.
+func (h *Harness) dropIdleConnections() {
+	h.client.CloseIdleConnections()
 }
 
 // waitForListener blocks until addr accepts a TCP connection.
