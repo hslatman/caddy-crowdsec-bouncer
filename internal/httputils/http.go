@@ -31,9 +31,7 @@ var (
 	ErrThrottled = errors.New("throttled by crowdsec")
 )
 
-// Keys of the Caddy variables set when a request is blocked. Both handlers
-// write the same 403, so without these a Caddyfile can't tell an IP decision
-// apart from an AppSec hit, nor see which CrowdSec origin caused it.
+// Keys of the Caddy variables set when a request is blocked.
 const (
 	ModuleVarKey      = "crowdsec.module"
 	RemediationVarKey = "crowdsec.remediation"

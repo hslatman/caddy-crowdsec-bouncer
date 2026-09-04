@@ -111,7 +111,7 @@ Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 match
 When a request is blocked, the HTTP and AppSec handlers record why in the request context, so that Caddyfile matchers and logs can tell blocks apart:
 
 | Variable                           | Description                           | Examples                          |
-|:-----------------------------------|:------------------------------------- |:----------------------------------|
+|------------------------------------|---------------------------------------|-----------------------------------|
 | `{http.vars.crowdsec.module}`      | The handler that blocked the request. | `http`, `appsec`                  |
 | `{http.vars.crowdsec.remediation}` | The remediation that was applied.     | `ban`, `captcha`, `throttle`      |
 | `{http.vars.crowdsec.origin}`      | The origin of the decision            | `appsec`, `crowdsec`, `lists:foo` |
