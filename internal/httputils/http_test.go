@@ -126,6 +126,11 @@ func TestWriteResponse_Throttle(t *testing.T) {
 }
 
 func TestSetBlockVars(t *testing.T) {
+	assert.Equal(t, "crowdsec.module", ModuleVarKey)
+	assert.Equal(t, "crowdsec.remediation", RemediationVarKey)
+	assert.Equal(t, "crowdsec.origin", OriginVarKey)
+	assert.Equal(t, "crowdsec.duration", DurationVarKey)
+
 	// the handlers set the vars on a context derived from the request's, so the
 	// request context is what has to see them for the logger to pick them up
 	requestCtx := newCaddyVarsContext(t.Context())

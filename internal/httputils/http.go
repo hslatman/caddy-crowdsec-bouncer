@@ -35,14 +35,14 @@ var (
 // write the same 403, so without these a Caddyfile can't tell an IP decision
 // apart from an AppSec hit, nor see which CrowdSec origin caused it.
 const (
-	ModuleVarKey      = "crowdsec_module"
-	RemediationVarKey = "crowdsec_remediation"
-	OriginVarKey      = "crowdsec_origin"
-	DurationVarKey    = "crowdsec_duration"
+	ModuleVarKey      = "crowdsec.module"
+	RemediationVarKey = "crowdsec.remediation"
+	OriginVarKey      = "crowdsec.origin"
+	DurationVarKey    = "crowdsec.duration"
 )
 
 // SetBlockVars records why a request was blocked, making the reason available
-// to matchers and the access log as `{vars.crowdsec_*}` placeholders.
+// to matchers and the access log as `{vars.crowdsec.*}` placeholders.
 func SetBlockVars(ctx context.Context, module, remediation, origin, duration string) {
 	caddyhttp.SetVar(ctx, ModuleVarKey, module)
 	caddyhttp.SetVar(ctx, RemediationVarKey, remediation)

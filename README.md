@@ -112,14 +112,14 @@ When a request is blocked, the HTTP and AppSec handlers record why in the reques
 
 | Variable                      | Description                                                              | Examples                          |
 |:------------------------------|:-------------------------------------------------------------------------|:----------------------------------|
-| `{vars.crowdsec_module}`      | The handler that blocked the request.                                     | `http`, `appsec`                  |
-| `{vars.crowdsec_remediation}` | The remediation that was applied.                                         | `ban`, `captcha`, `throttle`      |
-| `{vars.crowdsec_origin}`      | The origin of the decision; AppSec blocks report `appsec`.                | `CAPI`, `crowdsec`, `lists:foo`   |
-| `{vars.crowdsec_duration}`    | The duration of the decision.                                             | `3h59m58s`                        |
+| `{vars.crowdsec.module}`      | The handler that blocked the request.                                     | `http`, `appsec`                  |
+| `{vars.crowdsec.remediation}` | The remediation that was applied.                                         | `ban`, `captcha`, `throttle`      |
+| `{vars.crowdsec.origin}`      | The origin of the decision; AppSec blocks report `appsec`.                | `CAPI`, `crowdsec`, `lists:foo`   |
+| `{vars.crowdsec.duration}`    | The duration of the decision.                                             | `3h59m58s`                        |
 
 ```Caddyfile
 handle_errors {
-  log_append blocked-by {vars.crowdsec_module}
+  log_append blocked-by {vars.crowdsec.module}
 }
 ```
 
