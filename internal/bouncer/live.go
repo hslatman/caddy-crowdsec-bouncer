@@ -27,7 +27,7 @@ func (b *LiveBouncer) Get(ctx context.Context, value, method string) (*models.Ge
 	defer cancel()
 
 	filter := apiclient.DecisionsListOpts{
-		IPEquals: &value,
+		IPEquals: value,
 	}
 
 	var mode string
