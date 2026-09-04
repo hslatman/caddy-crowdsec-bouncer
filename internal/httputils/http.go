@@ -42,7 +42,7 @@ const (
 )
 
 // SetBlockVars records why a request was blocked, making the reason available
-// to matchers and the access log as `{vars.crowdsec.*}` placeholders.
+// to matchers and the access log as `{http.vars.crowdsec.*}` placeholders.
 func SetBlockVars(ctx context.Context, module, remediation, origin, duration string) {
 	caddyhttp.SetVar(ctx, ModuleVarKey, module)
 	caddyhttp.SetVar(ctx, RemediationVarKey, remediation)

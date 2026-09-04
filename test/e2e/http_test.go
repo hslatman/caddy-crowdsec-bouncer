@@ -94,7 +94,7 @@ func TestHTTPCaddyErrorExposesBlockVariables(t *testing.T) {
 	container := sharedCrowdSec(t)
 	h := testutils.NewHarness(t)
 
-	const errorPage = "{vars.crowdsec.module}|{vars.crowdsec.remediation}|{vars.crowdsec.origin}|{vars.crowdsec.duration}"
+	const errorPage = "{http.vars.crowdsec.module}|{http.vars.crowdsec.remediation}|{http.vars.crowdsec.origin}|{http.vars.crowdsec.duration}"
 	h.Load(t, config(t, h, container,
 		withStreaming(false), withCaddyError(), withErrorPage(errorPage)))
 
@@ -108,7 +108,7 @@ func TestHTTPCaddyErrorExposesBlockVariables(t *testing.T) {
 	require.Len(t, parts, 4)
 	assert.Equal(t, "http", parts[0])
 	assert.Equal(t, "ban", parts[1])
-	assert.Equal(t, "crowdsec", parts[2])
+	assert.Equal(t, "cscli", parts[2])
 	assert.NotEmpty(t, parts[3], "the block duration variable should be populated")
 }
 
