@@ -105,11 +105,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 
 	if !isAllowed {
 		// TODO: maybe some configuration to override the type of action with a ban, some default, something like that?
-		// TODO: can we provide the reason for the response to the Caddy logger, like the CrowdSec type, duration, etc.
 		typ := *decision.Type
 		value := *decision.Value
 		duration := *decision.Duration
 		origin := *decision.Origin
+
+		httputils.SetBlockVars(ctx, module, typ, origin, duration)
 
 		if err := httputils.WriteResponse(w, h.logger, typ, value, duration, 0, h.crowdsec.EnableCaddyError); err != nil {
 			h.crowdsec.IncrementBlockedRequests(server, origin, typ, ip.Is6()) // TODO: properly set the action that was performed

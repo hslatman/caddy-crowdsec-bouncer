@@ -124,3 +124,22 @@ func TestWriteResponse_Throttle(t *testing.T) {
 		assert.Equal(t, "10", w.Header().Get("Retry-After"))
 	})
 }
+
+func TestSetBlockVars(t *testing.T) {
+	assert.Equal(t, "crowdsec.module", ModuleVarKey)
+	assert.Equal(t, "crowdsec.remediation", RemediationVarKey)
+	assert.Equal(t, "crowdsec.origin", OriginVarKey)
+	assert.Equal(t, "crowdsec.duration", DurationVarKey)
+
+	// The handlers set vars on a context derived from the request's context, 
+	// so the request context is what the logger sees.
+	requestCtx := newCaddyVarsContext(t.Context())
+	handlerCtx := newContext(requestCtx, netip.MustParseAddr("127.0.0.1"))
+
+	SetBlockVars(handlerCtx, "http", "ban", "CAPI", "3h59m58s")
+
+	assert.Equal(t, "http", caddyhttp.GetVar(requestCtx, ModuleVarKey))
+	assert.Equal(t, "ban", caddyhttp.GetVar(requestCtx, RemediationVarKey))
+	assert.Equal(t, "CAPI", caddyhttp.GetVar(requestCtx, OriginVarKey))
+	assert.Equal(t, "3h59m58s", caddyhttp.GetVar(requestCtx, DurationVarKey))
+}

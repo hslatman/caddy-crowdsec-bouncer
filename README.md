@@ -106,6 +106,23 @@ Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 match
 | `appsec_fail_open`      | Ignore AppSec component connection errors.                                                                                                                          | `false`                  |
 | `enable_caddy_error`    | Propagates decisions as Caddy errors to allow custom error pages. **Warning:** Ensure `handle_errors` routes are strictly static to avoid resource exhaustion (DoS).| `false`                  |
 
+#### Variables
+
+When a request is blocked, the HTTP and AppSec handlers record why in the request context, so that Caddyfile matchers and logs can tell blocks apart:
+
+| Variable                           | Description                           | Examples                          |
+|------------------------------------|---------------------------------------|-----------------------------------|
+| `{http.vars.crowdsec.module}`      | The handler that blocked the request. | `http`, `appsec`                  |
+| `{http.vars.crowdsec.remediation}` | The remediation that was applied.     | `ban`, `captcha`, `throttle`      |
+| `{http.vars.crowdsec.origin}`      | The origin of the decision            | `appsec`, `crowdsec`, `lists:foo` |
+| `{http.vars.crowdsec.duration}`    | The duration of the decision.         | `3h59m58s`                        |
+
+```Caddyfile
+handle_errors {
+  log_append blocked-by {http.vars.crowdsec.module}
+}
+```
+
 #### Example
 
 ```Caddyfile

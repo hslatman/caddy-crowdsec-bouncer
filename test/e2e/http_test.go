@@ -5,6 +5,7 @@ package e2e
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,28 @@ func TestHTTPCaddyErrorServesCustomPage(t *testing.T) {
 	resp, body := h.Get(t, "/", ip)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	assert.Equal(t, errorPage, body, "handle_errors route should have produced the body")
+}
+
+func TestHTTPCaddyErrorExposesBlockVariables(t *testing.T) {
+	container := sharedCrowdSec(t)
+	h := testutils.NewHarness(t)
+
+	const errorPage = "{http.vars.crowdsec.module}|{http.vars.crowdsec.remediation}|{http.vars.crowdsec.origin}|{http.vars.crowdsec.duration}"
+	h.Load(t, config(t, h, container,
+		withStreaming(false), withCaddyError(), withErrorPage(errorPage)))
+
+	ip := testutils.NextTestIP(t)
+	testutils.Ban(t, container, ip, time.Minute)
+
+	resp, body := h.Get(t, "/", ip)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	parts := strings.Split(body, "|")
+	require.Len(t, parts, 4)
+	assert.Equal(t, "http", parts[0])
+	assert.Equal(t, "ban", parts[1])
+	assert.Equal(t, "cscli", parts[2])
+	assert.NotEmpty(t, parts[3], "the block duration variable should be populated")
 }
 
 func TestHTTPAllowsAgainAfterDecisionDeleted(t *testing.T) {

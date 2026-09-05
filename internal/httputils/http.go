@@ -31,6 +31,23 @@ var (
 	ErrThrottled = errors.New("throttled by crowdsec")
 )
 
+// Keys of the Caddy variables set when a request is blocked.
+const (
+	ModuleVarKey      = "crowdsec.module"
+	RemediationVarKey = "crowdsec.remediation"
+	OriginVarKey      = "crowdsec.origin"
+	DurationVarKey    = "crowdsec.duration"
+)
+
+// SetBlockVars records why a request was blocked, making the reason available
+// to matchers and the access log as `{http.vars.crowdsec.*}` placeholders.
+func SetBlockVars(ctx context.Context, module, remediation, origin, duration string) {
+	caddyhttp.SetVar(ctx, ModuleVarKey, module)
+	caddyhttp.SetVar(ctx, RemediationVarKey, remediation)
+	caddyhttp.SetVar(ctx, OriginVarKey, origin)
+	caddyhttp.SetVar(ctx, DurationVarKey, duration)
+}
+
 // determineIPFromRequest returns the IP of the client based on the value that
 // Caddy extracts from the original request and stores in the request context.
 // Support for setting the real client IP in case a proxy sits in front of
