@@ -114,3 +114,49 @@ func TestStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, r1)
 }
+
+func TestStorePrefersStricterRemediation(t *testing.T) {
+	var (
+		duration   = "120s"
+		source     = "cscli"
+		scenario   = "manual ban ..."
+		scopeIP    = "Ip"
+		scopeRange = "Range"
+		typBan     = "ban"
+		typCaptcha = "captcha"
+		rangeValue = "10.0.0.0/24"
+		ipValue    = "10.0.0.5"
+	)
+
+	// an IP can be covered by a range decision and by a decision of its own;
+	// the strictest of the two must be served, so that a solvable captcha
+	// never shadows a ban.
+	rangeBan := &models.Decision{
+		Duration: &duration,
+		ID:       1,
+		Origin:   &source,
+		Scenario: &scenario,
+		Scope:    &scopeRange,
+		Type:     &typBan,
+		Value:    &rangeValue,
+	}
+
+	ipCaptcha := &models.Decision{
+		Duration: &duration,
+		ID:       2,
+		Origin:   &source,
+		Scenario: &scenario,
+		Scope:    &scopeIP,
+		Type:     &typCaptcha,
+		Value:    &ipValue,
+	}
+
+	s := newStore()
+	require.NoError(t, s.add(ipCaptcha))
+	require.NoError(t, s.add(rangeBan))
+
+	d, err := s.get(netip.MustParseAddr(ipValue))
+	require.NoError(t, err)
+	require.NotNil(t, d)
+	require.Equal(t, typBan, *d.Type)
+}
