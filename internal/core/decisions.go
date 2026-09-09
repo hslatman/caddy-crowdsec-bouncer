@@ -123,9 +123,9 @@ func (b *Core) retrieveDecision(ctx context.Context, ip netip.Addr, forceLive bo
 		return nil, nil // when not failing hard, we return no error
 	}
 
-	if len(*decisions) >= 1 {
-		return (*decisions)[0], nil // TODO: decide if choosing the first decision is OK
+	if decisions == nil {
+		return nil, nil
 	}
 
-	return nil, nil
+	return selectDecision(*decisions), nil
 }

@@ -92,18 +92,11 @@ func (s *store) get(key netip.Addr) (*models.Decision, error) {
 		return nil, err
 	}
 
-	if len(r) == 0 {
-		return nil, nil
-	}
+	// an IP can exist in multiple networks (CIDR ranges), so there can be
+	// multiple Decisions to act upon. Only one of them can be served, so the
+	// strictest one is selected; see selectDecision.
 
-	// currently we return the first match, but the IP can exist in multiple
-	// networks (CIDR ranges) and there may thus be multiple Decisions to act
-	// upon. In general, though, the existence of at least a single Decision
-	// means that the IP should not be allowed, so it's relatively safe to use
-	// the first, but there may be 'softer' Decisions that should actually take
-	// precedence.
-
-	return r[0], err
+	return selectDecision(r), nil
 }
 
 // parseIP parses a value
