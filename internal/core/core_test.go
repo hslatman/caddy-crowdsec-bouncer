@@ -24,14 +24,20 @@ func newCore(t *testing.T) (*Core, error) {
 
 	key := "apiKey"
 	host := "http://127.0.0.1:8080/"
-	streamingEnabled := true
-	tickerInterval := 10 * time.Second
 	logger := zaptest.NewLogger(t)
-	appSecTimeout := 2 * time.Second
-	appSecFailOpen := false
-	shouldFailHard := false
 
-	bouncer, err := New(key, host, streamingEnabled, "", 0, appSecTimeout, appSecFailOpen, tickerInterval, shouldFailHard, logger, nil, 0)
+	bouncer, err := New(Config{
+		APIKey:            key,
+		APIURL:            host,
+		StreamingEnabled:  true,
+		AppSecTimeout:     2 * time.Second,
+		AppSecMaxBodySize: 0,
+		AppSecFailOpen:    false,
+		TickerInterval:    10 * time.Second,
+		LAPITimeout:       10 * time.Second,
+		ShouldFailHard:    false,
+		Logger:            logger,
+	})
 	require.NoError(t, err)
 
 	// the code below mimicks the bouncer.streamingBouncer.Init() functionality
@@ -53,9 +59,16 @@ func newCore(t *testing.T) (*Core, error) {
 	require.NoError(t, err)
 	bouncer.streamingBouncer.SetAPIClientForTesting(apiClient)
 
-	metricsRegistry := prometheus.NewRegistry()
-	fakeCaddyMetricsRegistry := prometheus.NewRegistry()
-	bouncer.metricsProvider, err = metrics.NewProvider(apiClient, metricsRegistry, fakeCaddyMetricsRegistry, 0, bouncer.logger, bouncer.instanceID, userAgentName, userAgentVersion)
+	bouncer.metricsProvider, err = metrics.NewProvider(metrics.Config{
+		APIClient:            apiClient,
+		MetricsRegistry:      prometheus.NewRegistry(),
+		CaddyMetricsRegistry: prometheus.NewRegistry(),
+		Interval:             0,
+		Logger:               bouncer.logger,
+		UserAgentName:        userAgentName,
+		UserAgentVersion:     userAgentVersion,
+		InstanceID:           bouncer.instanceID,
+	})
 
 	// initialization of the bouncer finished; running is responsibility of the caller
 
@@ -237,4 +250,28 @@ func Test_generateInstanceID(t *testing.T) {
 	id, err := generateInstanceID(time.Now())
 	require.NoError(t, err)
 	require.Len(t, id, 8)
+}
+
+// TestCoreTracksDecisionStorePopulated covers the silent half of #138: while the
+// startup pull keeps failing the store is empty and every request is allowed,
+// and nothing today tells an operator that is what is happening.
+func TestCoreTracksDecisionStorePopulated(t *testing.T) {
+	b, err := newCore(t)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = b.Shutdown() })
+
+	require.False(t, b.DecisionStorePopulated(), "must start unpopulated")
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+
+	urlRegexp := regexp.MustCompile(`http:\/\/127\.0\.0\.1:8080\/v1\/decisions\/stream\?`)
+	httpmock.RegisterRegexpResponder("GET", urlRegexp, httpmock.NewJsonResponderOrPanic(200, decisions()))
+
+	ctx := t.Context()
+	b.Run(ctx)
+
+	require.Eventually(t, b.DecisionStorePopulated, 5*time.Second, 20*time.Millisecond,
+		"the store must be marked populated once the startup pull has been processed")
 }

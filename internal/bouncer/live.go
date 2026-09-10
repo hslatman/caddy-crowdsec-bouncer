@@ -13,17 +13,19 @@ import (
 type LiveBouncer struct {
 	apiClient       *apiclient.ApiClient
 	metricsProvider *metrics.Provider
+	timeout         time.Duration
 }
 
-func NewLiveBouncer(a *apiclient.ApiClient, m *metrics.Provider) *LiveBouncer {
+func NewLiveBouncer(a *apiclient.ApiClient, m *metrics.Provider, timeout time.Duration) *LiveBouncer {
 	return &LiveBouncer{
 		apiClient:       a,
 		metricsProvider: m,
+		timeout:         timeout,
 	}
 }
 
 func (b *LiveBouncer) Get(ctx context.Context, value, method string) (*models.GetDecisionsResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
 	filter := apiclient.DecisionsListOpts{

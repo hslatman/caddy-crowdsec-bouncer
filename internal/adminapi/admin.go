@@ -17,6 +17,7 @@ type Info struct {
 	InstanceID              string
 	Uptime                  time.Duration
 	NumberOfActiveDecisions int
+	DecisionStorePopulated  bool
 }
 
 type Admin interface {

@@ -102,6 +102,12 @@ type CrowdSec struct {
 	// When false (the default), AppSec errors will result in requests
 	// being blocked.
 	AppSecFailOpen *bool `json:"appsec_fail_open,omitempty"`
+	// LAPITimeout is the maximum time to wait for a response from the
+	// CrowdSec Local API. Defaults to 10s. It applies to delta decision
+	// pulls, live lookups and metrics pushes; the startup decision pull gets
+	// a larger derived budget, because it is a full dump rather than a
+	// request-path call.
+	LAPITimeout caddy.Duration `json:"lapi_timeout,omitempty"`
 
 	ctx    caddy.Context
 	logger *zap.Logger
@@ -134,12 +140,26 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 		registry = ctx.GetMetricsRegistry()
 	}
 
-	core, err := core.New(c.APIKey, c.APIUrl, c.isStreamingEnabled(), c.AppSecUrl, c.appSecMaxBodySize(), c.appSecTimeout(), c.isAppSecFailOpenEnabled(), c.tickerInterval(), c.shouldFailHard(), c.logger, registry, c.metricsInterval())
+	instance, err := core.New(core.Config{
+		APIKey:               c.APIKey,
+		APIURL:               c.APIUrl,
+		StreamingEnabled:     c.isStreamingEnabled(),
+		AppSecURL:            c.AppSecUrl,
+		AppSecMaxBodySize:    c.appSecMaxBodySize(),
+		AppSecTimeout:        c.appSecTimeout(),
+		AppSecFailOpen:       c.isAppSecFailOpenEnabled(),
+		TickerInterval:       c.tickerInterval(),
+		LAPITimeout:          c.lapiTimeout(),
+		ShouldFailHard:       c.shouldFailHard(),
+		Logger:               c.logger,
+		CaddyMetricsRegistry: registry,
+		MetricsInterval:      c.metricsInterval(),
+	})
 	if err != nil {
 		return err
 	}
 
-	c.core = core
+	c.core = instance
 
 	return nil
 }
@@ -163,6 +183,9 @@ func (c *CrowdSec) Validate() error {
 		if d <= 0 {
 			return errors.New("ticker interval must be positive")
 		}
+	}
+	if err := c.validateLAPITimeout(); err != nil {
+		return err
 	}
 
 	return nil
@@ -356,6 +379,25 @@ func (c *CrowdSec) appSecTimeout() time.Duration {
 	}
 
 	return time.Duration(c.AppSecTimeout)
+}
+
+func (c *CrowdSec) lapiTimeout() time.Duration {
+	if c.LAPITimeout == 0 {
+		return 10 * time.Second
+	}
+
+	return time.Duration(c.LAPITimeout)
+}
+
+// validateLAPITimeout rejects a negative lapi_timeout. Zero cannot be rejected
+// here because it is indistinguishable from "unset" in JSON; the Caddyfile
+// parser rejects a non-positive literal at parse time instead.
+func (c *CrowdSec) validateLAPITimeout() error {
+	if c.LAPITimeout < 0 {
+		return errors.New("lapi timeout must be positive")
+	}
+
+	return nil
 }
 
 func (c *CrowdSec) isAppSecFailOpenEnabled() bool {

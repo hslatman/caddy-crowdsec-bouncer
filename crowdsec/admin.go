@@ -20,6 +20,7 @@ func (c *CrowdSec) Info(_ context.Context) adminapi.Info {
 		InstanceID:              c.core.InstanceID(),
 		Uptime:                  time.Since(c.core.StartedAt()),
 		NumberOfActiveDecisions: c.core.NumberOfActiveDecisions(),
+		DecisionStorePopulated:  c.core.DecisionStorePopulated(),
 	}
 }
 
