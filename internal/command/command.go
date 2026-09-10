@@ -114,7 +114,11 @@ func cmdHealth(fl caddycmd.Flags) (int, error) {
 	}
 
 	if !h.Ok {
-		return exitCodeError, nil
+		// Return a REAL error, not just the exit code: caddycmd's cobra wrapper
+		// only propagates the int on a non-nil error. With `return exitCodeError,
+		// nil` an unhealthy system made `caddy crowdsec health` exit 0 -- inert
+		// as an exec liveness probe.
+		return exitCodeError, errors.New("crowdsec integration is unhealthy")
 	}
 
 	return exitCodeSuccess, nil

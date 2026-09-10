@@ -75,6 +75,14 @@ type Core struct {
 	populated           atomic.Bool
 	warnUnpopulatedOnce sync.Once
 
+	// Past this age without a successful stream pull the streaming bouncer is
+	// considered frozen (see StreamStale/Healthy).
+	streamStaleThreshold time.Duration
+	// How long the very first pull may take before a stream that never
+	// connected counts as frozen. The startup pull is a full dump on its own,
+	// larger budget, so this is never shorter than that budget.
+	streamStartupWindow time.Duration
+
 	ctx       context.Context
 	started   bool
 	stopped   bool
@@ -148,19 +156,28 @@ func New(cfg Config) (*Core, error) {
 	appsec := newAppSec(cfg.AppSecURL, cfg.APIKey, cfg.AppSecMaxBodySize, cfg.AppSecTimeout, cfg.AppSecFailOpen, cfg.Logger.Named("appsec"), metricsProvider)
 	store := newStore()
 
+	// Three missed ticks count as a freeze, never below 30s (so a single slow
+	// pull is not mistaken for a frozen stream).
+	staleThreshold := 3 * cfg.TickerInterval
+	if staleThreshold < 30*time.Second {
+		staleThreshold = 30 * time.Second
+	}
+
 	return &Core{
-		apiURL:              cfg.APIURL,
-		streamingBouncer:    streamingBouncer,
-		useStreamingBouncer: cfg.StreamingEnabled,
-		liveBouncer:         liveBouncer,
-		appsec:              appsec,
-		store:               store,
-		metricsProvider:     metricsProvider,
-		logger:              cfg.Logger, // TODO add fields here?
-		shouldFailHard:      cfg.ShouldFailHard,
-		userAgent:           userAgent,
-		instantiatedAt:      instantiatedAt,
-		instanceID:          instanceID,
+		apiURL:               cfg.APIURL,
+		streamingBouncer:     streamingBouncer,
+		streamStaleThreshold: staleThreshold,
+		streamStartupWindow:  max(staleThreshold, streamingBouncer.StartupTimeout()),
+		useStreamingBouncer:  cfg.StreamingEnabled,
+		liveBouncer:          liveBouncer,
+		appsec:               appsec,
+		store:                store,
+		metricsProvider:      metricsProvider,
+		logger:               cfg.Logger, // TODO add fields here?
+		shouldFailHard:       cfg.ShouldFailHard,
+		userAgent:            userAgent,
+		instantiatedAt:       instantiatedAt,
+		instanceID:           instanceID,
 	}, nil
 }
 
