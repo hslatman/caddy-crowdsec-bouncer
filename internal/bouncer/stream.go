@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/apiclient"
@@ -20,7 +21,25 @@ type StreamBouncer struct {
 	RetryInitialConnect bool
 	opts                apiclient.DecisionsStreamOpts
 	Stream              chan *models.DecisionsStreamResponse
+
+	// Time of the last SUCCESSFUL decision pull (unix nanos). A frozen stream
+	// (persistent error, e.g. a rejected key) lets this value age without Run
+	// returning, without a log, without a metric. It is the decoupled signal for
+	// the health check -- no live Ping needed.
+	lastSuccessfulPull atomic.Int64
 }
+
+// LastSuccessfulPull is the time of the last successful stream pull, or the
+// zero time if none has succeeded yet.
+func (b *StreamBouncer) LastSuccessfulPull() time.Time {
+	ns := b.lastSuccessfulPull.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (b *StreamBouncer) markPull() { b.lastSuccessfulPull.Store(time.Now().UnixNano()) }
 
 func NewStreamBouncer(a *apiclient.ApiClient, m *metrics.Provider, tickerInterval time.Duration, retryInitialConnect bool) (*StreamBouncer, error) {
 	if tickerInterval <= 0 {
@@ -76,6 +95,7 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 			return
 		}
 
+		b.markPull() // successful initial pull
 		// Guard the send: on shutdown the consumer (Core.startProcessingDecisions)
 		// returns on ctx.Done(), so an unguarded send here would block forever and
 		// deadlock Core.Shutdown's wg.Wait().
@@ -104,6 +124,7 @@ func (b *StreamBouncer) Run(ctx context.Context) {
 				log.Error(err)
 				continue
 			}
+			b.markPull() // successful steady-state pull
 			// Guard the send so a shutdown mid-loop can't block on a consumer
 			// that has already returned on ctx.Done().
 			select {
