@@ -3,7 +3,9 @@ package crowdsec
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/stretchr/testify/assert"
@@ -138,11 +140,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		{
 			name: "ok/basic",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.1:8080/",
-				APIKey:          "some_random_key",
-				TickerInterval:  "60s",
-				EnableStreaming: &tv,
-				EnableHardFails: &fv,
+				APIUrl:           "http://127.0.0.1:8080/",
+				APIKey:           "some_random_key",
+				TickerInterval:   "60s",
+				EnableStreaming:  &tv,
+				EnableHardFails:  &fv,
 				EnableCaddyError: false,
 			},
 			input: `crowdsec {
@@ -154,11 +156,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		{
 			name: "ok/full",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.1:8080/",
-				APIKey:          "some_random_key",
-				TickerInterval:  "33s",
-				EnableStreaming: &fv,
-				EnableHardFails: &tv,
+				APIUrl:           "http://127.0.0.1:8080/",
+				APIKey:           "some_random_key",
+				TickerInterval:   "33s",
+				EnableStreaming:  &fv,
+				EnableHardFails:  &tv,
 				EnableCaddyError: true,
 			},
 			input: `crowdsec {
@@ -174,11 +176,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		{
 			name: "ok/env-vars",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.2:8080/",
-				APIKey:          "env-test-key",
-				TickerInterval:  "25s",
-				EnableStreaming: &tv,
-				EnableHardFails: &fv,
+				APIUrl:           "http://127.0.0.2:8080/",
+				APIKey:           "env-test-key",
+				TickerInterval:   "25s",
+				EnableStreaming:  &tv,
+				EnableHardFails:  &fv,
 				EnableCaddyError: false,
 			},
 			env: map[string]string{
@@ -190,6 +192,43 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 					api_url {$CROWDSEC_TEST_API_URL}
 					api_key {$CROWDSEC_TEST_API_KEY}
 					ticker_interval {$CROWDSEC_TEST_TICKER_INTERVAL}
+				}`,
+			wantParseErr: false,
+		},
+		{
+			name:     "fail/invalid-lapi-timeout",
+			expected: &CrowdSec{},
+			input: `crowdsec {
+					api_url http://127.0.0.1:8080
+					api_key some_random_key
+					lapi_timeout 30x
+				}`,
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/non-positive-lapi-timeout",
+			expected: &CrowdSec{},
+			input: `crowdsec {
+					api_url http://127.0.0.1:8080
+					api_key some_random_key
+					lapi_timeout 0s
+				}`,
+			wantParseErr: true,
+		},
+		{
+			name: "ok/lapi-timeout",
+			expected: &CrowdSec{
+				APIUrl:          "http://127.0.0.1:8080/",
+				APIKey:          "some_random_key",
+				TickerInterval:  "60s",
+				EnableStreaming: &tv,
+				EnableHardFails: &fv,
+				LAPITimeout:     caddy.Duration(45 * time.Second),
+			},
+			input: `crowdsec {
+					api_url http://127.0.0.1:8080
+					api_key some_random_key
+					lapi_timeout 45s
 				}`,
 			wantParseErr: false,
 		},
@@ -221,6 +260,15 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			assert.Equal(t, tt.expected.isStreamingEnabled(), c.isStreamingEnabled())
 			assert.Equal(t, tt.expected.shouldFailHard(), c.shouldFailHard())
 			assert.Equal(t, tt.expected.EnableCaddyError, c.EnableCaddyError)
+			assert.Equal(t, tt.expected.LAPITimeout, c.LAPITimeout)
+
+			// lapi_timeout has `omitempty`: when it was not configured, the key
+			// must be absent from the marshalled JSON, not merely zero-valued.
+			if tt.expected.LAPITimeout == 0 {
+				assert.NotContains(t, string(app.Value), `"lapi_timeout"`)
+			} else {
+				assert.Contains(t, string(app.Value), `"lapi_timeout"`)
+			}
 		})
 	}
 }

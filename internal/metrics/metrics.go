@@ -69,7 +69,24 @@ func (m metricMap) registerAll(registry *prometheus.Registry) error {
 	return nil
 }
 
-func NewProvider(apiClient *apiclient.ApiClient, metricsRegistry, caddyMetricsRegistry *prometheus.Registry, interval time.Duration, logger *zap.Logger, userAgentName, userAgentVersion, instanceID string) (*Provider, error) {
+// Config holds the dependencies and settings for a metrics [Provider].
+type Config struct {
+	APIClient            *apiclient.ApiClient
+	MetricsRegistry      *prometheus.Registry
+	CaddyMetricsRegistry *prometheus.Registry
+	// Interval is how often metrics are pushed to the LAPI. Zero disables
+	// the push loop.
+	Interval time.Duration
+	// Timeout is the maximum time to wait for the LAPI to accept a metrics
+	// push.
+	Timeout          time.Duration
+	Logger           *zap.Logger
+	UserAgentName    string
+	UserAgentVersion string
+	InstanceID       string
+}
+
+func NewProvider(cfg Config) (*Provider, error) {
 	// bouncer metrics; provided by the go-cs-bouncer package, but overridden
 	// by recreating the main bouncer logic.
 	totalBouncerCallsCounter := prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -188,12 +205,12 @@ func NewProvider(apiClient *apiclient.ApiClient, metricsRegistry, caddyMetricsRe
 	}
 
 	// register the metrics with the registry
-	if err := metricMap.registerAll(metricsRegistry); err != nil {
+	if err := metricMap.registerAll(cfg.MetricsRegistry); err != nil {
 		return nil, fmt.Errorf("failed registering metrics: %w", err)
 	}
 
 	// register the metrics with the Caddy metrics registry
-	if err := metricMap.registerAll(caddyMetricsRegistry); err != nil {
+	if err := metricMap.registerAll(cfg.CaddyMetricsRegistry); err != nil {
 		return nil, fmt.Errorf("failed registering metrics with Caddy registry: %w", err)
 	}
 
@@ -201,11 +218,12 @@ func NewProvider(apiClient *apiclient.ApiClient, metricsRegistry, caddyMetricsRe
 	_ = osFamily
 
 	m := &Provider{
-		apiClient:                         apiClient,
-		interval:                          interval,
+		apiClient:                         cfg.APIClient,
+		interval:                          cfg.Interval,
+		timeout:                           cfg.Timeout,
 		metricMap:                         metricMap,
-		metricsRegistry:                   metricsRegistry,
-		caddyMetricsRegistry:              caddyMetricsRegistry,
+		metricsRegistry:                   cfg.MetricsRegistry,
+		caddyMetricsRegistry:              cfg.CaddyMetricsRegistry,
 		totalBouncerCallsCounter:          totalBouncerCallsCounter,
 		totalBouncerErrorsCounter:         totalBouncerErrorsCounter,
 		totalAppSecCallsCounter:           totalAppSecCallsCounter,
@@ -214,15 +232,15 @@ func NewProvider(apiClient *apiclient.ApiClient, metricsRegistry, caddyMetricsRe
 		blockedRequestsCounter:            blockedRequestsCounter,
 		processedRequestsCounter:          processedRequestsCounter,
 		processedRequestsPerModuleCounter: processedRequestsPerModuleCounter,
-		bouncerType:                       userAgentName,
-		bouncerVersion:                    userAgentVersion,
+		bouncerType:                       cfg.UserAgentName,
+		bouncerVersion:                    cfg.UserAgentVersion,
 		bouncerOS: models.OSversion{
 			Name:    &osName,
 			Version: &osVersion,
 		},
 		bouncerFeatureFlags: []string{}, // not used in bouncers?
-		logger:              logger.With(zap.String("instance_id", instanceID)),
-		instanceID:          instanceID,
+		logger:              cfg.Logger.With(zap.String("instance_id", cfg.InstanceID)),
+		instanceID:          cfg.InstanceID,
 	}
 
 	return m, nil
@@ -231,6 +249,7 @@ func NewProvider(apiClient *apiclient.ApiClient, metricsRegistry, caddyMetricsRe
 type Provider struct {
 	apiClient                         *apiclient.ApiClient
 	interval                          time.Duration
+	timeout                           time.Duration
 	metricMap                         *metricMap
 	metricsRegistry                   *prometheus.Registry
 	caddyMetricsRegistry              *prometheus.Registry
@@ -409,7 +428,7 @@ func (p *Provider) sendMetrics(ctx context.Context) (sent bool) {
 	now := time.Now()
 	metrics := p.metricsPayload(now)
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
 	_, resp, err := p.apiClient.UsageMetrics.Add(ctx, metrics)

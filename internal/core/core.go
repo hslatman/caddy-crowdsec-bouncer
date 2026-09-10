@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
@@ -68,6 +69,12 @@ type Core struct {
 	instanceID          string
 	apiURL              string
 
+	// populated reports whether the streaming decision store has been filled
+	// by at least one successful LAPI pull. Until it is, the store is empty
+	// and every request is allowed; only meaningful when streaming is enabled.
+	populated           atomic.Bool
+	warnUnpopulatedOnce sync.Once
+
 	ctx       context.Context
 	started   bool
 	stopped   bool
@@ -77,8 +84,33 @@ type Core struct {
 	wg        *sync.WaitGroup
 }
 
+// Config holds everything a [Core] needs to be constructed.
+type Config struct {
+	APIKey            string
+	APIURL            string
+	StreamingEnabled  bool
+	AppSecURL         string
+	AppSecMaxBodySize int
+	AppSecTimeout     time.Duration
+	AppSecFailOpen    bool
+	TickerInterval    time.Duration
+	// LAPITimeout is the maximum time to wait for a response from the
+	// CrowdSec Local API. It applies to delta decision pulls, live lookups
+	// and metrics pushes; the startup decision pull gets a larger derived
+	// budget.
+	LAPITimeout    time.Duration
+	ShouldFailHard bool
+	Logger         *zap.Logger
+	// CaddyMetricsRegistry is Caddy's own Prometheus registry. Nil when
+	// emitting bouncer metrics at Caddy's /metrics endpoint is disabled.
+	CaddyMetricsRegistry *prometheus.Registry
+	// MetricsInterval is how often metrics are pushed to the LAPI. Zero
+	// disables the push.
+	MetricsInterval time.Duration
+}
+
 // New creates a new Bouncer with a storage based on immutable radix tree.
-func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecMaxBodySize int, appSecTimeout time.Duration, appSecFailOpen bool, tickerInterval time.Duration, shouldFailHard bool, logger *zap.Logger, caddyMetricsRegistry *prometheus.Registry, metricsInterval time.Duration) (*Core, error) {
+func New(cfg Config) (*Core, error) {
 	insecureSkipVerify := false
 	instantiatedAt := time.Now()
 	instanceID, err := generateInstanceID(instantiatedAt)
@@ -86,37 +118,46 @@ func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecM
 		return nil, fmt.Errorf("failed generating instance ID: %w", err)
 	}
 
-	apiClient, err := bouncer.NewAPIClient(apiURL, apiKey, userAgent, "", "", "", &insecureSkipVerify, log.StandardLogger())
+	apiClient, err := bouncer.NewAPIClient(cfg.APIURL, cfg.APIKey, userAgent, "", "", "", &insecureSkipVerify, log.StandardLogger())
 	if err != nil {
 		return nil, err
 	}
 
-	metricsRegistry := prometheus.NewRegistry()
-	metricsProvider, err := metrics.NewProvider(apiClient, metricsRegistry, caddyMetricsRegistry, metricsInterval, logger, userAgentName, userAgentVersion, instanceID)
+	metricsProvider, err := metrics.NewProvider(metrics.Config{
+		APIClient:            apiClient,
+		MetricsRegistry:      prometheus.NewRegistry(),
+		CaddyMetricsRegistry: cfg.CaddyMetricsRegistry,
+		Interval:             cfg.MetricsInterval,
+		Timeout:              cfg.LAPITimeout,
+		Logger:               cfg.Logger,
+		UserAgentName:        userAgentName,
+		UserAgentVersion:     userAgentVersion,
+		InstanceID:           instanceID,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	retryInitialConnect := !shouldFailHard
-	streamingBouncer, err := bouncer.NewStreamBouncer(apiClient, metricsProvider, tickerInterval, retryInitialConnect)
+	retryInitialConnect := !cfg.ShouldFailHard
+	streamingBouncer, err := bouncer.NewStreamBouncer(apiClient, metricsProvider, cfg.TickerInterval, retryInitialConnect, cfg.LAPITimeout)
 	if err != nil {
 		return nil, err
 	}
 
-	liveBouncer := bouncer.NewLiveBouncer(apiClient, metricsProvider)
-	appsec := newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider)
+	liveBouncer := bouncer.NewLiveBouncer(apiClient, metricsProvider, cfg.LAPITimeout)
+	appsec := newAppSec(cfg.AppSecURL, cfg.APIKey, cfg.AppSecMaxBodySize, cfg.AppSecTimeout, cfg.AppSecFailOpen, cfg.Logger.Named("appsec"), metricsProvider)
 	store := newStore()
 
 	return &Core{
-		apiURL:              apiURL,
+		apiURL:              cfg.APIURL,
 		streamingBouncer:    streamingBouncer,
-		useStreamingBouncer: streamingEnabled,
+		useStreamingBouncer: cfg.StreamingEnabled,
 		liveBouncer:         liveBouncer,
 		appsec:              appsec,
 		store:               store,
 		metricsProvider:     metricsProvider,
-		logger:              logger, // TODO add fields here?
-		shouldFailHard:      shouldFailHard,
+		logger:              cfg.Logger, // TODO add fields here?
+		shouldFailHard:      cfg.ShouldFailHard,
 		userAgent:           userAgent,
 		instantiatedAt:      instantiatedAt,
 		instanceID:          instanceID,
@@ -125,6 +166,13 @@ func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecM
 
 func (b *Core) NumberOfActiveDecisions() int {
 	return b.store.store.Len()
+}
+
+// DecisionStorePopulated reports whether the streaming decision store has been
+// filled by at least one successful pull from the CrowdSec LAPI. It is always
+// false when the live bouncer is used, because that mode keeps no store.
+func (b *Core) DecisionStorePopulated() bool {
+	return b.populated.Load()
 }
 
 func (b *Core) UserAgent() string {
