@@ -68,6 +68,10 @@ type Core struct {
 	instanceID          string
 	apiURL              string
 
+	// Past this age without a successful stream pull the streaming bouncer is
+	// considered frozen (see StreamStale/Healthy).
+	streamStaleThreshold time.Duration
+
 	ctx       context.Context
 	started   bool
 	stopped   bool
@@ -107,19 +111,27 @@ func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecM
 	appsec := newAppSec(appSecURL, apiKey, appSecMaxBodySize, appSecTimeout, appSecFailOpen, logger.Named("appsec"), metricsProvider)
 	store := newStore()
 
+	// Three missed ticks count as a freeze, never below 30s (so a single slow
+	// pull is not mistaken for a frozen stream).
+	staleThreshold := 3 * tickerInterval
+	if staleThreshold < 30*time.Second {
+		staleThreshold = 30 * time.Second
+	}
+
 	return &Core{
-		apiURL:              apiURL,
-		streamingBouncer:    streamingBouncer,
-		useStreamingBouncer: streamingEnabled,
-		liveBouncer:         liveBouncer,
-		appsec:              appsec,
-		store:               store,
-		metricsProvider:     metricsProvider,
-		logger:              logger, // TODO add fields here?
-		shouldFailHard:      shouldFailHard,
-		userAgent:           userAgent,
-		instantiatedAt:      instantiatedAt,
-		instanceID:          instanceID,
+		apiURL:               apiURL,
+		streamStaleThreshold: staleThreshold,
+		streamingBouncer:     streamingBouncer,
+		useStreamingBouncer:  streamingEnabled,
+		liveBouncer:          liveBouncer,
+		appsec:               appsec,
+		store:                store,
+		metricsProvider:      metricsProvider,
+		logger:               logger, // TODO add fields here?
+		shouldFailHard:       shouldFailHard,
+		userAgent:            userAgent,
+		instantiatedAt:       instantiatedAt,
+		instanceID:           instanceID,
 	}, nil
 }
 
