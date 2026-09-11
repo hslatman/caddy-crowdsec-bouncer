@@ -87,6 +87,9 @@ func (h *Handler) Cleanup() error {
 
 // ServeHTTP is the Caddy handler for serving HTTP requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	if !h.crowdsec.IsAppSecEnabled() {
+		return next.ServeHTTP(w, r)
+	}
 	var (
 		ctx    = r.Context()
 		ip     netip.Addr

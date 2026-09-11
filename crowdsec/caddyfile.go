@@ -53,6 +53,20 @@ func parseCrowdSec(d *caddyfile.Dispenser, existingVal any) (any, error) {
 				return nil, d.ArgErr()
 			}
 			cs.APIKey = d.Val()
+		case "enable_crowdsec", "enable_appsec":
+			name := d.Val()
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			enabled, err := strconv.ParseBool(d.Val())
+			if err != nil {
+				return nil, d.Errf("invalid boolean %q: %v", d.Val(), err)
+			}
+			if name == "enable_crowdsec" {
+				cs.EnableCrowdSec = &enabled
+			} else {
+				cs.EnableAppSec = &enabled
+			}
 		case "ticker_interval":
 			if !d.NextArg() {
 				return nil, d.ArgErr()

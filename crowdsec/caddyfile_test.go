@@ -136,13 +136,51 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			wantParseErr: true,
 		},
 		{
-			name: "ok/basic",
+			name:     "fail/missing-enable-appsec-value",
+			expected: &CrowdSec{},
+			input: `crowdsec {
+					api_key some_random_key
+					enable_appsec
+				}`,
+			wantParseErr: true,
+		},
+		{
+			name:     "fail/invalid-enable-crowdsec",
+			expected: &CrowdSec{},
+			input: `crowdsec {
+					api_key some_random_key
+					enable_crowdsec perhaps
+				}`,
+			wantParseErr: true,
+		},
+		{
+			name: "ok/disabled-env-vars",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.1:8080/",
 				APIKey:          "some_random_key",
 				TickerInterval:  "60s",
 				EnableStreaming: &tv,
 				EnableHardFails: &fv,
+				EnableCrowdSec:  &fv,
+				EnableAppSec:    &fv,
+			},
+			env: map[string]string{
+				"CROWDSEC_TEST_ENABLED": "false",
+			},
+			input: `crowdsec {
+					api_key some_random_key
+					enable_crowdsec {$CROWDSEC_TEST_ENABLED}
+					enable_appsec false
+				}`,
+			wantParseErr: false,
+		},
+		{
+			name: "ok/basic",
+			expected: &CrowdSec{
+				APIUrl:           "http://127.0.0.1:8080/",
+				APIKey:           "some_random_key",
+				TickerInterval:   "60s",
+				EnableStreaming:  &tv,
+				EnableHardFails:  &fv,
 				EnableCaddyError: false,
 			},
 			input: `crowdsec {
@@ -154,11 +192,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		{
 			name: "ok/full",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.1:8080/",
-				APIKey:          "some_random_key",
-				TickerInterval:  "33s",
-				EnableStreaming: &fv,
-				EnableHardFails: &tv,
+				APIUrl:           "http://127.0.0.1:8080/",
+				APIKey:           "some_random_key",
+				TickerInterval:   "33s",
+				EnableStreaming:  &fv,
+				EnableHardFails:  &tv,
 				EnableCaddyError: true,
 			},
 			input: `crowdsec {
@@ -174,11 +212,11 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 		{
 			name: "ok/env-vars",
 			expected: &CrowdSec{
-				APIUrl:          "http://127.0.0.2:8080/",
-				APIKey:          "env-test-key",
-				TickerInterval:  "25s",
-				EnableStreaming: &tv,
-				EnableHardFails: &fv,
+				APIUrl:           "http://127.0.0.2:8080/",
+				APIKey:           "env-test-key",
+				TickerInterval:   "25s",
+				EnableStreaming:  &tv,
+				EnableHardFails:  &fv,
 				EnableCaddyError: false,
 			},
 			env: map[string]string{
@@ -220,6 +258,8 @@ func TestUnmarshalCaddyfile(t *testing.T) {
 			assert.Equal(t, tt.expected.TickerInterval, c.TickerInterval)
 			assert.Equal(t, tt.expected.isStreamingEnabled(), c.isStreamingEnabled())
 			assert.Equal(t, tt.expected.shouldFailHard(), c.shouldFailHard())
+			assert.Equal(t, tt.expected.IsCrowdSecEnabled(), c.IsCrowdSecEnabled())
+			assert.Equal(t, tt.expected.IsAppSecEnabled(), c.IsAppSecEnabled())
 			assert.Equal(t, tt.expected.EnableCaddyError, c.EnableCaddyError)
 		})
 	}

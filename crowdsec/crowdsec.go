@@ -56,6 +56,12 @@ func (CrowdSec) CaddyModule() caddy.ModuleInfo {
 // which can be used by the HTTP handler and Layer4 matcher to decide if
 // a request or connection is allowed or not.
 type CrowdSec struct {
+	// EnableCrowdSec indicates whether CrowdSec HTTP and Layer4 enforcement is enabled.
+	// Defaults to true.
+	EnableCrowdSec *bool `json:"enable_crowdsec,omitempty"`
+	// EnableAppSec indicates whether AppSec request inspection is enabled.
+	// Defaults to true.
+	EnableAppSec *bool `json:"enable_appsec,omitempty"`
 	// APIUrl for the CrowdSec Local API. Defaults to http://127.0.0.1:8080/.
 	APIUrl string `json:"api_url,omitempty"`
 	// APIKey for the CrowdSec Local API.
@@ -115,6 +121,10 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	defer func() {
 		_ = c.logger.Sync()
 	}()
+	c.warnIfDisabled()
+	if !c.isEnabled() {
+		return nil
+	}
 
 	repl := caddy.NewReplacer() // create replacer with the default, global replacement functions, including ".env" env var reading
 	c.APIUrl = repl.ReplaceKnown(c.APIUrl, "")
@@ -130,7 +140,7 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 	}
 
 	var registry *prometheus.Registry
-	if c.enableCaddyMetrics() {
+	if c.IsCrowdSecEnabled() && c.enableCaddyMetrics() {
 		registry = ctx.GetMetricsRegistry()
 	}
 
@@ -146,16 +156,22 @@ func (c *CrowdSec) Provision(ctx caddy.Context) error {
 
 // Validate ensures the app's configuration is valid.
 func (c *CrowdSec) Validate() error {
+	if !c.isEnabled() {
+		return nil
+	}
 	if c.APIKey == "" {
 		return errors.New("crowdsec API key must not be empty")
 	}
 	if c.core == nil {
 		return errors.New("core instance not available due to (potential) misconfiguration")
 	}
-	if err := c.checkModules(); err != nil {
-		return fmt.Errorf("failed checking CrowdSec modules: %w", err)
+	if c.IsCrowdSecEnabled() {
+		if err := c.checkModules(); err != nil {
+			return fmt.Errorf("failed checking CrowdSec modules: %w", err)
+		}
 	}
-	if interval := c.TickerInterval; interval != "" {
+	if c.IsCrowdSecEnabled() && c.TickerInterval != "" {
+		interval := c.TickerInterval
 		d, err := time.ParseDuration(interval)
 		if err != nil {
 			return fmt.Errorf("invalid ticker interval %q", interval)
@@ -284,6 +300,9 @@ func matchModules(moduleIdentifiers ...string) (modules []moduleInfo, err error)
 }
 
 func (c *CrowdSec) Cleanup() error {
+	if c.core == nil {
+		return nil
+	}
 	if err := c.core.Shutdown(); err != nil {
 		return fmt.Errorf("failed cleaning up: %w", err)
 	}
@@ -299,6 +318,9 @@ func (c *CrowdSec) Cleanup() error {
 
 // Start starts the CrowdSec Caddy app
 func (c *CrowdSec) Start() error {
+	if !c.IsCrowdSecEnabled() {
+		return nil
+	}
 	if err := c.core.Init(); err != nil {
 		return err
 	}
@@ -310,26 +332,64 @@ func (c *CrowdSec) Start() error {
 
 // Stop stops the CrowdSec Caddy app
 func (c *CrowdSec) Stop() error {
+	if c.core == nil {
+		return nil
+	}
 	return c.core.Shutdown()
 }
 
 // IsAllowed is used by the CrowdSec HTTP handler to check if
 // an IP is allowed to perform a request.
 func (c *CrowdSec) IsAllowed(ctx context.Context, ip netip.Addr) (bool, *models.Decision, error) {
+	if !c.IsCrowdSecEnabled() {
+		return true, nil, nil
+	}
 	return c.core.IsAllowed(ctx, ip, false, "")
 }
 
 // CheckRequest checks the incoming request against AppSec.
 func (c *CrowdSec) CheckRequest(ctx context.Context, r *http.Request) error {
+	if !c.IsAppSecEnabled() {
+		return nil
+	}
 	return c.core.CheckRequest(ctx, r)
 }
 
 func (c *CrowdSec) IncrementProcessedRequests(ctx context.Context, server, module string, isIPv6 bool) context.Context {
+	if c.core == nil {
+		return ctx
+	}
 	return c.core.IncrementProcessedRequests(ctx, server, module, isIPv6)
 }
 
 func (c *CrowdSec) IncrementBlockedRequests(server, origin, remediation string, isIPv6 bool) {
+	if c.core == nil {
+		return
+	}
 	c.core.IncrementBlockedRequests(server, origin, remediation, isIPv6)
+}
+
+func (c *CrowdSec) isEnabled() bool {
+	return c.IsCrowdSecEnabled() || c.IsAppSecEnabled()
+}
+
+func (c *CrowdSec) warnIfDisabled() {
+	if !c.IsCrowdSecEnabled() {
+		c.logger.Warn("CrowdSec enforcement is disabled")
+	}
+	if !c.IsAppSecEnabled() {
+		c.logger.Warn("AppSec enforcement is disabled")
+	}
+}
+
+// IsCrowdSecEnabled reports whether CrowdSec HTTP and Layer4 enforcement is enabled.
+func (c *CrowdSec) IsCrowdSecEnabled() bool {
+	return c.EnableCrowdSec == nil || *c.EnableCrowdSec
+}
+
+// IsAppSecEnabled reports whether AppSec request inspection is enabled.
+func (c *CrowdSec) IsAppSecEnabled() bool {
+	return c.EnableAppSec == nil || *c.EnableAppSec
 }
 
 func (c *CrowdSec) metricsInterval() time.Duration {
