@@ -68,6 +68,9 @@ func (m *Matcher) Validate() error {
 // not denied according to CrowdSec decisions stored in the
 // CrowdSec app module.
 func (m Matcher) Match(cx *l4.Connection) (bool, error) {
+	if !m.crowdsec.IsCrowdSecEnabled() {
+		return true, nil
+	}
 	// TODO: needs to be tested with TCP as well as UDP.
 	clientIP, err := m.getClientIP(cx)
 	if err != nil {

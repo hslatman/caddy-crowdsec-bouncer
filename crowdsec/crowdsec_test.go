@@ -125,6 +125,38 @@ func TestCrowdSecProvisions(t *testing.T) {
 	}
 }
 
+func TestDisabledCrowdSec(t *testing.T) {
+	config := `{"enable_crowdsec": false, "enable_appsec": false}`
+	var c CrowdSec
+	require.NoError(t, json.Unmarshal([]byte(config), &c))
+
+	ctx, cancel := caddy.NewContext(caddy.Context{Context: t.Context()})
+	defer cancel()
+	require.NoError(t, c.Provision(ctx))
+	require.NoError(t, c.Validate())
+	require.NoError(t, c.Start())
+	defer func() { require.NoError(t, c.Cleanup()) }()
+
+	assert.Nil(t, c.core)
+	allowed, decision, err := c.IsAllowed(t.Context(), netip.MustParseAddr("127.0.0.1"))
+	require.NoError(t, err)
+	assert.True(t, allowed)
+	assert.Nil(t, decision)
+}
+
+func TestDisabledWarnings(t *testing.T) {
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+	falseValue := false
+	c := &CrowdSec{logger: logger, EnableCrowdSec: &falseValue, EnableAppSec: &falseValue}
+
+	c.warnIfDisabled()
+
+	require.Len(t, logs.All(), 2)
+	assert.Equal(t, "CrowdSec enforcement is disabled", logs.All()[0].Message)
+	assert.Equal(t, "AppSec enforcement is disabled", logs.All()[1].Message)
+}
+
 func TestCrowdSecValidates(t *testing.T) {
 	tests := []struct {
 		name    string
