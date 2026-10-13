@@ -248,6 +248,7 @@ func (s *store) get(key netip.Addr) (*models.Decision, error) {
 	if !key.IsValid() {
 		return nil, errors.New("lookup address is invalid")
 	}
+	key = key.Unmap()
 
 	candidates, now, err := s.store.get(key)
 	if err != nil {
@@ -408,6 +409,7 @@ func selectDecisionCandidate(ip netip.Addr, candidates []*decisionCandidate) (*d
 	if !ip.IsValid() {
 		return nil, errors.New("lookup address is invalid")
 	}
+	ip = ip.Unmap()
 
 	groups := make(map[decisionKey]*decisionCandidate)
 	var firstInvalid error
@@ -644,6 +646,8 @@ func keyForDecision(decision *models.Decision) decisionKey {
 	}
 }
 
+// decisionPrefix canonicalizes only the lookup index. Like LAPI, it treats
+// IPv4-mapped addresses as IPv4 while leaving the semantic group key intact.
 func decisionPrefix(decision *models.Decision) (netip.Prefix, error) {
 	scope := strings.ToLower(strings.TrimSpace(*decision.Scope))
 	value := strings.TrimSpace(*decision.Value)
@@ -654,13 +658,20 @@ func decisionPrefix(decision *models.Decision) (netip.Prefix, error) {
 		if err != nil {
 			return netip.Prefix{}, err
 		}
+		ip = ip.Unmap()
 		return ip.Prefix(ip.BitLen())
 	case "range":
 		prefix, err := netip.ParsePrefix(value)
 		if err != nil {
 			return netip.Prefix{}, err
 		}
-		return prefix.Masked(), nil
+		// Mask first so only ranges wholly within ::ffff:0:0/96 are
+		// converted to IPv4. Keep the original value in the semantic key.
+		prefix = prefix.Masked()
+		if prefix.Addr().Is4In6() {
+			return netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96), nil
+		}
+		return prefix, nil
 	default:
 		return netip.Prefix{}, fmt.Errorf("got unhandled scope: %s", *decision.Scope)
 	}
