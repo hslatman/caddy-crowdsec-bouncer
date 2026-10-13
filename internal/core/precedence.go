@@ -14,10 +14,6 @@
 
 package core
 
-import (
-	"github.com/crowdsecurity/crowdsec/pkg/models"
-)
-
 // remediation ranks a CrowdSec decision type by how strictly it is
 // enforced. An IP can be covered by several decisions at once — its own
 // and any number of ranges containing it — and only one of them can be
@@ -57,27 +53,4 @@ func remediationFrom(typ string) remediation {
 	default:
 		return remediationUnknown
 	}
-}
-
-// selectDecision returns the strictest of the decisions provided,
-// skipping any that are nil or missing the fields required to act on
-// them. Decisions of equal rank are resolved to the first one seen. It
-// returns nil if there's nothing to act upon.
-func selectDecision(decisions []*models.Decision) *models.Decision {
-	var (
-		selected *models.Decision
-		rank     remediation
-	)
-
-	for _, decision := range decisions {
-		if isInvalid(decision) {
-			continue
-		}
-
-		if r := remediationFrom(*decision.Type); selected == nil || r > rank {
-			selected, rank = decision, r
-		}
-	}
-
-	return selected
 }
