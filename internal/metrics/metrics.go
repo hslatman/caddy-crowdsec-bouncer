@@ -240,6 +240,7 @@ type Provider struct {
 	totalAppSecErrorsCounter          *prometheus.CounterVec
 	activeDecisionsGauge              *prometheus.GaugeVec
 	activeDecisionsMu                 sync.Mutex
+	activeDecisionCounts              map[decisionMetricLabels]int
 	blockedRequestsCounter            *prometheus.CounterVec
 	processedRequestsCounter          *prometheus.CounterVec
 	processedRequestsPerModuleCounter *prometheus.CounterVec
@@ -563,7 +564,7 @@ func (p *Provider) RecalculateAndRecordDecisionCounts(decisions []ActiveDecision
 
 	p.activeDecisionsMu.Lock()
 	defer p.activeDecisionsMu.Unlock()
-	recalculateAndRecordDecisionCounts(decisions, p.activeDecisionsGauge)
+	p.activeDecisionCounts = recalculateAndRecordDecisionCounts(decisions, p.activeDecisionsGauge, p.activeDecisionCounts)
 }
 
 type ipType string
@@ -592,18 +593,14 @@ func defaultActiveDecisionLabels() []decisionMetricLabels {
 func recalculateAndRecordDecisionCounts(
 	decisions []ActiveDecision,
 	gauge *prometheus.GaugeVec,
-) {
-	// GaugeVec retains every label tuple it has seen. Reset first so deleted
-	// decisions and attacker-controlled metadata cannot grow the exported
-	// series set indefinitely.
-	gauge.Reset()
-	for _, labels := range defaultActiveDecisionLabels() {
-		gauge.With(prometheus.Labels{
-			labelOrigin: labels.origin, labelIPType: string(labels.ipType),
-		}).Set(0)
-	}
-
+	previous map[decisionMetricLabels]int,
+) map[decisionMetricLabels]int {
+	// Aggregate before touching published metrics. Existing series must stay
+	// visible to concurrent collectors while a snapshot is being counted.
 	counts := make(map[decisionMetricLabels]int)
+	for _, labels := range defaultActiveDecisionLabels() {
+		counts[labels] = 0
+	}
 
 	for _, decision := range decisions {
 		origin := "unknown"
@@ -619,8 +616,16 @@ func recalculateAndRecordDecisionCounts(
 	}
 
 	for labels, count := range counts {
-		gauge.With(prometheus.Labels{
-			labelOrigin: labels.origin, labelIPType: string(labels.ipType),
-		}).Set(float64(count))
+		gauge.WithLabelValues(labels.origin, string(labels.ipType)).Set(float64(count))
 	}
+
+	// Retire only inactive custom label tuples. Keeping default zero series
+	// and reusing active gauges avoids both stale origins and false zeros.
+	for labels := range previous {
+		if _, active := counts[labels]; !active {
+			gauge.DeleteLabelValues(labels.origin, string(labels.ipType))
+		}
+	}
+
+	return counts
 }
