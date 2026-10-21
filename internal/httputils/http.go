@@ -18,8 +18,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -90,11 +92,34 @@ func WriteResponse(w http.ResponseWriter, logger *zap.Logger, typ, value, durati
 	case "throttle":
 		logger.Debug(fmt.Sprintf("serving throttle response to %s", value))
 		return writeThrottleResponse(w, duration, useCaddyError)
+	case "challenge":
+		// A challenge decision from the LAPI has no challenge content to
+		// serve, so it is enforced as a ban.
+		logger.Debug(fmt.Sprintf("serving challenge (ban) response to %s", value))
+		return writeBanResponse(w, statusCode, useCaddyError)
 	default:
 		logger.Warn(fmt.Sprintf("got crowdsec decision type: %s", typ))
 		logger.Debug(fmt.Sprintf("serving ban response to %s", value))
 		return writeBanResponse(w, statusCode, useCaddyError)
 	}
+}
+
+// WriteChallengeResponse relays a challenge response from the AppSec component
+// to the client. Headers from the AppSec component replace any header with the
+// same name already set, and every cookie is sent in its own Set-Cookie header.
+func WriteChallengeResponse(w http.ResponseWriter, statusCode int, headers http.Header, cookies []string, body string) error {
+	h := w.Header()
+	for key, values := range headers {
+		h[key] = values
+	}
+	for _, cookie := range cookies {
+		h.Add("Set-Cookie", cookie)
+	}
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+
+	w.WriteHeader(statusCode)
+	_, err := io.WriteString(w, body)
+	return err
 }
 
 // writeBanResponse writes a 403 status as response
