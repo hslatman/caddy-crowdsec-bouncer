@@ -186,6 +186,7 @@ caddy run --config Caddyfile
 The AppSec HTTP Handler supports CrowdSec [bot detection](https://docs.crowdsec.net/docs/next/appsec/bot_detection/intro/) (CrowdSec v1.8.0+).
 When the AppSec component asks for a challenge, the handler relays the challenge page, its assets and the results of challenge submissions under `/crowdsec-internal/challenge/` to the client as-is, without passing the request on to the upstream.
 A `challenge` decision coming from the Local API has no challenge to serve, and is enforced as a ban instead.
+See [examples/bot-detection](examples/bot-detection) for a complete setup.
 
 Some things to keep in mind:
 
