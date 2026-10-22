@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"go.uber.org/zap"
@@ -20,24 +21,31 @@ func (b *Core) startStreamingBouncer(ctx context.Context) {
 func (b *Core) startProcessingDecisions(ctx context.Context) {
 	b.wg.Go(func() {
 		b.logger.Debug("starting decision processing", b.zapField())
+		expiryTicker := time.NewTicker(streamCacheExpiryInterval)
+		defer expiryTicker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				b.logger.Info("processing new and deleted decisions stopped", b.zapField())
 				return
-			case decisions := <-b.streamingBouncer.Stream:
+			case <-expiryTicker.C:
+				b.store.recordDecisionCounts(b.metricsProvider)
+			case decisions, ok := <-b.streamingBouncer.Stream:
+				if !ok {
+					return
+				}
 				if decisions == nil { // TODO: remove this case when nil is never sent?
 					continue
 				}
 				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
 				// TODO: process in separate goroutines/waitgroup?
-				mustRecalculateDecisionCounts := false
+				mustRecalculateDecisionCounts := b.store.expire()
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					for _, decision := range decisions.Deleted {
 						if err := b.delete(decision); err != nil {
-							b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", *decision.Value, err), b.zapField())
+							b.logger.Error("unable to delete decision", b.zapField(), zap.Error(err))
 						} else {
 							if numberOfDeletedDecisions <= maxNumberOfDecisionsToLog {
 								b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", *decision.Value, *decision.Scope), b.zapField())
@@ -57,7 +65,7 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 					b.logger.Debug(fmt.Sprintf("processing %d new decisions", numberOfNewDecisions), b.zapField())
 					for _, decision := range decisions.New {
 						if err := b.add(decision); err != nil {
-							b.logger.Error(fmt.Sprintf("unable to insert decision for %q: %s", *decision.Value, err), b.zapField())
+							b.logger.Error("unable to insert decision", b.zapField(), zap.Error(err))
 						} else {
 							if numberOfNewDecisions <= maxNumberOfDecisionsToLog {
 								b.logger.Debug(fmt.Sprintf("adding %q (scope: %s) for %q", *decision.Value, *decision.Scope, *decision.Duration), b.zapField())
@@ -72,7 +80,7 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 				}
 
 				if mustRecalculateDecisionCounts {
-					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.store)
+					b.store.recordDecisionCounts(b.metricsProvider)
 				}
 
 				// send the (initial) metrics (once)

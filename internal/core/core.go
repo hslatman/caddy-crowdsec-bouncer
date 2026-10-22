@@ -124,7 +124,7 @@ func New(apiKey, apiURL string, streamingEnabled bool, appSecURL string, appSecM
 }
 
 func (b *Core) NumberOfActiveDecisions() int {
-	return b.store.store.Len()
+	return b.store.len()
 }
 
 func (b *Core) UserAgent() string {
