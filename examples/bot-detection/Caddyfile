@@ -1,0 +1,14 @@
+{
+	crowdsec {
+		api_url http://crowdsec:8080
+		api_key bot-detection-example-key
+		appsec_url http://crowdsec:7422
+	}
+}
+
+:80 {
+	route {
+		appsec
+		respond "Hello from the upstream! Path: {path}"
+	}
+}
