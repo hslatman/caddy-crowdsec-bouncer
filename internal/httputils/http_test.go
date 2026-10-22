@@ -147,7 +147,7 @@ func TestWriteChallengeResponse(t *testing.T) {
 	}
 	cookies := []string{"__crowdsec_challenge=a; Path=/; HttpOnly", "other=b, c"}
 
-	err := WriteChallengeResponse(w, http.StatusOK, headers, cookies, "<html>challenge</html>")
+	err := WriteChallengeResponse(w, http.StatusOK, headers, cookies, "<html>challenge</html>", false)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -157,6 +157,24 @@ func TestWriteChallengeResponse(t *testing.T) {
 	assert.Equal(t, "kept", w.Header().Get("X-Unrelated"))
 	assert.Equal(t, cookies, w.Header().Values("Set-Cookie"), "every cookie must be sent in its own header")
 	assert.Equal(t, "22", w.Header().Get("Content-Length"))
+}
+
+func TestWriteChallengeResponse_Secure(t *testing.T) {
+	cookies := []string{
+		"__crowdsec_challenge=a; Path=/; HttpOnly",
+		"__crowdsec_test=b; Path=/; SameSite=None; Secure; Partitioned",
+		"invalid",
+	}
+
+	w := httptest.NewRecorder()
+	err := WriteChallengeResponse(w, http.StatusOK, http.Header{}, cookies, "x", true)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"__crowdsec_challenge=a; Path=/; HttpOnly; Secure",
+		"__crowdsec_test=b; Path=/; SameSite=None; Secure; Partitioned",
+		"invalid",
+	}, w.Header().Values("Set-Cookie"))
 }
 
 func TestSetBlockVars(t *testing.T) {

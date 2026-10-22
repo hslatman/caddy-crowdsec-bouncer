@@ -274,6 +274,18 @@ func Test_appsec_checkRequest_challenge(t *testing.T) {
 			},
 		},
 		{
+			name: "challenge framing headers are dropped",
+			response: `{"action":"challenge","http_status":200,"user_body_content":"x",
+				"user_headers":{"Content-Type":["text/html"],"content-length":["42"],"Transfer-Encoding":["chunked"],"Connection":["close"]}}`,
+			expectedAction: "challenge",
+			expectedStatus: http.StatusOK,
+			expectedChallenge: &Challenge{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": {"text/html"}},
+				Body:       "x",
+			},
+		},
+		{
 			name:           "challenge without status defaults to 200",
 			response:       `{"action":"challenge","user_body_content":"x"}`,
 			expectedAction: "challenge",

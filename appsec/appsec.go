@@ -120,7 +120,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 
 			c := a.Challenge
 			h.logger.Debug("serving appsec challenge response", zap.String("ip", ip.String()), zap.Int("status", c.StatusCode))
-			return httputils.WriteChallengeResponse(w, c.StatusCode, c.Headers, c.Cookies, c.Body)
+			return httputils.WriteChallengeResponse(w, c.StatusCode, c.Headers, c.Cookies, c.Body, r.TLS != nil)
 		default:
 			// AppSec blocks have no CrowdSec decision behind them, so the module
 			// doubles as the origin, matching how they're counted in the metrics.

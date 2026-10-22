@@ -225,9 +225,15 @@ func (a *appsec) challengeError(r appsecResponse) error {
 		statusCode = http.StatusOK
 	}
 
+	// Framing headers describe the AppSec component's response, not the one
+	// relayed to the client, so they're dropped and left to the server to set.
 	headers := make(http.Header, len(r.UserHeaders))
 	for key, values := range r.UserHeaders {
-		headers[http.CanonicalHeaderKey(key)] = values
+		key = http.CanonicalHeaderKey(key)
+		if _, ok := hopByHopHeaders[key]; ok || key == "Content-Length" {
+			continue
+		}
+		headers[key] = values
 	}
 
 	return &AppSecError{
