@@ -57,6 +57,12 @@ func newAppSec(apiURL, apiKey string, maxBodySize int, timeout time.Duration, fa
 type appsecResponse struct {
 	Action     string `json:"action"`
 	StatusCode int    `json:"http_status"`
+
+	// The fields below are only set for the "challenge" action, and describe
+	// the response to relay to the client as-is.
+	UserBodyContent string              `json:"user_body_content"`
+	UserHeaders     map[string][]string `json:"user_headers"`
+	UserCookies     []string            `json:"user_cookies"`
 }
 
 // hopByHopHeaders are connection-specific headers that must not be forwarded to
@@ -187,6 +193,10 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 			return err
 		}
 
+		if r.Action == "challenge" {
+			return a.challengeError(r)
+		}
+
 		return &AppSecError{Err: errors.New("appsec rule triggered"), Action: r.Action, Duration: "", StatusCode: r.StatusCode}
 	case 404:
 		a.logger.Error("appsec component endpoint not found", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
@@ -197,6 +207,45 @@ func (a *appsec) checkRequest(ctx context.Context, r *http.Request) error {
 	default:
 		a.logger.Error("appsec component returned unsupported status", zap.String("code", resp.Status), zap.String("appsec_url", a.apiURL))
 		return nil
+	}
+}
+
+// challengeError turns a "challenge" response from the AppSec component into an
+// [AppSecError] carrying the response to relay to the client. A challenge
+// without content can't be rendered, so it falls back to a ban, as required by
+// the challenge protocol (https://docs.crowdsec.net/docs/next/appsec/bot_detection/challenge_protocol/).
+func (a *appsec) challengeError(r appsecResponse) error {
+	if r.UserBodyContent == "" {
+		a.logger.Warn("appsec challenge response without content; serving ban response instead")
+		return &AppSecError{Err: errors.New("appsec rule triggered"), Action: "ban", StatusCode: http.StatusForbidden}
+	}
+
+	statusCode := r.StatusCode
+	if statusCode <= 0 {
+		statusCode = http.StatusOK
+	}
+
+	// Framing headers describe the AppSec component's response, not the one
+	// relayed to the client, so they're dropped and left to the server to set.
+	headers := make(http.Header, len(r.UserHeaders))
+	for key, values := range r.UserHeaders {
+		key = http.CanonicalHeaderKey(key)
+		if _, ok := hopByHopHeaders[key]; ok || key == "Content-Length" {
+			continue
+		}
+		headers[key] = values
+	}
+
+	return &AppSecError{
+		Err:        errors.New("appsec challenge requested"),
+		Action:     "challenge",
+		StatusCode: statusCode,
+		Challenge: &Challenge{
+			StatusCode: statusCode,
+			Headers:    headers,
+			Cookies:    r.UserCookies,
+			Body:       r.UserBodyContent,
+		},
 	}
 }
 

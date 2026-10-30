@@ -125,6 +125,58 @@ func TestWriteResponse_Throttle(t *testing.T) {
 	})
 }
 
+func TestWriteResponse_Challenge(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	// a challenge decision from the LAPI has nothing to render, and is enforced as a ban
+	w := httptest.NewRecorder()
+	err := WriteResponse(w, logger, "challenge", "192.168.1.1", "", 0, false)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestWriteChallengeResponse(t *testing.T) {
+	w := httptest.NewRecorder()
+	w.Header().Set("Content-Security-Policy", "default-src 'none'")
+	w.Header().Set("X-Unrelated", "kept")
+
+	headers := http.Header{
+		"Content-Type":            {"text/html"},
+		"Content-Security-Policy": {"default-src 'self'"},
+	}
+	cookies := []string{"__crowdsec_challenge=a; Path=/; HttpOnly", "other=b, c"}
+
+	err := WriteChallengeResponse(w, http.StatusOK, headers, cookies, "<html>challenge</html>", false)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "<html>challenge</html>", w.Body.String())
+	assert.Equal(t, "text/html", w.Header().Get("Content-Type"))
+	assert.Equal(t, []string{"default-src 'self'"}, w.Header().Values("Content-Security-Policy"), "challenge headers must replace existing ones")
+	assert.Equal(t, "kept", w.Header().Get("X-Unrelated"))
+	assert.Equal(t, cookies, w.Header().Values("Set-Cookie"), "every cookie must be sent in its own header")
+	assert.Equal(t, "22", w.Header().Get("Content-Length"))
+}
+
+func TestWriteChallengeResponse_Secure(t *testing.T) {
+	cookies := []string{
+		"__crowdsec_challenge=a; Path=/; HttpOnly",
+		"__crowdsec_test=b; Path=/; SameSite=None; Secure; Partitioned",
+		"invalid",
+	}
+
+	w := httptest.NewRecorder()
+	err := WriteChallengeResponse(w, http.StatusOK, http.Header{}, cookies, "x", true)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"__crowdsec_challenge=a; Path=/; HttpOnly; Secure",
+		"__crowdsec_test=b; Path=/; SameSite=None; Secure; Partitioned",
+		"invalid",
+	}, w.Header().Values("Set-Cookie"))
+}
+
 func TestSetBlockVars(t *testing.T) {
 	assert.Equal(t, "crowdsec.module", ModuleVarKey)
 	assert.Equal(t, "crowdsec.remediation", RemediationVarKey)

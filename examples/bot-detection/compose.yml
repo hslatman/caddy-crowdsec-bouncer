@@ -1,0 +1,24 @@
+services:
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.8.1 # bot detection requires v1.8.0+
+    environment:
+      COLLECTIONS: "crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules crowdsecurity/appsec-bot-challenge"
+      BOUNCER_KEY_caddy: "bot-detection-example-key" # registers the bouncer on start
+      DISABLE_ONLINE_API: "true"
+    volumes:
+      - ./crowdsec/appsec.yaml:/etc/crowdsec/acquis.d/appsec.yaml:ro
+      - crowdsec-db:/var/lib/crowdsec/data/
+
+  caddy:
+    build:
+      context: ../..
+      dockerfile: examples/bot-detection/Dockerfile
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - crowdsec
+
+volumes:
+  crowdsec-db:

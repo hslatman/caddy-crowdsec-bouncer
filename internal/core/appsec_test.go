@@ -221,3 +221,115 @@ func Test_appsec_checkRequest_stripsHopByHopHeaders(t *testing.T) {
 	assert.Equal(t, "kept", received.Get("X-Keep-Me"), "ordinary headers must still be forwarded")
 	assert.Equal(t, "test-appsec", received.Get("X-Crowdsec-Appsec-User-Agent"))
 }
+
+func Test_appsec_checkRequest_challenge(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	ctx := newCaddyVarsContext(t.Context())
+	caddyhttp.SetVar(ctx, caddyhttp.ClientIPVarKey, "10.0.0.10")
+	ctx, _ = httputils.EnsureIP(ctx)
+
+	tests := []struct {
+		name              string
+		response          string
+		expectedAction    string
+		expectedStatus    int
+		expectedChallenge *Challenge
+	}{
+		{
+			name: "challenge page",
+			response: `{"action":"challenge","http_status":200,"user_body_content":"<html>challenge</html>",
+				"user_headers":{"content-type":["text/html"],"Cache-Control":["no-cache, no-store"]}}`,
+			expectedAction: "challenge",
+			expectedStatus: http.StatusOK,
+			expectedChallenge: &Challenge{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": {"text/html"}, "Cache-Control": {"no-cache, no-store"}},
+				Body:       "<html>challenge</html>",
+			},
+		},
+		{
+			name: "challenge submission with cookie",
+			response: `{"action":"challenge","http_status":200,"user_body_content":"{\"status\":\"ok\"}",
+				"user_headers":{"Content-Type":["application/json"]},"user_cookies":["__crowdsec_challenge=a; Path=/","other=b"]}`,
+			expectedAction: "challenge",
+			expectedStatus: http.StatusOK,
+			expectedChallenge: &Challenge{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": {"application/json"}},
+				Cookies:    []string{"__crowdsec_challenge=a; Path=/", "other=b"},
+				Body:       `{"status":"ok"}`,
+			},
+		},
+		{
+			name: "challenge redirect",
+			response: `{"action":"challenge","http_status":307,"user_body_content":" ",
+				"user_headers":{"Location":["/"]}}`,
+			expectedAction: "challenge",
+			expectedStatus: http.StatusTemporaryRedirect,
+			expectedChallenge: &Challenge{
+				StatusCode: http.StatusTemporaryRedirect,
+				Headers:    http.Header{"Location": {"/"}},
+				Body:       " ",
+			},
+		},
+		{
+			name: "challenge framing headers are dropped",
+			response: `{"action":"challenge","http_status":200,"user_body_content":"x",
+				"user_headers":{"Content-Type":["text/html"],"content-length":["42"],"Transfer-Encoding":["chunked"],"Connection":["close"]}}`,
+			expectedAction: "challenge",
+			expectedStatus: http.StatusOK,
+			expectedChallenge: &Challenge{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{"Content-Type": {"text/html"}},
+				Body:       "x",
+			},
+		},
+		{
+			name:           "challenge without status defaults to 200",
+			response:       `{"action":"challenge","user_body_content":"x"}`,
+			expectedAction: "challenge",
+			expectedStatus: http.StatusOK,
+			expectedChallenge: &Challenge{
+				StatusCode: http.StatusOK,
+				Headers:    http.Header{},
+				Body:       "x",
+			},
+		},
+		{
+			name:           "challenge without content falls back to ban",
+			response:       `{"action":"challenge","http_status":200}`,
+			expectedAction: "ban",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "ban",
+			response:       `{"action":"ban","http_status":403}`,
+			expectedAction: "ban",
+			expectedStatus: http.StatusForbidden,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := http.NewServeMux()
+			h.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(tt.response))
+			})
+
+			s := httptest.NewServer(h)
+			t.Cleanup(s.Close)
+
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/path", http.NoBody)
+
+			a := newAppSec(s.URL, "test-apikey", 0, 2*time.Second, false, logger, &metrics.Provider{})
+			err := a.checkRequest(ctx, r)
+
+			var appsecErr *AppSecError
+			require.ErrorAs(t, err, &appsecErr)
+			assert.Equal(t, tt.expectedAction, appsecErr.Action)
+			assert.Equal(t, tt.expectedStatus, appsecErr.StatusCode)
+			assert.Equal(t, tt.expectedChallenge, appsecErr.Challenge)
+		})
+	}
+}

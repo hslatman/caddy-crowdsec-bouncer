@@ -111,6 +111,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 		case "log":
 			h.logger.Info("appsec rule triggered", zap.String("ip", ip.String()), zap.String("action", a.Action))
 			h.crowdsec.IncrementBlockedRequests(server, module, "log", ip.Is6()) // TODO: properly set the action that was performed
+		case "challenge":
+			// The challenge page, its assets and the result of a challenge
+			// submission are all served by the AppSec component, and must
+			// never reach the upstream.
+			httputils.SetBlockVars(ctx, module, a.Action, module, a.Duration)
+			h.crowdsec.IncrementBlockedRequests(server, module, a.Action, ip.Is6())
+
+			c := a.Challenge
+			h.logger.Debug("serving appsec challenge response", zap.String("ip", ip.String()), zap.Int("status", c.StatusCode))
+			return httputils.WriteChallengeResponse(w, c.StatusCode, c.Headers, c.Cookies, c.Body, r.TLS != nil)
 		default:
 			// AppSec blocks have no CrowdSec decision behind them, so the module
 			// doubles as the origin, matching how they're counted in the metrics.

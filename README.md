@@ -114,12 +114,12 @@ Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 match
 
 When a request is blocked, the HTTP and AppSec handlers record why in the request context, so that Caddyfile matchers and logs can tell blocks apart:
 
-| Variable                           | Description                           | Examples                          |
-|------------------------------------|---------------------------------------|-----------------------------------|
-| `{http.vars.crowdsec.module}`      | The handler that blocked the request. | `http`, `appsec`                  |
-| `{http.vars.crowdsec.remediation}` | The remediation that was applied.     | `ban`, `captcha`, `throttle`      |
-| `{http.vars.crowdsec.origin}`      | The origin of the decision            | `appsec`, `crowdsec`, `lists:foo` |
-| `{http.vars.crowdsec.duration}`    | The duration of the decision.         | `3h59m58s`                        |
+| Variable                           | Description                           | Examples                                  |
+|------------------------------------|---------------------------------------|-------------------------------------------|
+| `{http.vars.crowdsec.module}`      | The handler that blocked the request. | `http`, `appsec`                          |
+| `{http.vars.crowdsec.remediation}` | The remediation that was applied.     | `ban`, `captcha`, `throttle`, `challenge` |
+| `{http.vars.crowdsec.origin}`      | The origin of the decision            | `appsec`, `crowdsec`, `lists:foo`         |
+| `{http.vars.crowdsec.duration}`    | The duration of the decision.         | `3h59m58s`                                |
 
 ```Caddyfile
 handle_errors {
@@ -185,6 +185,18 @@ Run the Caddy server
 # with a Caddyfile
 caddy run --config Caddyfile 
 ```
+
+#### Bot Detection
+
+The AppSec HTTP Handler supports CrowdSec [bot detection](https://docs.crowdsec.net/docs/next/appsec/bot_detection/intro/) (CrowdSec v1.8.0+).
+When the AppSec component asks for a challenge, the handler relays the challenge page, its assets and the results of challenge submissions under `/crowdsec-internal/challenge/` to the client as-is, without passing the request on to the upstream.
+A `challenge` decision coming from the Local API has no challenge to serve, and is enforced as a ban instead.
+See [examples/bot-detection](examples/bot-detection) for a complete setup.
+
+Some things to keep in mind:
+
+- The challenge submission is sent as the request body, so `appsec_max_body_bytes` must not be set lower than its size.
+- The challenge response brings its own `Content-Security-Policy`, which replaces one set earlier in the handler chain. A `Content-Security-Policy` set by a deferred `header` directive (e.g. `header >Content-Security-Policy ...`) is applied afterwards and overrides it, which breaks the challenge.
 
 ## Demo
 
