@@ -30,13 +30,9 @@ jobs:
 
       - name: Linting
         if: matrix.full-tests
-        run: |
-          curl -sL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh |
-              sh -s -- -b $HOME/go/bin v2.15.0
-          $HOME/go/bin/golangci-lint run --timeout=5m \
-                                         --max-issues-per-linter 0 \
-                                         --max-same-issues 0 \
-                                         ./...
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15
 
       - name: Testing
         continue-on-error: ${{ matrix.go-version == 'tip' }}
