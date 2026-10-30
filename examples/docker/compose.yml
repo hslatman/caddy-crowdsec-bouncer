@@ -7,7 +7,7 @@ services:
 #     - 127.0.0.1:7422:7422 # uncomment if using appsec
     environment:
       COLLECTIONS: "crowdsecurity/caddy"
-#     COLLECTIONS: "crowdsecurity/caddy crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules" # uncommend if using appsec
+#     COLLECTIONS: "crowdsecurity/caddy crowdsecurity/appsec-virtual-patching crowdsecurity/appsec-generic-rules" # uncomment if using appsec
       GID: "${GID-1000}"
     depends_on:
       - "reverse-proxy"
@@ -30,6 +30,9 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - caddy-logs:/var/log/caddy
+    # secrets: # uncomment to use docker secrets to store api key in a separate file
+    #   - crowdsec_api_token
+
 
 volumes:
   caddy-logs:
@@ -37,3 +40,11 @@ volumes:
   caddy_config:
   crowdsec-db:
   crowdsec-config:
+
+# Uncomment below section and secrets above to use a local file to store api key.
+# Requires changes in CaddyConf file to point to /run/secrets/crowdsec_api_token
+# This prevents accidentally sharing the key with config files.
+# Simpler alternative is to use api_key {env.CROWDSEC_API_TOKEN}
+# secrets: 
+  # crowdsec_api_token:
+    #  file: ./crowdsec_api_token.txt # secret in file on your Docker host

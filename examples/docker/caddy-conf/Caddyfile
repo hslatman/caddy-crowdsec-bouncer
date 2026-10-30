@@ -5,6 +5,9 @@
 
         crowdsec {
                 api_url http://crowdsec:8080
+                # to utilize a file or secrets for the api_key, 
+                # use "{file./path_in_container}" 
+                # such as: api_key {file./run/secrets/crowdsec_api_token} 
                 api_key <your-key> #docker compose exec crowdsec cscli bouncer add caddy
                 ticker_interval 10s
                 #appsec_url http://crowdsec:7422
