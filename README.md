@@ -91,6 +91,9 @@ Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 match
 
 #### Configuration Options
 
+> [!IMPORTANT]
+> The Local API client now honours the `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` environment variables. This only affects `api_url` values using `https://`. If your LAPI is reachable directly but a proxy is set globally (common in containers and CI), add the LAPI host to `NO_PROXY`, or requests to it will fail with `context deadline exceeded`.
+
 | Directive               | Description                                                                                                                                                         | Default                  |
 |:------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------|:-------------------------|
 | `api_url`               | The URL of the CrowdSec Local API.                                                                                                                                  | `http://127.0.0.1:8080/` |
@@ -99,10 +102,11 @@ Configuration using a Caddyfile is supported for HTTP handlers and Layer 4 match
 | `metrics_interval`      | Interval for pushing metrics to the Local API.                                                                                                                      | `0s` *(disabled)*        |
 | `enable_caddy_metrics`  | Enables emitting bouncer metrics at Caddy's `/metrics` endpoint.                                                                                                    | `false`                  |
 | `ticker_interval`       | Interval for pulling decisions from the Local API.                                                                                                                  | `60s`                    |
+| `lapi_timeout`          | Maximum time for a live decision lookup, and for the background periodic decision pull and metrics push. The initial decision pull gets a larger derived budget.   | `10s`                    |
 | `enable_hard_fails`     | Caddy fails to start if CrowdSec API is unreachable.                                                                                                                | `false`                  |
 | `appsec_url`            | The URL of the CrowdSec AppSec component.                                                                                                                           | `<empty>` *(disabled)*   |
 | `appsec_max_body_bytes` | Maximum request body size sent to AppSec.                                                                                                                           | `0` *(full request)*     |
-| `appsec_max_timeout`.   | Maximum time for request to AppSec component.                                                                                                                       | `2s`                     |
+| `appsec_timeout`        | Maximum time for request to AppSec component.                                                                                                                       | `2s`                     |
 | `appsec_fail_open`      | Ignore AppSec component connection errors.                                                                                                                          | `false`                  |
 | `enable_caddy_error`    | Propagates decisions as Caddy errors to allow custom error pages. **Warning:** Ensure `handle_errors` routes are strictly static to avoid resource exhaustion (DoS).| `false`                  |
 
@@ -133,6 +137,7 @@ handle_errors {
     api_url http://localhost:8080
     api_key <api_key>
     ticker_interval 15s
+    lapi_timeout 10s
     appsec_url http://localhost:7422
     #disable_streaming
     #enable_hard_fails

@@ -214,6 +214,7 @@ func (a *adminAPI) handleInfo(w http.ResponseWriter, r *http.Request) error {
 		InstanceID:              info.InstanceID,
 		Uptime:                  info.Uptime,
 		NumberOfActiveDecisions: info.NumberOfActiveDecisions,
+		DecisionStorePopulated:  info.DecisionStorePopulated,
 	})
 	if err != nil {
 		return caddyAPIError(http.StatusInternalServerError, fmt.Errorf("failed marshaling CrowdSec status status: %w", err))

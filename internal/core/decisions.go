@@ -75,6 +75,11 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.store)
 				}
 
+				if b.populated.CompareAndSwap(false, true) {
+					b.logger.Info("decision store populated",
+						zap.Int("decisions", b.store.store.Len()), b.zapField())
+				}
+
 				// send the (initial) metrics (once)
 				b.metricsProvider.SendInitialMetricsOnce(ctx)
 			}
@@ -103,6 +108,15 @@ func (b *Core) delete(decision *models.Decision) error {
 
 func (b *Core) retrieveDecision(ctx context.Context, ip netip.Addr, forceLive bool, method string) (*models.Decision, error) {
 	if b.useStreamingBouncer && !forceLive {
+		if !b.populated.Load() {
+			// once only: a per-request log would flood exactly when the LAPI
+			// is struggling
+			b.warnUnpopulatedOnce.Do(func() {
+				b.logger.Warn("serving requests before the decision store is populated; all requests are allowed until the initial LAPI pull succeeds",
+					b.zapField(), zap.String("address", b.apiURL))
+			})
+		}
+
 		return b.store.get(ip)
 	}
 

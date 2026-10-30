@@ -362,3 +362,25 @@ func TestModuleLogsLowDockerProxyEventThrottleInterval(t *testing.T) {
 		assert.Equal(t, "using docker_proxy module with a low event throttle interval (<2s) can result in errors; see https://github.com/hslatman/caddy-crowdsec-bouncer/issues/61", logs.All()[0].Message)
 	})
 }
+
+func TestCrowdSecLAPITimeout(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		c := &CrowdSec{}
+		require.Equal(t, 10*time.Second, c.lapiTimeout())
+	})
+
+	t.Run("override", func(t *testing.T) {
+		c := &CrowdSec{LAPITimeout: caddy.Duration(45 * time.Second)}
+		require.Equal(t, 45*time.Second, c.lapiTimeout())
+	})
+
+	t.Run("validate-rejects-negative", func(t *testing.T) {
+		c := &CrowdSec{LAPITimeout: caddy.Duration(-time.Second)}
+		require.Error(t, c.validateLAPITimeout())
+	})
+
+	t.Run("validate-accepts-unset", func(t *testing.T) {
+		c := &CrowdSec{}
+		require.NoError(t, c.validateLAPITimeout())
+	})
+}

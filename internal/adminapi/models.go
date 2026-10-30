@@ -26,10 +26,14 @@ type InfoResponse struct {
 	InstanceID              string
 	Uptime                  time.Duration
 	NumberOfActiveDecisions int
+	// DecisionStorePopulated reports whether the streaming decision store has
+	// been filled by at least one successful LAPI pull. False while streaming
+	// startup is still failing -- during which every request is allowed --
+	// and always false in live mode.
+	DecisionStorePopulated bool
 
 	// TODO: more properties? I.e. modules built into binary, modules
-	// enabled, some of the metrics?, whether or not last call to LAPI was an
-	// error?
+	// enabled, some of the metrics?
 	// TODO: restructure?
 }
 

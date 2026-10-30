@@ -68,6 +68,7 @@ func (a *testAdmin) Info(_ context.Context) adminapi.Info {
 		InstanceID:              "instance-id",
 		Uptime:                  time.Duration(10 * time.Second),
 		NumberOfActiveDecisions: 1337,
+		DecisionStorePopulated:  true,
 	}
 }
 
@@ -111,6 +112,7 @@ func TestAdminAPIHandlesRequests(t *testing.T) {
 		assert.True(t, r.Live.Enabled)
 		assert.False(t, r.AppSec.Enabled)
 		assert.Equal(t, 1337, r.NumberOfActiveDecisions)
+		assert.True(t, r.DecisionStorePopulated)
 		assert.False(t, r.ShouldFailHard)
 		assert.NotEmpty(t, r.InstanceID)
 		assert.NotEmpty(t, r.UserAgent)
