@@ -30,17 +30,20 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 				if decisions == nil { // TODO: remove this case when nil is never sent?
 					continue
 				}
-				// TODO: deletions seem to include all old decisions that had already expired; CrowdSec bug or intended behavior?
+				// Startup streams include expired groups as tombstones; deletion is idempotent.
 				// TODO: process in separate goroutines/waitgroup?
 				mustRecalculateDecisionCounts := false
 				if numberOfDeletedDecisions := len(decisions.Deleted); numberOfDeletedDecisions > 0 {
 					b.logger.Debug(fmt.Sprintf("processing %d deleted decisions", numberOfDeletedDecisions), b.zapField())
 					for _, decision := range decisions.Deleted {
+						if decision == nil {
+							continue
+						}
 						if err := b.delete(decision); err != nil {
-							b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", *decision.Value, err), b.zapField())
+							b.logger.Error(fmt.Sprintf("unable to delete decision for %q: %s", stringValue(decision.Value), err), b.zapField())
 						} else {
 							if numberOfDeletedDecisions <= maxNumberOfDecisionsToLog {
-								b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", *decision.Value, *decision.Scope), b.zapField())
+								b.logger.Debug(fmt.Sprintf("deleted %q (scope: %s)", stringValue(decision.Value), stringValue(decision.Scope)), b.zapField())
 							}
 						}
 					}
@@ -71,13 +74,13 @@ func (b *Core) startProcessingDecisions(ctx context.Context) {
 					mustRecalculateDecisionCounts = true
 				}
 
-				if mustRecalculateDecisionCounts {
-					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.store)
+				if mustRecalculateDecisionCounts && b.metricsProvider.UsageMetricsEnabled() {
+					b.metricsProvider.RecalculateAndRecordDecisionCounts(b.store.activeDecisionSnapshot())
 				}
 
 				if b.populated.CompareAndSwap(false, true) {
 					b.logger.Info("decision store populated",
-						zap.Int("decisions", b.store.store.Len()), b.zapField())
+						zap.Int("decisions", b.store.Len()), b.zapField())
 				}
 
 				// send the (initial) metrics (once)

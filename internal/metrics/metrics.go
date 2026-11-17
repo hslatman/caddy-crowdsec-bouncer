@@ -15,7 +15,6 @@ import (
 	"github.com/crowdsecurity/crowdsec/pkg/models"
 	"github.com/crowdsecurity/go-cs-lib/ptr"
 	"github.com/crowdsecurity/go-cs-lib/version"
-	"github.com/hslatman/ipstore"
 	"github.com/prometheus/client_golang/prometheus"
 	model "github.com/prometheus/client_model/go"
 	"go.uber.org/zap"
@@ -561,12 +560,23 @@ func (p *Provider) IncrementBlockedRequests(server, origin, remediation string, 
 	p.blockedRequestsCounter.With(prometheus.Labels{labelServer: server, labelOrigin: origin, labelRemediation: remediation, labelIPType: toIPType(isIPv6)}).Inc()
 }
 
-func (p *Provider) RecalculateAndRecordDecisionCounts(s *ipstore.Store[*models.Decision]) {
+// ActiveDecision contains the immutable labels needed to count one stored group.
+type ActiveDecision struct {
+	Origin string
+	IPv6   bool
+}
+
+// UsageMetricsEnabled reports whether CrowdSec usage metrics are configured.
+func (p *Provider) UsageMetricsEnabled() bool {
+	return p.metricsEnabled()
+}
+
+func (p *Provider) RecalculateAndRecordDecisionCounts(decisions []ActiveDecision) {
 	if !p.metricsEnabled() {
 		return
 	}
 
-	recalculateAndRecordDecisionCounts(s, p.activeDecisionsGauge)
+	recalculateAndRecordDecisionCounts(decisions, p.activeDecisionsGauge)
 }
 
 type ipType string
@@ -576,7 +586,7 @@ const (
 	ipv6 ipType = "ipv6"
 )
 
-func recalculateAndRecordDecisionCounts(store *ipstore.Store[*models.Decision], gauge *prometheus.GaugeVec) {
+func recalculateAndRecordDecisionCounts(decisions []ActiveDecision, gauge *prometheus.GaugeVec) {
 	// initialize map, so that these origins are always
 	// known and recorded
 	counts := map[string]map[ipType]int{
@@ -589,16 +599,15 @@ func recalculateAndRecordDecisionCounts(store *ipstore.Store[*models.Decision], 
 		"remediation_sync": {ipv4: 0, ipv6: 0},
 	}
 
-	for prefix, v := range store.All() {
-		origin := *v.Origin
-		isIPv6 := prefix.Bits() > 32
+	for _, decision := range decisions {
+		origin := decision.Origin
 		n, ok := counts[origin]
 		if !ok {
 			n = map[ipType]int{ipv4: 0, ipv6: 0}
 			counts[origin] = n
 		}
 
-		if isIPv6 {
+		if decision.IPv6 {
 			n[ipv6] += 1
 		} else {
 			n[ipv4] += 1

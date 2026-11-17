@@ -96,7 +96,7 @@ func TestStore(t *testing.T) {
 	require.NoError(t, err)
 	err = s.add(d5)
 	require.Error(t, err)
-	require.Equal(t, 4, s.store.Len())
+	require.Equal(t, 4, s.Len())
 
 	ip1 := netip.MustParseAddr(value1)
 	r1, err := s.get(ip1)
