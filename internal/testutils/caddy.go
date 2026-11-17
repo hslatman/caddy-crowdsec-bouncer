@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -347,6 +348,20 @@ func UnBan(t *testing.T, c *Container, ip string) {
 	t.Helper()
 
 	cscli(t, c, "decisions", "delete", "--ip", ip)
+}
+
+// UnBanTyped removes only decisions of the given type for ip.
+func UnBanTyped(t *testing.T, c *Container, ip, typ string) {
+	t.Helper()
+
+	cscli(t, c, "decisions", "delete", "--ip", ip, "--type", typ)
+}
+
+// UnBanID removes only the decision with the given LAPI ID.
+func UnBanID(t *testing.T, c *Container, id int64) {
+	t.Helper()
+
+	cscli(t, c, "decisions", "delete", "--id", strconv.FormatInt(id, 10))
 }
 
 // HasDecisionFor reports whether the LAPI currently holds a decision for ip.

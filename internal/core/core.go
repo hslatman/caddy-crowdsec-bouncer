@@ -165,7 +165,7 @@ func New(cfg Config) (*Core, error) {
 }
 
 func (b *Core) NumberOfActiveDecisions() int {
-	return b.store.store.Len()
+	return b.store.Len()
 }
 
 // DecisionStorePopulated reports whether the streaming decision store has been
