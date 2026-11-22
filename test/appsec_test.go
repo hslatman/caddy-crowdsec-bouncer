@@ -57,7 +57,7 @@ func TestAppSec(t *testing.T) {
 	// simulate a request that'll be banned using the currently installed rules, similar
 	// to https://docs.crowdsec.net/docs/appsec/installation/#making-sure-everything-works.
 	// This will simulate exploitation of JetBrains Teamcity Auth Bypass; CVE-2023-42793.
-	r = httptest.NewRequest(http.MethodGet, "http://www.example.com/rpc2", http.NoBody)
+	r = httptest.NewRequest(http.MethodGet, "http://www.example.com/app/rest/rpc2", http.NoBody)
 	r = r.WithContext(ctx)
 	r.Header.Set("User-Agent", "test-appsec")
 	err = crowdsec.CheckRequest(ctx, r)
