@@ -19,6 +19,7 @@ import (
 	"net/netip"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
+	"github.com/crowdsecurity/crowdsec/pkg/types"
 	"github.com/hslatman/ipstore"
 )
 
@@ -37,17 +38,19 @@ func (s *store) add(decision *models.Decision) error {
 		return nil
 	}
 
+	normalize(decision)
+
 	scope := *decision.Scope
 	value := *decision.Value
 
 	switch scope {
-	case "Ip":
+	case types.Ip:
 		ip, err := parseIP(value)
 		if err != nil {
 			return err
 		}
 		return s.store.Add(ip, decision)
-	case "Range":
+	case types.Range:
 		prf, err := netip.ParsePrefix(value)
 		if err != nil {
 			return err
@@ -63,18 +66,20 @@ func (s *store) delete(decision *models.Decision) error {
 		return nil
 	}
 
+	normalize(decision)
+
 	scope := *decision.Scope
 	value := *decision.Value
 
 	switch scope {
-	case "Ip":
+	case types.Ip:
 		ip, err := parseIP(value)
 		if err != nil {
 			return err
 		}
 		_, err = s.store.Remove(ip)
 		return err
-	case "Range":
+	case types.Range:
 		prf, err := netip.ParsePrefix(value)
 		if err != nil {
 			return err
@@ -84,6 +89,13 @@ func (s *store) delete(decision *models.Decision) error {
 	default:
 		return fmt.Errorf("got unhandled scope: %s", scope)
 	}
+}
+
+// normalize ensures a decision's scope is in canonical form
+// before being used in the bouncer. This prevent issues with
+// different sources using different capitalization.
+func normalize(d *models.Decision) {
+	*d.Scope = types.NormalizeScope(*d.Scope)
 }
 
 func (s *store) get(key netip.Addr) (*models.Decision, error) {
