@@ -18,7 +18,7 @@ const (
 	// simulates the JetBrains TeamCity auth bypass, CVE-2023-42793. Same payload
 	// the existing integration test uses, so it is known to be caught by the
 	// rules installed into the container.
-	appSecAttackPath = "/rpc2"
+	appSecAttackPath = "/app/rest/rpc2"
 
 	// appSecSQLiPath and appSecSQLiBody simulate Ivanti EPM SQLi, CVE-2024-29824,
 	// which is matched on the request body rather than the path.
