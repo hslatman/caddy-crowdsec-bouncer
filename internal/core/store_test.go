@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/crowdsecurity/crowdsec/pkg/models"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -159,4 +160,64 @@ func TestStorePrefersStricterRemediation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, d)
 	require.Equal(t, typBan, *d.Type)
+}
+
+func TestStoreLowercaseScopes(t *testing.T) {
+	typ := "ban"
+
+	for _, tc := range []struct {
+		scope, value, lookup, want string
+	}{
+		{"ip", "127.0.0.1", "127.0.0.1", "Ip"},
+		{"IP", "127.0.0.1", "127.0.0.1", "Ip"},
+		{"range", "10.0.0.0/24", "10.0.0.5", "Range"},
+		{"RANGE", "10.0.0.0/24", "10.0.0.5", "Range"},
+	} {
+		t.Run(tc.scope, func(t *testing.T) {
+			scope, value := tc.scope, tc.value
+			d := &models.Decision{Scope: &scope, Type: &typ, Value: &value}
+
+			s := newStore()
+			require.NoError(t, s.add(d))
+			assert.Equal(t, tc.want, *d.Scope)
+
+			r, err := s.get(netip.MustParseAddr(tc.lookup))
+			require.NoError(t, err)
+			require.NotNil(t, r)
+
+			// a separate decision with the original spelling, as a stream delete would send
+			scope2, value2 := tc.scope, tc.value
+			require.NoError(t, s.delete(&models.Decision{Scope: &scope2, Type: &typ, Value: &value2}))
+
+			r, err = s.get(netip.MustParseAddr(tc.lookup))
+			require.NoError(t, err)
+			assert.Nil(t, r)
+		})
+	}
+
+	t.Run("unsupported", func(t *testing.T) {
+		scope, value := "country", "NL"
+		err := newStore().add(&models.Decision{Scope: &scope, Type: &typ, Value: &value})
+		assert.Error(t, err)
+	})
+}
+
+func TestNormalize(t *testing.T) {
+	for _, tc := range []struct {
+		scope, want string
+	}{
+		{"Ip", "Ip"},
+		{"IP", "Ip"},
+		{"ip", "Ip"},
+		{"Range", "Range"},
+		{"range", "Range"},
+		{"RANGE", "Range"},
+		{"unknown", "unknown"},
+	} {
+		t.Run(tc.scope, func(t *testing.T) {
+			d := &models.Decision{Scope: &tc.scope}
+			normalize(d)
+			assert.Equal(t, tc.want, *d.Scope)
+		})
+	}
 }
