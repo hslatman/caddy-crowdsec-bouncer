@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
 	"github.com/hslatman/caddy-crowdsec-bouncer/internal/httputils"
@@ -218,7 +219,9 @@ func (a *appsec) failOpenOrErr(err error) error {
 		return nil
 	}
 
-	return err
+	// Caddy sets the error status placeholders only for a HandlerError. Without
+	// one, a handle_errors route can answer a blocked request with status 200.
+	return caddyhttp.Error(http.StatusInternalServerError, err)
 }
 
 func (b *Core) logAppSecStatus() {
